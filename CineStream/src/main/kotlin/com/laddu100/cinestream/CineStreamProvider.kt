@@ -22,7 +22,6 @@ class CineStreamProvider : MainAPI() {
 
     private val TAG = "CineStream"
 
-    // Firebase domain config — same pattern as DamiTV in raghav repo.
     @Volatile
     private var isUrlLoaded = false
 
@@ -34,11 +33,9 @@ class CineStreamProvider : MainAPI() {
             val url = config.cinestream_url ?: config.cinestream ?: config.cine_url
             if (!url.isNullOrBlank()) {
                 mainUrl = url.removeSuffix("/")
-                Log.d(TAG, "Firebase URL loaded: $mainUrl")
             }
             isUrlLoaded = true
         } catch (e: Exception) {
-            Log.d(TAG, "Failed to load Firebase URL: ${e.message}")
             isUrlLoaded = true
         }
     }
@@ -52,17 +49,14 @@ class CineStreamProvider : MainAPI() {
             if (wrapper.data.isNullOrBlank()) return null
             CineStreamCrypto.decrypt(wrapper.data)
         } catch (e: Exception) {
-            Log.e(TAG, "decryptResponse error: ${e.message}")
+            Log.e(TAG, "decrypt: ${e.message}")
             null
         }
     }
 
-    override val mainPage = mainPageOf(
-        "home" to "Home"
-    )
+    override val mainPage = mainPageOf("home" to "Home")
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        Log.d(TAG, "getMainPage: ${request.name} page=$page")
         loadFirebaseUrl()
         return try {
             val response = cineStreamPost("$mainUrl/api/home", "{}", headers = mapOf(
@@ -86,21 +80,16 @@ class CineStreamProvider : MainAPI() {
                 }
             }
 
-            Log.d(TAG, "getMainPage: ${sections.size} sections")
             newHomePageResponse(sections, hasNext = false)
         } catch (e: Exception) {
-            Log.e(TAG, "getMainPage error: ${e.message}")
+            Log.e(TAG, "getMainPage: ${e.message}")
             newHomePageResponse(request.name, emptyList())
         }
     }
 
     private fun mapItemToSearchResponse(item: CineStreamItem): SearchResponse? {
         if (item._id.isBlank() || item.title.isBlank()) return null
-        // Home page items use "contentType" (e.g., "series", "movie") while search
-        // results use "type". Check both to determine if this is a series or movie.
-        // Without this, series like Game of Thrones are treated as movies and fail
-        // when /api/details is called with type="movies" for a series _id.
-        val rawType = item.contentType ?: item.type ?: "movie"
+        val rawType = item.contentType ?: item.type
         val type = if (rawType.equals("series", ignoreCase = true) || rawType.equals("tv", ignoreCase = true)) "series" else "movies"
         val tvType = if (type == "series") TvType.TvSeries else TvType.Movie
         return newMovieSearchResponse(item.title, "cine://$type/${item._id}", tvType) {
@@ -110,7 +99,6 @@ class CineStreamProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        Log.d(TAG, "search: '$query'")
         if (query.isBlank()) return emptyList()
         loadFirebaseUrl()
         return try {
@@ -126,16 +114,14 @@ class CineStreamProvider : MainAPI() {
             for (series in searchResp.series) {
                 mapItemToSearchResponse(series.copy(type = "series"))?.let { results.add(it) }
             }
-            Log.d(TAG, "search: got ${results.size} results")
             results
         } catch (e: Exception) {
-            Log.e(TAG, "search error: ${e.message}")
+            Log.e(TAG, "search: ${e.message}")
             emptyList()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        Log.d(TAG, "load: url=$url")
         loadFirebaseUrl()
         val payload = url.substringAfter("cine://")
         val parts = payload.split("/")
@@ -151,7 +137,6 @@ class CineStreamProvider : MainAPI() {
             ))
             val decrypted = decryptResponse(postResponse.text) ?: return null
             val detail = parseJson<CineStreamDetail>(decrypted)
-            Log.d(TAG, "load: title='${detail.title}' type=$type")
 
             val tvType = if (type == "series") TvType.TvSeries else TvType.Movie
             val year = (detail.releaseDate ?: detail.firstAirDate)?.take(4)?.toIntOrNull()
@@ -197,7 +182,7 @@ class CineStreamProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "load error: ${e.message}")
+            Log.e(TAG, "load: ${e.message}")
             null
         }
     }
@@ -208,7 +193,6 @@ class CineStreamProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(TAG, "loadLinks: data=$data")
         loadFirebaseUrl()
         return try {
             val payload = data.substringAfter("cine://")
@@ -235,38 +219,28 @@ class CineStreamProvider : MainAPI() {
                 else -> emptyList()
             }
 
-            if (streamLinks.isEmpty()) {
-                Log.e(TAG, "loadLinks: no streaming links found")
-                return false
-            }
+            if (streamLinks.isEmpty()) return false
 
-            Log.d(TAG, "loadLinks: ${streamLinks.size} stream links")
             var found = false
             for (link in streamLinks) {
                 if (!link.isActive || link.url.isBlank()) continue
                 val quality = parseQuality(link.quality)
-                Log.d(TAG, "loadLinks: ${link.quality} ${link.url.take(80)}")
 
                 try {
-                    // M3u8Helper.generateM3u8 parses the m3u8 manifest and extracts all
-                    // quality variants. The HLS manifests on CineStream contain embedded
-                    // AUDIO tracks (Hindi, English) and SUBTITLE tracks (English) which
-                    // CloudStream's player will expose for selection.
                     val links = M3u8Helper.generateM3u8(
-                        source = "CineStream",
+                        source = "CinestreamSite",
                         streamUrl = link.url,
                         referer = mainUrl,
                         quality = quality,
                         headers = mapOf("Referer" to mainUrl),
-                        name = "CineStream — ${link.quality}"
+                        name = "CinestreamSite - ${link.quality}"
                     )
                     links.forEach { m3u8Link ->
                         callback.invoke(m3u8Link)
                         found = true
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "loadLinks: M3u8Helper error for ${link.quality}: ${e.message}")
-                    val el = newExtractorLink("CineStream", "CineStream — ${link.quality}", link.url, ExtractorLinkType.M3U8) {
+                    val el = newExtractorLink("CinestreamSite", "CinestreamSite - ${link.quality}", link.url, ExtractorLinkType.M3U8) {
                         this.quality = quality
                         this.referer = mainUrl
                     }
@@ -274,11 +248,9 @@ class CineStreamProvider : MainAPI() {
                     found = true
                 }
             }
-
-            Log.d(TAG, "loadLinks: done, found=$found")
             found
         } catch (e: Exception) {
-            Log.e(TAG, "loadLinks error: ${e.message}")
+            Log.e(TAG, "loadLinks: ${e.message}")
             false
         }
     }
@@ -293,7 +265,6 @@ class CineStreamProvider : MainAPI() {
         }
     }
 
-    // JSON-encode a string value (with quotes and escaping).
     private fun jsonEncode(s: String): String {
         val sb = StringBuilder("\"")
         for (ch in s) {

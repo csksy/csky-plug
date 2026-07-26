@@ -20,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class CineStreamSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragment() {
-    private val TAG = "CineStream_Settings"
 
     @SuppressLint("SetTextI18n")
     override fun onCreateView(
@@ -39,50 +38,39 @@ class CineStreamSettingsFragment(private val plugin: Plugin) : BottomSheetDialog
             layoutParams = ViewGroup.LayoutParams(-1, -2)
         }
 
-        val header = TextView(ctx).apply {
+        root.addView(TextView(ctx).apply {
             text = "CinestreamSite Settings"
-            textSize = 20f
-            setTextColor(Color.WHITE)
+            textSize = 20f; setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, smallPad)
-        }
-        root.addView(header)
+        })
 
-        val help = TextView(ctx).apply {
-            text = "If CinestreamSite shows a \"Just a moment\" screen or returns errors, tap Bypass Cloudflare to open a WebView and solve the challenge. Cookies are saved automatically and reused for 15 hours."
-            textSize = 13f
-            setTextColor(Color.parseColor("#B0B0C0"))
+        root.addView(TextView(ctx).apply {
+            text = "If the site shows a \"Just a moment\" screen, tap Bypass Cloudflare to solve the challenge. Cookies are saved for 15 hours."
+            textSize = 13f; setTextColor(Color.parseColor("#B0B0C0"))
             setPadding(0, 0, 0, smallPad)
-        }
-        root.addView(help)
+        })
 
         val bypassBtn = Button(ctx).apply {
-            text = if (CineStreamCFStore.getCookies() != null) {
-                "✅ CF Cookies Saved — Refresh"
-            } else {
-                "🛡️ Bypass Cloudflare"
-            }
-            background = makeButtonBackground(0xFF6D5ACF.toInt())
+            text = if (CineStreamCFStore.getCookies() != null) "CF Cookies Saved" else "Bypass Cloudflare"
+            background = makeBg(0xFF6D5ACF.toInt())
             setTextColor(Color.WHITE)
-            setPadding(0, smallPad, 0, smallPad)
             layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = smallPad }
         }
         root.addView(bypassBtn)
 
         val clearBtn = Button(ctx).apply {
-            text = "🗑️ Clear CF Cookies"
-            background = makeButtonBackground(0xFFE5484D.toInt())
+            text = "Clear CF Cookies"
+            background = makeBg(0xFFE5484D.toInt())
             setTextColor(Color.WHITE)
-            setPadding(0, smallPad, 0, smallPad)
             layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = smallPad }
         }
         root.addView(clearBtn)
 
         val saveBtn = Button(ctx).apply {
-            text = "💾 Save & Close"
-            background = makeButtonBackground(0xFF2E7D32.toInt())
+            text = "Save & Close"
+            background = makeBg(0xFF2E7D32.toInt())
             setTextColor(Color.WHITE)
-            setPadding(0, smallPad, 0, smallPad)
             layoutParams = LinearLayout.LayoutParams(-1, -2)
         }
         root.addView(saveBtn)
@@ -96,28 +84,19 @@ class CineStreamSettingsFragment(private val plugin: Plugin) : BottomSheetDialog
                 }
                 cm.flush()
             } catch (e: Exception) {
-                Log.e(TAG, "CookieManager clear: ${e.message}")
+                Log.e("CineStream_Settings", "clear: ${e.message}")
             }
             CineStreamCFStore.clear()
 
-            bypassBtn.text = "⏳ Solving..."
+            bypassBtn.text = "Solving..."
             CoroutineScope(Dispatchers.Main).launch {
                 try {
                     val success = showCineStreamCFBypassDialogAndWait(host)
-                    bypassBtn.text = if (success && CineStreamCFStore.getCookies() != null) {
-                        "✅ CF Cookies Saved — Refresh"
-                    } else {
-                        "🛡️ Bypass Cloudflare"
-                    }
-                    if (success) {
-                        Toast.makeText(ctx, "CF cookies saved", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(ctx, "CF bypass cancelled", Toast.LENGTH_SHORT).show()
-                    }
+                    bypassBtn.text = if (success && CineStreamCFStore.getCookies() != null) "CF Cookies Saved" else "Bypass Cloudflare"
+                    Toast.makeText(ctx, if (success) "Saved" else "Cancelled", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Bypass dialog error: ${e.message}")
-                    bypassBtn.text = "🛡️ Bypass Cloudflare"
-                    Toast.makeText(ctx, "Bypass failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                    bypassBtn.text = "Bypass Cloudflare"
+                    Toast.makeText(ctx, "Failed: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -125,7 +104,7 @@ class CineStreamSettingsFragment(private val plugin: Plugin) : BottomSheetDialog
         clearBtn.setOnClickListener {
             AlertDialog.Builder(ctx)
                 .setTitle("Clear CF Cookies?")
-                .setMessage("This will remove the saved Cloudflare cookies and User-Agent. You will need to bypass Cloudflare again before content loads.")
+                .setMessage("You will need to bypass Cloudflare again before content loads.")
                 .setPositiveButton("Clear") { _, _ ->
                     val host = "https://cinestream.kje.us"
                     try {
@@ -134,30 +113,25 @@ class CineStreamSettingsFragment(private val plugin: Plugin) : BottomSheetDialog
                             cm.setCookie(host, "$name=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT")
                         }
                         cm.flush()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "CookieManager clear: ${e.message}")
-                    }
+                    } catch (e: Exception) {}
                     CineStreamCFStore.clear()
-                    bypassBtn.text = "🛡️ Bypass Cloudflare"
-                    Toast.makeText(ctx, "CF cookies cleared", Toast.LENGTH_SHORT).show()
+                    bypassBtn.text = "Bypass Cloudflare"
+                    Toast.makeText(ctx, "Cleared", Toast.LENGTH_SHORT).show()
                 }
                 .setNegativeButton("Cancel") { d, _ -> d.dismiss() }
                 .show()
         }
 
         saveBtn.setOnClickListener {
-            Toast.makeText(ctx, "Settings saved", Toast.LENGTH_SHORT).show()
             dismiss()
         }
 
         return root
     }
 
-    private fun makeButtonBackground(color: Int): android.graphics.drawable.Drawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 12f
-            setColor(color)
-        }
+    private fun makeBg(color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = 12f
+        setColor(color)
     }
 }

@@ -26,7 +26,6 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.lagradost.api.Log
@@ -54,8 +53,6 @@ private const val SOLVER_TIMEOUT_MS = 120_000L
 private const val POLL_INTERVAL_MS = 1000L
 private const val CURSOR_STEP_DP = 10f
 
-// CF cookie storage — persisted via CloudStreamApp.setKey/getKey so they survive
-// app restarts and can be cleared from a settings page if needed.
 internal object CineStreamCFStore {
     private const val KEY_CF_COOKIES = "CINESTREAM_CF_COOKIES"
     private const val KEY_CF_UA = "CINESTREAM_CF_USER_AGENT"
@@ -77,7 +74,7 @@ internal object CineStreamCFStore {
             cachedHost = CloudStreamApp.getKey<String>(KEY_CF_HOST)
             cachedTimestamp = CloudStreamApp.getKey<String>(KEY_CF_TIMESTAMP)?.toLongOrNull() ?: 0L
         } catch (e: Exception) {
-            Log.e(TAG, "CFStore init error: ${e.message}")
+            Log.e(TAG, "init: ${e.message}")
         }
     }
 
@@ -105,7 +102,7 @@ internal object CineStreamCFStore {
             CloudStreamApp.setKey(KEY_CF_HOST, host)
             CloudStreamApp.setKey(KEY_CF_TIMESTAMP, cachedTimestamp.toString())
         } catch (e: Exception) {
-            Log.e(TAG, "CFStore save error: ${e.message}")
+            Log.e(TAG, "save: ${e.message}")
         }
     }
 
@@ -148,7 +145,6 @@ private fun isChallengeTitle(title: String): Boolean {
 }
 
 private val cfBypassMutex = Mutex()
-
 private class CursorPosHolder { var x: Float = 0f; var y: Float = 0f }
 
 @SuppressLint("InflateParams")
@@ -159,7 +155,6 @@ private class CineStreamCFDialog(
     private var dialog: AlertDialog? = null
     private var webView: WebView? = null
     private var statusText: TextView? = null
-    private var cursorView: View? = null
     private val handler = Handler(Looper.getMainLooper())
     private val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
     private var pollElapsedMs = 0L
@@ -180,7 +175,7 @@ private class CineStreamCFDialog(
                 finishSuccess(cookieStr)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "extractAndFinish error: ${e.message}")
+            Log.e(TAG, "extract: ${e.message}")
         }
     }
 
@@ -189,7 +184,6 @@ private class CineStreamCFDialog(
         handler.removeCallbacksAndMessages(null)
         val ua = webView?.settings?.userAgentString ?: ""
         CineStreamCFStore.save(cookieStr, ua, targetHost)
-        Log.d(TAG, "Cookies saved (len=${cookieStr.length}) host=$targetHost")
         try { webView?.destroy() } catch (e: Exception) {}
         try { (webView?.getTag() as? Dialog)?.dismiss() } catch (e: Exception) {}
         try { onFinished?.invoke(true) } catch (e: Exception) {}
@@ -212,7 +206,7 @@ private class CineStreamCFDialog(
                 if (pollElapsedMs >= SOLVER_TIMEOUT_MS) {
                     finishFailure()
                 } else {
-                    statusText?.text = "Waiting for cookies... (${pollElapsedMs / 1000}s)"
+                    statusText?.text = "Waiting... (${pollElapsedMs / 1000}s)"
                     handler.postDelayed(this, POLL_INTERVAL_MS)
                 }
             }
@@ -232,16 +226,15 @@ private class CineStreamCFDialog(
             setPadding((16 * dp).toInt(), (12 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
         }
 
-        val titleView = TextView(activity).apply {
+        container.addView(TextView(activity).apply {
             text = "Cloudflare Bypass"
             textSize = 16f; setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, (8 * dp).toInt())
-        }
-        container.addView(titleView)
+        })
 
         val statusView = TextView(activity).apply {
-            text = "Loading challenge page..."
+            text = "Loading..."
             textSize = 12f; setTextColor(Color.parseColor("#A0A0B0"))
             setPadding(0, 0, 0, (4 * dp).toInt())
         }
@@ -249,19 +242,17 @@ private class CineStreamCFDialog(
         container.addView(statusView)
 
         val isTv = try { Globals.isLayout(Globals.TV) } catch (e: Throwable) { false }
-        val hintView = TextView(activity).apply {
-            text = if (isTv) "Use D-pad to move the cursor, OK/Enter to click the captcha checkbox."
+        container.addView(TextView(activity).apply {
+            text = if (isTv) "Use D-pad to move cursor, OK to click."
             else "Solve the CAPTCHA below, then tap Done."
             textSize = 11f; setTextColor(Color.parseColor("#707080"))
             setPadding(0, 0, 0, (8 * dp).toInt())
-        }
-        container.addView(hintView)
+        })
 
-        val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
+        container.addView(ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (8 * dp).toInt() }
-        }
-        container.addView(progress)
+        })
 
         val webContainer = FrameLayout(activity).apply {
             layoutParams = LinearLayout.LayoutParams(-1, webViewHeight)
@@ -281,7 +272,6 @@ private class CineStreamCFDialog(
                 }
                 elevation = 999f
             }
-            cursorView = cursor
             webContainer.addView(cursor)
 
             val pos = CursorPosHolder()
@@ -318,20 +308,18 @@ private class CineStreamCFDialog(
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.topMargin = (8 * dp).toInt() }
         }
-        val doneBtn = Button(activity).apply {
+        btnContainer.addView(Button(activity).apply {
             text = "Done"
             setOnClickListener {
                 CookieManager.getInstance().flush()
                 extractAndFinish()
-                if (!resolved.get()) statusText?.text = "No cf_clearance found. Solve the CAPTCHA first."
+                if (!resolved.get()) statusText?.text = "No cf_clearance found."
             }
-        }
-        btnContainer.addView(doneBtn)
-        val cancelBtn = Button(activity).apply {
+        })
+        btnContainer.addView(Button(activity).apply {
             text = "Cancel"
             setOnClickListener { finishFailure() }
-        }
-        btnContainer.addView(cancelBtn)
+        })
         container.addView(btnContainer)
 
         dialog = AlertDialog.Builder(activity).setView(container).setCancelable(false).create()
@@ -372,10 +360,9 @@ private class CineStreamCFDialog(
 
     private fun clickAtCursor(pos: CursorPosHolder, webView: WebView?) {
         val wv = webView ?: return
-        val x = pos.x; val y = pos.y
         val t = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0)
-        val up = MotionEvent.obtain(t, t + 120, MotionEvent.ACTION_UP, x, y, 0)
+        val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, pos.x, pos.y, 0)
+        val up = MotionEvent.obtain(t, t + 120, MotionEvent.ACTION_UP, pos.x, pos.y, 0)
         try { wv.dispatchTouchEvent(down); wv.dispatchTouchEvent(up) } catch (e: Exception) {}
         finally { down.recycle(); up.recycle() }
     }
@@ -401,9 +388,8 @@ private class CineStreamCFDialog(
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (resolved.get()) return
                     val title = view?.title ?: ""
-                    Log.d(TAG, "onPageFinished title='$title' url=$url")
                     if (isChallengeTitle(title)) {
-                        statusText?.text = "Challenge active - solve the CAPTCHA above"
+                        statusText?.text = "Challenge active - solve the CAPTCHA"
                         extractAndFinish()
                         return
                     }
@@ -423,11 +409,9 @@ private class CineStreamCFDialog(
     }
 }
 
-// Public so the Settings fragment can invoke the CF bypass dialog directly.
 suspend fun showCineStreamCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
     val activity = CommonActivity.activity as? AppCompatActivity
     if (activity == null || activity.isFinishing || activity.isDestroyed) {
-        Log.e(TAG, "No activity available to show CF dialog")
         return@withContext false
     }
     suspendCancellableCoroutine { cont ->
@@ -435,21 +419,20 @@ suspend fun showCineStreamCFBypassDialogAndWait(url: String): Boolean = withCont
             if (cont.isActive) cont.resume(success)
         }
         try { cfDialog.show(activity) } catch (e: Exception) {
-            Log.e(TAG, "Failed to show CF dialog: ${e.message}")
+            Log.e(TAG, "show dialog: ${e.message}")
             if (cont.isActive) cont.resume(false)
         }
         cont.invokeOnCancellation { cfDialog.dismiss() }
     }
 }
 
-// Public entry point — CF-aware HTTP GET with automatic bypass when needed.
-suspend fun cineStreamGet(url: String, headers: Map<String, String> = emptyMap()): NiceResponse {
+private suspend fun cfGet(url: String, headers: Map<String, String>): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)
         "${uri.scheme}://${uri.host}"
     } catch (e: Exception) { url }
 
-    fun buildCfHeaders(): Map<String, String> {
+    fun buildHeaders(): Map<String, String> {
         val h = headers.toMutableMap()
         if (!h.containsKey("Accept")) h["Accept"] = "application/json, text/plain, */*"
         if (!h.containsKey("User-Agent")) {
@@ -461,46 +444,37 @@ suspend fun cineStreamGet(url: String, headers: Map<String, String> = emptyMap()
     }
 
     var response = try {
-        app.get(url, headers = buildCfHeaders(), timeout = 30_000L)
+        app.get(url, headers = buildHeaders(), timeout = 30_000L)
     } catch (e: Exception) {
-        Log.e(TAG, "Request failed: ${e.message}")
         throw e
     }
 
     if (!isCineStreamCloudflareBlocked(response)) return response
 
-    Log.d(TAG, "Cloudflare blocked (HTTP ${response.code}) for $url - triggering bypass")
-
     cfBypassMutex.withLock {
         val cachedCookies = CineStreamCFStore.getCookies()
         if (cachedCookies != null) {
-            response = try { app.get(url, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
+            response = try { app.get(url, headers = buildHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
             if (!isCineStreamCloudflareBlocked(response)) return response
         }
         CineStreamCFStore.clear()
         val bypassSuccess = showCineStreamCFBypassDialogAndWait(targetHost)
-        if (!bypassSuccess) { Log.e(TAG, "CF bypass failed/cancelled"); return@withLock }
+        if (!bypassSuccess) return@withLock
         for (attempt in 1..2) {
-            response = try { app.get(url, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
-            if (!isCineStreamCloudflareBlocked(response)) {
-                Log.d(TAG, "Request succeeded after CF bypass (attempt $attempt)")
-                return@withLock
-            }
-            Log.e(TAG, "Still CF-blocked after retry $attempt")
+            response = try { app.get(url, headers = buildHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
+            if (!isCineStreamCloudflareBlocked(response)) return@withLock
         }
     }
     return response
 }
 
-// Public entry point — CF-aware HTTP POST with automatic bypass when needed.
-// Used for /api/home and /api/details which require POST.
 suspend fun cineStreamPost(url: String, jsonBody: String, headers: Map<String, String> = emptyMap()): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)
         "${uri.scheme}://${uri.host}"
     } catch (e: Exception) { url }
 
-    fun buildCfHeaders(): Map<String, String> {
+    fun buildHeaders(): Map<String, String> {
         val h = headers.toMutableMap()
         if (!h.containsKey("Accept")) h["Accept"] = "application/json, text/plain, */*"
         if (!h.containsKey("User-Agent")) {
@@ -512,32 +486,25 @@ suspend fun cineStreamPost(url: String, jsonBody: String, headers: Map<String, S
     }
 
     var response = try {
-        app.post(url, json = jsonBody, headers = buildCfHeaders(), timeout = 30_000L)
+        app.post(url, json = jsonBody, headers = buildHeaders(), timeout = 30_000L)
     } catch (e: Exception) {
-        Log.e(TAG, "POST failed: ${e.message}")
         throw e
     }
 
     if (!isCineStreamCloudflareBlocked(response)) return response
 
-    Log.d(TAG, "Cloudflare blocked POST (HTTP ${response.code}) for $url - triggering bypass")
-
     cfBypassMutex.withLock {
         val cachedCookies = CineStreamCFStore.getCookies()
         if (cachedCookies != null) {
-            response = try { app.post(url, json = jsonBody, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
+            response = try { app.post(url, json = jsonBody, headers = buildHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
             if (!isCineStreamCloudflareBlocked(response)) return response
         }
         CineStreamCFStore.clear()
         val bypassSuccess = showCineStreamCFBypassDialogAndWait(targetHost)
-        if (!bypassSuccess) { Log.e(TAG, "CF bypass failed/cancelled"); return@withLock }
+        if (!bypassSuccess) return@withLock
         for (attempt in 1..2) {
-            response = try { app.post(url, json = jsonBody, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
-            if (!isCineStreamCloudflareBlocked(response)) {
-                Log.d(TAG, "POST succeeded after CF bypass (attempt $attempt)")
-                return@withLock
-            }
-            Log.e(TAG, "Still CF-blocked after retry $attempt")
+            response = try { app.post(url, json = jsonBody, headers = buildHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
+            if (!isCineStreamCloudflareBlocked(response)) return@withLock
         }
     }
     return response
@@ -545,5 +512,4 @@ suspend fun cineStreamPost(url: String, jsonBody: String, headers: Map<String, S
 
 fun initCineStreamCFBypass() {
     CineStreamCFStore.init()
-    Log.d(TAG, "CineStream CF bypass initialized")
 }

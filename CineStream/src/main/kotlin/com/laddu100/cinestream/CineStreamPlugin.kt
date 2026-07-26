@@ -9,7 +9,6 @@ class CineStreamPlugin : Plugin() {
     override fun load(context: Context) {
         initCineStreamCFBypass()
         registerMainAPI(CineStreamProvider())
-        // Wire the gear icon to show the settings BottomSheet with Bypass/Save/Clear buttons.
         openSettings = { ctx ->
             (ctx as? androidx.appcompat.app.AppCompatActivity)?.let { activity ->
                 CineStreamSettingsFragment(this).show(activity.supportFragmentManager, "CineStreamSettings")

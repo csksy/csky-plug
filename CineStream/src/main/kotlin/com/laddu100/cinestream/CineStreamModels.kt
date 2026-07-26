@@ -3,10 +3,6 @@ package com.laddu100.cinestream
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 
-// =========================================================================
-// Data classes for CineStream API responses
-// =========================================================================
-
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class CineStreamHomeResponse(
     @JsonProperty("heroData") val heroData: CineStreamSection? = null,
@@ -119,7 +115,6 @@ data class CineStreamEpisode(
     @JsonProperty("streamingLinks") val streamingLinks: List<CineStreamStreamLink>? = null
 )
 
-// Firebase config for dynamic domain resolution
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class CineStreamFirebaseConfig(
     @JsonProperty("cinestream_url") val cinestream_url: String? = null,
