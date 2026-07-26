@@ -62,34 +62,32 @@ class AnimeWorldProvider : MainAPI() {
 
             when (request.data) {
                 "home" -> {
-                    val links = doc.select("a[href*=/series/]")
-                    val seen = mutableSetOf<String>()
-                    val items = links.mapNotNull { el ->
-                        val href = el.attr("href")
-                        if (!seen.add(href)) return@mapNotNull null
-                        val title = el.selectFirst("h2, h3, .title")?.text()?.trim()
-                            ?: el.text()?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    val items = doc.select("li.post, article.post").mapNotNull { el ->
+                        val link = el.selectFirst("a[href*=/series/]")?.attr("href") ?: return@mapNotNull null
+                        if (link.endsWith("/series/")) return@mapNotNull null
+                        val title = el.selectFirst("h2, h3")?.text()?.trim() ?: return@mapNotNull null
                         val poster = el.selectFirst("img")?.let { img ->
-                            img.attr("data-src").ifBlank { img.attr("src") }
+                            val src = img.attr("data-src").ifBlank { img.attr("src") }
+                            if (src.startsWith("//")) "https:$src" else src
                         }
-                        newAnimeSearchResponse(title, href, TvType.Anime) {
-                            this.posterUrl = poster?.let { if (it.startsWith("//")) "https:$it" else it }
+                        newAnimeSearchResponse(title, link, TvType.Anime) {
+                            this.posterUrl = poster
                         }
-                    }
+                    }.distinctBy { it.url }
                     newHomePageResponse("Latest Series", items, hasNext = false)
                 }
                 "franchise" -> {
-                    val links = doc.select("a[href*=/category/franchise/]")
-                    val items = links.mapNotNull { el ->
+                    val items = doc.select("a[href*=/category/franchise/]").mapNotNull { el ->
                         val href = el.attr("href")
                         val title = el.text()?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                         val poster = el.selectFirst("img")?.let { img ->
-                            img.attr("data-src").ifBlank { img.attr("src") }
+                            val src = img.attr("data-src").ifBlank { img.attr("src") }
+                            if (src.startsWith("//")) "https:$src" else src
                         }
                         newAnimeSearchResponse(title, href, TvType.Anime) {
-                            this.posterUrl = poster?.let { if (it.startsWith("//")) "https:$it" else it }
+                            this.posterUrl = poster
                         }
-                    }
+                    }.distinctBy { it.url }
                     newHomePageResponse("Franchises", items, hasNext = false)
                 }
                 else -> newHomePageResponse(request.name, emptyList())
@@ -107,15 +105,16 @@ class AnimeWorldProvider : MainAPI() {
             val encoded = URLEncoder.encode(query, "UTF-8")
             val response = animeWorldGet("$mainUrl/?s=$encoded")
             val doc = Jsoup.parse(response.text)
-            doc.select("a[href*=/series/]").mapNotNull { el ->
-                val href = el.attr("href")
-                val title = el.selectFirst("h2, h3, .title")?.text()?.trim()
-                    ?: el.text()?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            doc.select("li.post, article.post").mapNotNull { el ->
+                val link = el.selectFirst("a[href*=/series/]")?.attr("href") ?: return@mapNotNull null
+                if (link.endsWith("/series/")) return@mapNotNull null
+                val title = el.selectFirst("h2, h3")?.text()?.trim() ?: return@mapNotNull null
                 val poster = el.selectFirst("img")?.let { img ->
-                    img.attr("data-src").ifBlank { img.attr("src") }
+                    val src = img.attr("data-src").ifBlank { img.attr("src") }
+                    if (src.startsWith("//")) "https:$src" else src
                 }
-                newAnimeSearchResponse(title, href, TvType.Anime) {
-                    this.posterUrl = poster?.let { if (it.startsWith("//")) "https:$it" else it }
+                newAnimeSearchResponse(title, link, TvType.Anime) {
+                    this.posterUrl = poster
                 }
             }.distinctBy { it.url }
         } catch (e: Exception) {
