@@ -27,6 +27,7 @@ data class CineStreamItem(
     @JsonProperty("title") val title: String = "",
     @JsonProperty("subTitle") val subTitle: String? = null,
     @JsonProperty("type") val type: String = "movie",
+    @JsonProperty("contentType") val contentType: String? = null,
     @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("posterPath") val posterPath: String? = null,
     @JsonProperty("backdropPath") val backdropPath: String? = null,

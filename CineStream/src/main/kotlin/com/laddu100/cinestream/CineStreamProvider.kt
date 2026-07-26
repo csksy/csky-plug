@@ -14,7 +14,7 @@ import com.lagradost.cloudstream3.app
 
 class CineStreamProvider : MainAPI() {
     override var mainUrl = "https://cinestream.kje.us"
-    override var name = "CineStream"
+    override var name = "CinestreamSite"
     override var lang = "en"
     override val hasMainPage = true
     override val hasDownloadSupport = true
@@ -96,7 +96,12 @@ class CineStreamProvider : MainAPI() {
 
     private fun mapItemToSearchResponse(item: CineStreamItem): SearchResponse? {
         if (item._id.isBlank() || item.title.isBlank()) return null
-        val type = if (item.type == "series") "series" else "movies"
+        // Home page items use "contentType" (e.g., "series", "movie") while search
+        // results use "type". Check both to determine if this is a series or movie.
+        // Without this, series like Game of Thrones are treated as movies and fail
+        // when /api/details is called with type="movies" for a series _id.
+        val rawType = item.contentType ?: item.type ?: "movie"
+        val type = if (rawType.equals("series", ignoreCase = true) || rawType.equals("tv", ignoreCase = true)) "series" else "movies"
         val tvType = if (type == "series") TvType.TvSeries else TvType.Movie
         return newMovieSearchResponse(item.title, "cine://$type/${item._id}", tvType) {
             this.posterUrl = item.posterPath

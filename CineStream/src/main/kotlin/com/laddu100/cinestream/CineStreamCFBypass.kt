@@ -423,7 +423,8 @@ private class CineStreamCFDialog(
     }
 }
 
-private suspend fun showCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
+// Public so the Settings fragment can invoke the CF bypass dialog directly.
+suspend fun showCineStreamCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
     val activity = CommonActivity.activity as? AppCompatActivity
     if (activity == null || activity.isFinishing || activity.isDestroyed) {
         Log.e(TAG, "No activity available to show CF dialog")
@@ -477,7 +478,7 @@ suspend fun cineStreamGet(url: String, headers: Map<String, String> = emptyMap()
             if (!isCineStreamCloudflareBlocked(response)) return response
         }
         CineStreamCFStore.clear()
-        val bypassSuccess = showCFBypassDialogAndWait(targetHost)
+        val bypassSuccess = showCineStreamCFBypassDialogAndWait(targetHost)
         if (!bypassSuccess) { Log.e(TAG, "CF bypass failed/cancelled"); return@withLock }
         for (attempt in 1..2) {
             response = try { app.get(url, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
@@ -528,7 +529,7 @@ suspend fun cineStreamPost(url: String, jsonBody: String, headers: Map<String, S
             if (!isCineStreamCloudflareBlocked(response)) return response
         }
         CineStreamCFStore.clear()
-        val bypassSuccess = showCFBypassDialogAndWait(targetHost)
+        val bypassSuccess = showCineStreamCFBypassDialogAndWait(targetHost)
         if (!bypassSuccess) { Log.e(TAG, "CF bypass failed/cancelled"); return@withLock }
         for (attempt in 1..2) {
             response = try { app.post(url, json = jsonBody, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
