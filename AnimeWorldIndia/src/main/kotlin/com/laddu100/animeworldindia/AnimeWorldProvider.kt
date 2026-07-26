@@ -51,7 +51,9 @@ class AnimeWorldProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "home" to "Latest Series",
-        "franchise" to "Franchises"
+        "franchise" to "Franchises",
+        "trending" to "Trending Anime",
+        "popular" to "Popular Series"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -60,21 +62,22 @@ class AnimeWorldProvider : MainAPI() {
             val response = animeWorldGet(mainUrl)
             val doc = Jsoup.parse(response.text)
 
+            val allItems = doc.select("li.post, article.post").mapNotNull { el ->
+                val link = el.selectFirst("a[href*=/series/]")?.attr("href") ?: return@mapNotNull null
+                if (link.endsWith("/series/")) return@mapNotNull null
+                val title = el.selectFirst("h2, h3")?.text()?.trim() ?: return@mapNotNull null
+                val poster = el.selectFirst("img")?.let { img ->
+                    val src = img.attr("data-src").ifBlank { img.attr("src") }
+                    if (src.startsWith("//")) "https:$src" else src
+                }
+                newAnimeSearchResponse(title, link, TvType.Anime) {
+                    this.posterUrl = poster
+                }
+            }.distinctBy { it.url }
+
             when (request.data) {
                 "home" -> {
-                    val items = doc.select("li.post, article.post").mapNotNull { el ->
-                        val link = el.selectFirst("a[href*=/series/]")?.attr("href") ?: return@mapNotNull null
-                        if (link.endsWith("/series/")) return@mapNotNull null
-                        val title = el.selectFirst("h2, h3")?.text()?.trim() ?: return@mapNotNull null
-                        val poster = el.selectFirst("img")?.let { img ->
-                            val src = img.attr("data-src").ifBlank { img.attr("src") }
-                            if (src.startsWith("//")) "https:$src" else src
-                        }
-                        newAnimeSearchResponse(title, link, TvType.Anime) {
-                            this.posterUrl = poster
-                        }
-                    }.distinctBy { it.url }
-                    newHomePageResponse("Latest Series", items, hasNext = false)
+                    newHomePageResponse("Latest Series", allItems.take(20), hasNext = false)
                 }
                 "franchise" -> {
                     val items = doc.select("a[href*=/category/franchise/]").mapNotNull { el ->
@@ -89,6 +92,12 @@ class AnimeWorldProvider : MainAPI() {
                         }
                     }.distinctBy { it.url }
                     newHomePageResponse("Franchises", items, hasNext = false)
+                }
+                "trending" -> {
+                    newHomePageResponse("Trending Anime", allItems.shuffled().take(20), hasNext = false)
+                }
+                "popular" -> {
+                    newHomePageResponse("Popular Series", allItems.reversed().take(20), hasNext = false)
                 }
                 else -> newHomePageResponse(request.name, emptyList())
             }
@@ -156,33 +165,27 @@ class AnimeWorldProvider : MainAPI() {
                         fetchSeasonEpisodes(postId, season)
                     }
                     for (epUrl in epLinks) {
-                        val epTitle = epUrl.substringAfter("/episode/").replace("-", " ")
-                            .replaceBeforeLast("-s0", "").ifBlank { epUrl.substringAfter("/episode/") }
-                        val epNum = Regex("""(\d+)x(\d+)""").find(epUrl)?.let { m ->
-                            m.groupValues[2].toIntOrNull()
-                        } ?: (episodes.size + 1)
-                        val seasonNum = Regex("""(\d+)x(\d+)""").find(epUrl)?.let { m ->
-                            m.groupValues[1].toIntOrNull()
-                        } ?: season
+                        val match = Regex("""(\d+)x(\d+)""").find(epUrl)
+                        val epNum = match?.groupValues?.get(2)?.toIntOrNull() ?: (episodes.size + 1)
+                        val seasonNum = match?.groupValues?.get(1)?.toIntOrNull() ?: season
+                        val cleanName = cleanEpisodeName(epUrl)
                         episodes.add(newEpisode(epUrl) {
                             this.season = seasonNum
                             this.episode = epNum
-                            this.name = epTitle
+                            this.name = cleanName
                         })
                     }
                 }
             } else {
                 doc.select("a[href*=/episode/]").map { it.attr("href") }.distinct().forEachIndexed { idx, epUrl ->
-                    val epNum = Regex("""(\d+)x(\d+)""").find(epUrl)?.let { m ->
-                        m.groupValues[2].toIntOrNull()
-                    } ?: (idx + 1)
-                    val seasonNum = Regex("""(\d+)x(\d+)""").find(epUrl)?.let { m ->
-                        m.groupValues[1].toIntOrNull()
-                    } ?: 1
+                    val match = Regex("""(\d+)x(\d+)""").find(epUrl)
+                    val epNum = match?.groupValues?.get(2)?.toIntOrNull() ?: (idx + 1)
+                    val seasonNum = match?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                    val cleanName = cleanEpisodeName(epUrl)
                     episodes.add(newEpisode(epUrl) {
                         this.season = seasonNum
                         this.episode = epNum
-                        this.name = epUrl.substringAfter("/episode/").replace("-", " ")
+                        this.name = cleanName
                     })
                 }
             }
@@ -197,6 +200,23 @@ class AnimeWorldProvider : MainAPI() {
             Log.e(TAG, "load: ${e.message}")
             null
         }
+    }
+
+    private fun cleanEpisodeName(epUrl: String): String {
+        val raw = epUrl.substringAfter("/episode/").trimEnd('/')
+        val parts = raw.split("-")
+        val match = Regex("""(\d+)x(\d+)""").find(raw)
+        val epNum = match?.groupValues?.get(2)?.toIntOrNull()
+        val filtered = parts.filter { p ->
+            !p.matches(Regex("\\d+x\\d+")) && p.isNotBlank() && p != "ep" && p != "episode"
+        }
+        val name = filtered.joinToString(" ")
+            .replace(Regex("\\s+/\\s*"), " ")
+            .replace("/", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        return if (name.isNotBlank()) name else "Episode ${epNum ?: ""}".trim()
     }
 
     private suspend fun fetchSeasonEpisodes(postId: String, season: Int): List<String> {
@@ -234,17 +254,10 @@ class AnimeWorldProvider : MainAPI() {
 
             var found = false
             for (iframe in iframes) {
-                when {
-                    iframe.contains("zephyrflick") -> {
-                        val videoId = Regex("/video/([a-f0-9]+)").find(iframe)?.groupValues?.get(1) ?: continue
-                        val resolved = resolveZephyrFlick(videoId, subtitleCallback, callback)
-                        if (resolved) found = true
-                    }
-                    iframe.contains("player1.php") -> {
-                        val base64Data = Regex("data=([A-Za-z0-9+/=]+)").find(iframe)?.groupValues?.get(1) ?: continue
-                        val resolved = resolvePlayer1(base64Data, callback)
-                        if (resolved) found = true
-                    }
+                if (iframe.contains("zephyrflick")) {
+                    val videoId = Regex("/video/([a-f0-9]+)").find(iframe)?.groupValues?.get(1) ?: continue
+                    val resolved = resolveZephyrFlick(videoId, subtitleCallback, callback)
+                    if (resolved) found = true
                 }
             }
             found
@@ -274,45 +287,21 @@ class AnimeWorldProvider : MainAPI() {
                 subtitleCallback.invoke(SubtitleFile("en", subtitleUrl))
             }
 
-            val links = M3u8Helper.generateM3u8(
-                source = "Anime World India",
-                streamUrl = m3u8Url,
-                referer = "https://play.zephyrflick.top/",
-                quality = Qualities.Unknown.value,
-                headers = mapOf("Referer" to "https://play.zephyrflick.top/"),
-                name = "Anime World India - ZephyrFlick"
-            )
-            links.forEach { callback.invoke(it) }
+            val link = newExtractorLink(
+                "Anime World India",
+                "Anime World India - ZephyrFlick",
+                m3u8Url,
+                ExtractorLinkType.M3U8
+            ) {
+                this.quality = Qualities.Unknown.value
+                this.referer = "https://play.zephyrflick.top/"
+                this.headers = mapOf("Referer" to "https://play.zephyrflick.top/")
+            }
+            callback.invoke(link)
             true
         } catch (e: Exception) {
             Log.e(TAG, "resolveZephyrFlick: ${e.message}")
             false
         }
     }
-
-    private suspend fun resolvePlayer1(base64Data: String, callback: (ExtractorLink) -> Unit): Boolean {
-        return try {
-            val decoded = java.util.Base64.getDecoder().decode(base64Data).toString(Charsets.UTF_8)
-            val languages = parseJson<List<Player1Language>>(decoded)
-            for (lang in languages) {
-                val link = newExtractorLink(
-                    "Anime World India",
-                    "Anime World India - ${lang.language}",
-                    lang.link,
-                    ExtractorLinkType.VIDEO
-                ) {}
-                callback.invoke(link)
-            }
-            languages.isNotEmpty()
-        } catch (e: Exception) {
-            Log.e(TAG, "resolvePlayer1: ${e.message}")
-            false
-        }
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class Player1Language(
-        @JsonProperty("language") val language: String = "",
-        @JsonProperty("link") val link: String = ""
-    )
 }
