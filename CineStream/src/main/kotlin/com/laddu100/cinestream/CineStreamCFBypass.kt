@@ -491,6 +491,57 @@ suspend fun cineStreamGet(url: String, headers: Map<String, String> = emptyMap()
     return response
 }
 
+// Public entry point — CF-aware HTTP POST with automatic bypass when needed.
+// Used for /api/home and /api/details which require POST.
+suspend fun cineStreamPost(url: String, jsonBody: String, headers: Map<String, String> = emptyMap()): NiceResponse {
+    val targetHost = try {
+        val uri = Uri.parse(url)
+        "${uri.scheme}://${uri.host}"
+    } catch (e: Exception) { url }
+
+    fun buildCfHeaders(): Map<String, String> {
+        val h = headers.toMutableMap()
+        if (!h.containsKey("Accept")) h["Accept"] = "application/json, text/plain, */*"
+        if (!h.containsKey("User-Agent")) {
+            CineStreamCFStore.getUserAgent()?.let { h["User-Agent"] = it }
+                ?: run { h["User-Agent"] = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36" }
+        }
+        CineStreamCFStore.getCookies()?.let { h["Cookie"] = it }
+        return h
+    }
+
+    var response = try {
+        app.post(url, json = jsonBody, headers = buildCfHeaders(), timeout = 30_000L)
+    } catch (e: Exception) {
+        Log.e(TAG, "POST failed: ${e.message}")
+        throw e
+    }
+
+    if (!isCineStreamCloudflareBlocked(response)) return response
+
+    Log.d(TAG, "Cloudflare blocked POST (HTTP ${response.code}) for $url - triggering bypass")
+
+    cfBypassMutex.withLock {
+        val cachedCookies = CineStreamCFStore.getCookies()
+        if (cachedCookies != null) {
+            response = try { app.post(url, json = jsonBody, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
+            if (!isCineStreamCloudflareBlocked(response)) return response
+        }
+        CineStreamCFStore.clear()
+        val bypassSuccess = showCFBypassDialogAndWait(targetHost)
+        if (!bypassSuccess) { Log.e(TAG, "CF bypass failed/cancelled"); return@withLock }
+        for (attempt in 1..2) {
+            response = try { app.post(url, json = jsonBody, headers = buildCfHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
+            if (!isCineStreamCloudflareBlocked(response)) {
+                Log.d(TAG, "POST succeeded after CF bypass (attempt $attempt)")
+                return@withLock
+            }
+            Log.e(TAG, "Still CF-blocked after retry $attempt")
+        }
+    }
+    return response
+}
+
 fun initCineStreamCFBypass() {
     CineStreamCFStore.init()
     Log.d(TAG, "CineStream CF bypass initialized")

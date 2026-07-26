@@ -65,7 +65,7 @@ class CineStreamProvider : MainAPI() {
         Log.d(TAG, "getMainPage: ${request.name} page=$page")
         loadFirebaseUrl()
         return try {
-            val response = cineStreamGet("$mainUrl/api/home", headers = mapOf(
+            val response = cineStreamPost("$mainUrl/api/home", "{}", headers = mapOf(
                 "Content-Type" to "application/json"
             ))
             val decrypted = decryptResponse(response.text) ?: return newHomePageResponse(request.name, emptyList())
@@ -109,9 +109,10 @@ class CineStreamProvider : MainAPI() {
         if (query.isBlank()) return emptyList()
         loadFirebaseUrl()
         return try {
-            val response = app.post("$mainUrl/api/search", json = mapOf("q" to query, "limit" to 40), headers = mapOf(
+            val searchBody = """{"q":${jsonEncode(query)},"limit":40}"""
+            val response = cineStreamPost("$mainUrl/api/search", searchBody, headers = mapOf(
                 "Content-Type" to "application/json"
-            ), timeout = 15_000L)
+            ))
             val searchResp = parseJson<CineStreamSearchResponse>(response.text)
             val results = mutableListOf<SearchResponse>()
             for (movie in searchResp.movies) {
@@ -139,9 +140,10 @@ class CineStreamProvider : MainAPI() {
         if (type !in listOf("movies", "series") || id.isBlank()) return null
 
         return try {
-            val postResponse = app.post("$mainUrl/api/details", json = mapOf("type" to type, "id" to id), headers = mapOf(
+            val detailsBody = """{"type":"$type","id":"$id"}"""
+            val postResponse = cineStreamPost("$mainUrl/api/details", detailsBody, headers = mapOf(
                 "Content-Type" to "application/json"
-            ), timeout = 15_000L)
+            ))
             val decrypted = decryptResponse(postResponse.text) ?: return null
             val detail = parseJson<CineStreamDetail>(decrypted)
             Log.d(TAG, "load: title='${detail.title}' type=$type")
@@ -209,9 +211,10 @@ class CineStreamProvider : MainAPI() {
             val type = parts.getOrNull(0) ?: return false
             val id = parts.getOrNull(1) ?: return false
 
-            val postResponse = app.post("$mainUrl/api/details", json = mapOf("type" to type, "id" to id), headers = mapOf(
+            val detailsBody = """{"type":"$type","id":"$id"}"""
+            val postResponse = cineStreamPost("$mainUrl/api/details", detailsBody, headers = mapOf(
                 "Content-Type" to "application/json"
-            ), timeout = 15_000L)
+            ))
             val decrypted = decryptResponse(postResponse.text) ?: return false
             val detail = parseJson<CineStreamDetail>(decrypted)
 
@@ -283,5 +286,22 @@ class CineStreamProvider : MainAPI() {
             q.contains("360") -> Qualities.P360.value
             else -> Qualities.Unknown.value
         }
+    }
+
+    // JSON-encode a string value (with quotes and escaping).
+    private fun jsonEncode(s: String): String {
+        val sb = StringBuilder("\"")
+        for (ch in s) {
+            when (ch) {
+                '"' -> sb.append("\\\"")
+                '\\' -> sb.append("\\\\")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                else -> if (ch.code < 32) sb.append("\\u%04x".format(ch.code)) else sb.append(ch)
+            }
+        }
+        sb.append("\"")
+        return sb.toString()
     }
 }
