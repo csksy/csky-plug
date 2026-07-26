@@ -1,4 +1,4 @@
-version = 3
+version = 17
 
 android {
     buildFeatures {
@@ -11,11 +11,11 @@ dependencies {
 }
 
 cloudstream {
-    description = "CineStream — Movies & TV Series with multi-audio and subtitles"
+    language = "en"
+    description = "MKVBase - Movie & Series Link Search"
     authors = listOf("csksy")
 
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
-    language = "en"
-    iconUrl = "https://thecinestream.pages.dev/images/favicon.jpeg"
+    iconUrl = "https://zenkai.to/assets/images/logo/favicon.png"
 }

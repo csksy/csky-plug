@@ -41,7 +41,7 @@ data class CineStreamItem(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class CineStreamGenre(
-    @JsonProperty("id") val id: Long? = null,
+    @JsonProperty("id") val id: String? = null,
     @JsonProperty("name") val name: String
 )
 
