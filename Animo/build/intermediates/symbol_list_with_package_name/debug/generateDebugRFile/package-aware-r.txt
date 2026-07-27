@@ -1,2 +1,0 @@
-com.laddu100
-string animo_app_name
