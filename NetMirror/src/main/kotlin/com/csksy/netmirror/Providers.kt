@@ -83,7 +83,14 @@ abstract class NetMirrorBaseProvider : MainAPI() {
         return try {
             ensureCookie()
             val url = "$mainUrl/mobile/home?app=1"
-            val response = cfGet(url, headers = catalogHeaders, referer = url, cookies = cookies())
+            var response = cfGet(url, headers = catalogHeaders, referer = url, cookies = cookies())
+            if (response.code == 404 || response.code == 401) {
+                Log.d(TAG, "$name: HTTP ${response.code}, retrying bypass")
+                cookieValue = ""
+                NetMirrorStorage.clearCookie()
+                ensureCookie()
+                response = cfGet(url, headers = catalogHeaders, referer = url, cookies = cookies())
+            }
             if (response.code != 200) {
                 Log.e(TAG, "$name: getMainPage HTTP ${response.code}")
                 return newHomePageResponse(emptyList(), false)

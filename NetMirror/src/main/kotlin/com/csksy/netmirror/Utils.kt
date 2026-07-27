@@ -40,11 +40,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import okhttp3.FormBody
 import okhttp3.Interceptor
-import okhttp3.Request
 import java.util.Base64
-import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.reflect.KClass
@@ -177,8 +174,10 @@ private class CursorPos { var x: Float = 0f; var y: Float = 0f }
 
 var appContext: Context? = null
 
-private suspend fun solveCfInWebView(targetUrl: String): String? {
-    val ctx = CommonActivity.activity ?: appContext ?: return null
+private const val BYPASS_TIMEOUT_MS = 60_000L
+
+suspend fun solveCfAndGetCookies(targetUrl: String): List<String> {
+    val ctx = CommonActivity.activity ?: appContext ?: return emptyList()
     val targetHost = hostOf(targetUrl)
 
     return withContext(Dispatchers.Main) {
@@ -198,44 +197,50 @@ private suspend fun solveCfInWebView(targetUrl: String): String? {
 
             val resolved = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
-            val cfRegex = Regex("cf_clearance=([^;]+)")
 
-            fun finishWith(cookie: String?) {
+            fun finishWith(cookies: List<String>) {
                 if (!resolved.compareAndSet(false, true)) return
                 handler.removeCallbacksAndMessages(null)
                 try { wv.destroy() } catch (_: Exception) {}
                 try { (wv.tag as? AlertDialog)?.dismiss() } catch (_: Exception) {}
-                if (cont.isActive) cont.resume(cookie)
+                if (cont.isActive) cont.resume(cookies)
             }
 
-            fun tryExtract() {
-                if (resolved.get()) return
-                val cookies = cookieManager.getCookie(targetHost).orEmpty()
-                val cf = cfRegex.find(cookies)?.groupValues?.getOrNull(1)
-                if (!cf.isNullOrEmpty()) {
-                    NetMirrorStorage.saveCfCookie(targetHost, cf)
-                    finishWith(cf)
-                }
+            fun tryExtract(): List<String> {
+                cookieManager.flush()
+                val cookies = cookieManager.getCookie(targetHost)?.split("; ")?.filter { it.isNotEmpty() } ?: emptyList()
+                return cookies
             }
 
             val poller = object : Runnable {
                 override fun run() {
-                    tryExtract()
-                    if (!resolved.get()) handler.postDelayed(this, CF_POLL_MS)
+                    if (resolved.get()) return
+                    val cookies = tryExtract()
+                    val hasCf = cookies.any { it.startsWith("cf_clearance=") }
+                    val hasTHash = cookies.any { it.startsWith("t_hash_t=") }
+                    if (hasCf && hasTHash) {
+                        finishWith(cookies)
+                        return
+                    }
+                    handler.postDelayed(this, CF_POLL_MS)
                 }
             }
 
             wv.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = false
                 override fun onPageFinished(view: WebView, url: String) {
-                    tryExtract()
-                    if (!resolved.get()) handler.postDelayed(poller, CF_POLL_MS)
+                    val cookies = tryExtract()
+                    val hasCf = cookies.any { it.startsWith("cf_clearance=") }
+                    val hasTHash = cookies.any { it.startsWith("t_hash_t=") }
+                    if (hasCf && hasTHash) {
+                        finishWith(cookies)
+                    } else {
+                        handler.postDelayed(poller, CF_POLL_MS)
+                    }
                 }
             }
 
             val density = ctx.resources.displayMetrics.density
-            val wm = ctx.getSystemService("window") as WindowManager
-            val display = wm.defaultDisplay
             val screenW = ctx.resources.displayMetrics.widthPixels
             val screenH = ctx.resources.displayMetrics.heightPixels
             val dialogW = (screenW * 0.95f).toInt()
@@ -302,7 +307,7 @@ private suspend fun solveCfInWebView(targetUrl: String): String? {
                 setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
             }
             wrapper.addView(TextView(ctx).apply {
-                text = "Solving Cloudflare... Please wait."
+                text = "Loading NetMirror... Please wait."
                 setTextColor(Color.WHITE)
                 textSize = 14f
                 setPadding(0, 0, 0, (8 * density).toInt())
@@ -320,8 +325,8 @@ private suspend fun solveCfInWebView(targetUrl: String): String? {
             }
             wv.tag = dialog
 
-            dialog.setOnDismissListener { finishWith(null) }
-            handler.postDelayed({ finishWith(null) }, CF_TIMEOUT_MS)
+            dialog.setOnDismissListener { finishWith(emptyList()) }
+            handler.postDelayed({ finishWith(tryExtract()) }, BYPASS_TIMEOUT_MS)
 
             cont.invokeOnCancellation {
                 handler.removeCallbacksAndMessages(null)
@@ -334,6 +339,7 @@ private suspend fun solveCfInWebView(targetUrl: String): String? {
         }
     }
 }
+
 
 private fun buildCfHeaders(url: String, extra: Map<String, String> = emptyMap(), extraCookies: Map<String, String> = emptyMap()): Map<String, String> {
     val host = hostOf(url)
@@ -363,11 +369,20 @@ private suspend fun ensureCfBypass(url: String, response: NiceResponse): String?
         if (!existing.isNullOrEmpty() && System.currentTimeMillis() - ts < CF_COOKIE_TTL_MS) {
             return@withLock existing
         }
-        val solved = solveCfInWebView(host)
-        if (solved != null) {
-            NetMirrorStorage.saveCfCookie(host, solved)
+        val cookies = solveCfAndGetCookies(host)
+        val cfCookie = cookies.firstOrNull { it.startsWith("cf_clearance=") }
+            ?.substringAfter("cf_clearance=")
+            ?.substringBefore(";")
+        if (!cfCookie.isNullOrEmpty()) {
+            NetMirrorStorage.saveCfCookie(host, cfCookie)
         }
-        solved
+        val tHash = cookies.firstOrNull { it.startsWith("t_hash_t=") }
+            ?.substringAfter("t_hash_t=")
+            ?.substringBefore(";")
+        if (!tHash.isNullOrEmpty()) {
+            NetMirrorStorage.saveCookie(tHash)
+        }
+        cfCookie
     }
 }
 
@@ -411,84 +426,25 @@ suspend fun bypass(mainUrl: String): String {
         return savedCookie
     }
 
-    val verifyUrl = "https://net52.cc/verify.php"
-    val bypassHeaders = mapOf(
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language" to "en-US,en;q=0.9",
-        "Cache-Control" to "max-age=0",
-        "Connection" to "keep-alive",
-        "Origin" to "https://net22.cc",
-        "Referer" to "https://net22.cc/verify2",
-        "sec-ch-ua" to "\"Google Chrome\";v=\"124\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"124\"",
-        "sec-ch-ua-mobile" to "?0",
-        "sec-ch-ua-platform" to "\"Windows\"",
-        "Sec-Fetch-Dest" to "document",
-        "Sec-Fetch-Mode" to "navigate",
-        "Sec-Fetch-Site" to "same-origin",
-        "Sec-Fetch-User" to "?1",
-        "Upgrade-Insecure-Requests" to "1",
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
-
+    val targetUrl = "$mainUrl/home"
     return try {
-        val client = http.baseClient.newBuilder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .build()
-
-        fun doPost(cfCookie: String?): okhttp3.Response {
-            val cookieParts = mutableListOf<String>()
-            if (!cfCookie.isNullOrEmpty()) {
-                cookieParts.add("cf_clearance=$cfCookie")
-            }
-            val formBody = FormBody.Builder()
-                .add("g-recaptcha-response", UUID.randomUUID().toString())
-                .build()
-            val request = Request.Builder()
-                .url(verifyUrl)
-                .post(formBody)
-                .apply {
-                    bypassHeaders.forEach { (k, v) -> addHeader(k, v) }
-                    if (cookieParts.isNotEmpty()) {
-                        addHeader("Cookie", cookieParts.joinToString("; "))
-                    }
-                }
-                .build()
-            return client.newCall(request).execute()
+        val cookies = solveCfAndGetCookies(targetUrl)
+        val tHash = cookies.firstOrNull { it.startsWith("t_hash_t=") }
+            ?.substringAfter("t_hash_t=")
+            ?.substringBefore(";")
+            .orEmpty()
+        if (tHash.isNotEmpty()) {
+            NetMirrorStorage.saveCookie(tHash)
         }
-
-        var response = doPost(null)
-        var needCf = response.code == 403 || response.code == 503
-        if (needCf) {
-            response.close()
-            val cfHost = hostOf(verifyUrl)
-            val (existing, ts) = NetMirrorStorage.getCfCookie(cfHost)
-            var cfCookie: String? = if (!existing.isNullOrEmpty() && System.currentTimeMillis() - ts < CF_COOKIE_TTL_MS) existing else null
-            if (cfCookie == null) {
-                cfCookie = solveCfInWebView(cfHost)
-                if (!cfCookie.isNullOrEmpty()) {
-                    NetMirrorStorage.saveCfCookie(cfHost, cfCookie)
-                }
-            }
-            if (!cfCookie.isNullOrEmpty()) {
-                response = doPost(cfCookie)
-            }
+        val cfClearance = cookies.firstOrNull { it.startsWith("cf_clearance=") }
+            ?.substringAfter("cf_clearance=")
+            ?.substringBefore(";")
+        if (!cfClearance.isNullOrEmpty()) {
+            NetMirrorStorage.saveCfCookie(hostOf(targetUrl), cfClearance)
         }
-
-        response.use { resp ->
-            val newCookie = resp.headers("Set-Cookie")
-                .firstOrNull { it.startsWith("t_hash_t=") }
-                ?.substringAfter("t_hash_t=")
-                ?.substringBefore(";")
-                .orEmpty()
-            if (newCookie.isNotEmpty()) {
-                NetMirrorStorage.saveCookie(newCookie)
-            }
-            newCookie
-        }
+        tHash
     } catch (e: Exception) {
         Log.e(TAG, "bypass failed: ${e.message}")
-        NetMirrorStorage.clearCookie()
         ""
     }
 }
