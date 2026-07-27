@@ -12,3 +12,6 @@ local.properties
 *.class
 build/
 .github/workflows/build.yml
+*.class
+build/
+.github/workflows/build.yml
