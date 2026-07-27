@@ -15,3 +15,4 @@ build/
 *.class
 build/
 .github/workflows/build.yml
+.kotlin/
