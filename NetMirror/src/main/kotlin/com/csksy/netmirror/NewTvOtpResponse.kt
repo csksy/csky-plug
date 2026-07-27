@@ -1,4 +1,4 @@
-package com.horis.cncverse
+package com.csksy.netmirror
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 
