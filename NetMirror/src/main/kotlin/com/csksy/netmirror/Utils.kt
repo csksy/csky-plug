@@ -178,7 +178,7 @@ private class CursorPos { var x: Float = 0f; var y: Float = 0f }
 var appContext: Context? = null
 
 private suspend fun solveCfInWebView(targetUrl: String): String? {
-    val ctx = appContext ?: CommonActivity.activity ?: return null
+    val ctx = CommonActivity.activity ?: appContext ?: return null
     val targetHost = hostOf(targetUrl)
 
     return withContext(Dispatchers.Main) {
@@ -335,15 +335,22 @@ private suspend fun solveCfInWebView(targetUrl: String): String? {
     }
 }
 
-private fun buildCfHeaders(url: String, extra: Map<String, String> = emptyMap()): Map<String, String> {
+private fun buildCfHeaders(url: String, extra: Map<String, String> = emptyMap(), extraCookies: Map<String, String> = emptyMap()): Map<String, String> {
     val host = hostOf(url)
     val h = extra.toMutableMap()
     if (!h.containsKey("User-Agent")) {
         h["User-Agent"] = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     }
     val (cfCookie, ts) = NetMirrorStorage.getCfCookie(host)
+    val cookieParts = mutableListOf<String>()
     if (!cfCookie.isNullOrEmpty() && System.currentTimeMillis() - ts < CF_COOKIE_TTL_MS) {
-        h["Cookie"] = "cf_clearance=$cfCookie"
+        cookieParts.add("cf_clearance=$cfCookie")
+    }
+    for ((k, v) in extraCookies) {
+        cookieParts.add("$k=$v")
+    }
+    if (cookieParts.isNotEmpty()) {
+        h["Cookie"] = cookieParts.joinToString("; ")
     }
     return h
 }
@@ -371,13 +378,13 @@ suspend fun cfGet(
     cookies: Map<String, String>? = null,
     allowRedirects: Boolean = true
 ): NiceResponse {
-    val h = buildCfHeaders(url, headers)
-    var response = http.get(url, headers = h, referer = referer, cookies = cookies ?: emptyMap(), allowRedirects = allowRedirects, timeout = 30_000L)
+    val h = buildCfHeaders(url, headers, cookies ?: emptyMap())
+    var response = http.get(url, headers = h, referer = referer, allowRedirects = allowRedirects, timeout = 30_000L)
     if (!isCloudflareBlocked(response)) return response
 
     ensureCfBypass(url, response) ?: return response
-    val retryHeaders = buildCfHeaders(url, headers)
-    return http.get(url, headers = retryHeaders, referer = referer, cookies = cookies ?: emptyMap(), allowRedirects = allowRedirects, timeout = 30_000L)
+    val retryHeaders = buildCfHeaders(url, headers, cookies ?: emptyMap())
+    return http.get(url, headers = retryHeaders, referer = referer, allowRedirects = allowRedirects, timeout = 30_000L)
 }
 
 suspend fun cfPost(
@@ -388,13 +395,13 @@ suspend fun cfPost(
     cookies: Map<String, String>? = null,
     allowRedirects: Boolean = false
 ): NiceResponse {
-    val h = buildCfHeaders(url, headers)
-    var response = http.post(url, data = mapOf("" to body), headers = h, referer = referer, cookies = cookies ?: emptyMap(), allowRedirects = allowRedirects, timeout = 30_000L)
+    val h = buildCfHeaders(url, headers, cookies ?: emptyMap())
+    var response = http.post(url, data = mapOf("" to body), headers = h, referer = referer, allowRedirects = allowRedirects, timeout = 30_000L)
     if (!isCloudflareBlocked(response)) return response
 
     ensureCfBypass(url, response) ?: return response
-    val retryHeaders = buildCfHeaders(url, headers)
-    return http.post(url, data = mapOf("" to body), headers = retryHeaders, referer = referer, cookies = cookies ?: emptyMap(), allowRedirects = allowRedirects, timeout = 30_000L)
+    val retryHeaders = buildCfHeaders(url, headers, cookies ?: emptyMap())
+    return http.post(url, data = mapOf("" to body), headers = retryHeaders, referer = referer, allowRedirects = allowRedirects, timeout = 30_000L)
 }
 
 @Suppress("UNUSED_PARAMETER")
@@ -404,13 +411,12 @@ suspend fun bypass(mainUrl: String): String {
         return savedCookie
     }
 
-    val headers = mapOf(
+    val verifyUrl = "https://net52.cc/verify.php"
+    val bypassHeaders = mapOf(
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Encoding" to "gzip, deflate, br",
         "Accept-Language" to "en-US,en;q=0.9",
         "Cache-Control" to "max-age=0",
         "Connection" to "keep-alive",
-        "Content-Type" to "application/x-www-form-urlencoded",
         "Origin" to "https://net22.cc",
         "Referer" to "https://net22.cc/verify2",
         "sec-ch-ua" to "\"Google Chrome\";v=\"124\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"124\"",
@@ -424,19 +430,62 @@ suspend fun bypass(mainUrl: String): String {
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 
-    val formBody = "g-recaptcha-response=${UUID.randomUUID()}"
-
     return try {
-        val response = cfPost("https://net52.cc/verify.php", formBody, headers = headers, allowRedirects = false)
-        val newCookie = response.headers.values("Set-Cookie")
-            .firstOrNull { it.startsWith("t_hash_t=") }
-            ?.substringAfter("t_hash_t=")
-            ?.substringBefore(";")
-            .orEmpty()
-        if (newCookie.isNotEmpty()) {
-            NetMirrorStorage.saveCookie(newCookie)
+        val client = http.baseClient.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+
+        fun doPost(cfCookie: String?): okhttp3.Response {
+            val cookieParts = mutableListOf<String>()
+            if (!cfCookie.isNullOrEmpty()) {
+                cookieParts.add("cf_clearance=$cfCookie")
+            }
+            val formBody = FormBody.Builder()
+                .add("g-recaptcha-response", UUID.randomUUID().toString())
+                .build()
+            val request = Request.Builder()
+                .url(verifyUrl)
+                .post(formBody)
+                .apply {
+                    bypassHeaders.forEach { (k, v) -> addHeader(k, v) }
+                    if (cookieParts.isNotEmpty()) {
+                        addHeader("Cookie", cookieParts.joinToString("; "))
+                    }
+                }
+                .build()
+            return client.newCall(request).execute()
         }
-        newCookie
+
+        var response = doPost(null)
+        var needCf = response.code == 403 || response.code == 503
+        if (needCf) {
+            response.close()
+            val cfHost = hostOf(verifyUrl)
+            val (existing, ts) = NetMirrorStorage.getCfCookie(cfHost)
+            var cfCookie: String? = if (!existing.isNullOrEmpty() && System.currentTimeMillis() - ts < CF_COOKIE_TTL_MS) existing else null
+            if (cfCookie == null) {
+                cfCookie = solveCfInWebView(cfHost)
+                if (!cfCookie.isNullOrEmpty()) {
+                    NetMirrorStorage.saveCfCookie(cfHost, cfCookie)
+                }
+            }
+            if (!cfCookie.isNullOrEmpty()) {
+                response = doPost(cfCookie)
+            }
+        }
+
+        response.use { resp ->
+            val newCookie = resp.headers("Set-Cookie")
+                .firstOrNull { it.startsWith("t_hash_t=") }
+                ?.substringAfter("t_hash_t=")
+                ?.substringBefore(";")
+                .orEmpty()
+            if (newCookie.isNotEmpty()) {
+                NetMirrorStorage.saveCookie(newCookie)
+            }
+            newCookie
+        }
     } catch (e: Exception) {
         Log.e(TAG, "bypass failed: ${e.message}")
         NetMirrorStorage.clearCookie()

@@ -72,21 +72,37 @@ abstract class NetMirrorBaseProvider : MainAPI() {
     private fun posterHeaders(): Map<String, String> = mapOf("Referer" to "$mainUrl/home")
 
     private suspend fun ensureCookie() {
+        if (cookieValue.isNotEmpty()) return
+        cookieValue = bypass(mainUrl)
         if (cookieValue.isEmpty()) {
-            cookieValue = bypass(mainUrl)
+            Log.e(TAG, "$name: bypass returned empty cookie")
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        ensureCookie()
-        val url = "$mainUrl/mobile/home?app=1"
-        val doc = cfGet(url, headers = catalogHeaders, referer = url, cookies = cookies()).document
-        val items = doc.select(".tray-container, #top10").map { el ->
-            val name = el.select("h2, span").text()
-            val list = el.select("article, .top10-post").mapNotNull { toSearchResult(it) }
-            HomePageList(name, list, false)
+        return try {
+            ensureCookie()
+            val url = "$mainUrl/mobile/home?app=1"
+            val response = cfGet(url, headers = catalogHeaders, referer = url, cookies = cookies())
+            if (response.code != 200) {
+                Log.e(TAG, "$name: getMainPage HTTP ${response.code}")
+                return newHomePageResponse(emptyList(), false)
+            }
+            val doc = response.document
+            val items = doc.select(".tray-container, #top10").map { el ->
+                val name = el.select("h2, span").text()
+                val list = el.select("article, .top10-post").mapNotNull { toSearchResult(it) }
+                HomePageList(name, list, false)
+            }
+            if (items.isEmpty()) {
+                Log.d(TAG, "$name: home page empty, cookie may be invalid")
+                cookieValue = ""
+            }
+            newHomePageResponse(items, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "$name getMainPage: ${e.message}")
+            newHomePageResponse(emptyList(), false)
         }
-        return newHomePageResponse(items, false)
     }
 
     private fun toSearchResult(element: Element): SearchResponse? {
@@ -100,24 +116,30 @@ abstract class NetMirrorBaseProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        ensureCookie()
-        val url = "$mainUrl/mobile/$urlPrefix/search.php?s=$query&t=${APIHolder.unixTime}"
-        val resp = cfGet(url, referer = "$mainUrl/home", cookies = cookies())
-        val data = resp.parsed<SearchData>()
-        return data.searchResult.map { result ->
-            newAnimeSearchResponse(result.t, Id(result.id).toJson()) {
-                posterUrl = "$posterBase${result.id}.jpg"
-                posterHeaders = posterHeaders()
+        return try {
+            ensureCookie()
+            val url = "$mainUrl/mobile/$urlPrefix/search.php?s=$query&t=${APIHolder.unixTime}"
+            val resp = cfGet(url, referer = "$mainUrl/home", cookies = cookies())
+            val data = resp.parsed<SearchData>()
+            data.searchResult.map { result ->
+                newAnimeSearchResponse(result.t, Id(result.id).toJson()) {
+                    posterUrl = "$posterBase${result.id}.jpg"
+                    posterHeaders = posterHeaders()
+                }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "$name search: ${e.message}")
+            emptyList()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        ensureCookie()
-        val id = parseJson<Id>(url).id
-        val postUrl = "$mainUrl/mobile/$urlPrefix/post.php?id=$id&t=${APIHolder.unixTime}"
-        val resp = cfGet(postUrl, headers = catalogHeaders, referer = "$mainUrl/home", cookies = cookies())
-        val data = resp.parsed<PostData>()
+        return try {
+            ensureCookie()
+            val id = parseJson<Id>(url).id
+            val postUrl = "$mainUrl/mobile/$urlPrefix/post.php?id=$id&t=${APIHolder.unixTime}"
+            val resp = cfGet(postUrl, headers = catalogHeaders, referer = "$mainUrl/home", cookies = cookies())
+            val data = resp.parsed<PostData>()
 
         val cast: List<ActorData> = data.cast
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
@@ -175,6 +197,10 @@ abstract class NetMirrorBaseProvider : MainAPI() {
             duration = runtimeMinutes
             contentRating = data.ua
             recommendations = suggest
+        }
+        } catch (e: Exception) {
+            Log.e(TAG, "$name load: ${e.message}")
+            null
         }
     }
 
