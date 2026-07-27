@@ -466,6 +466,7 @@ val INFO_QUERY = """
     query (${'$'}id: Int) {
         Media(id: ${'$'}id, type: ANIME) {
             id
+            idMal
             title { romaji english native }
             description(asHtml: false)
             coverImage { large extraLarge color }
@@ -590,6 +591,7 @@ data class AniListPage(@JsonProperty("media") val media: List<AniListMedia>? = n
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniListMedia(
     @JsonProperty("id") val id: Int? = null,
+    @JsonProperty("idMal") val idMal: Int? = null,
     @JsonProperty("title") val title: AniListTitle? = null,
     @JsonProperty("description") val description: String? = null,
     @JsonProperty("coverImage") val coverImage: AniListCoverImage? = null,

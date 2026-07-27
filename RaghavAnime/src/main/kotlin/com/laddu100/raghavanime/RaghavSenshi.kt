@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.api.Log
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -285,6 +286,24 @@ class RaghavSenshi : MainAPI() {
             if (meta?.score != null) this.score = Score.from10(meta.score.toString())
             if (subEps.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEps)
             if (dubEps.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEps)
+        }
+    }
+
+    suspend fun loadLinksByMalId(
+        malId: Int,
+        episode: Int,
+        isDub: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        mainUrl = FirebaseDomainHelper.getDomain("senshi") ?: mainUrl
+        val streamType = if (isDub) "dub" else "sub"
+        val data = SenshiEpData(malId, episode, streamType).toJson()
+        return try {
+            loadLinks(data, false, subtitleCallback, callback)
+        } catch (e: Exception) {
+            Log.d(TAG, "loadLinksByMalId: malId=$malId ep=$episode type=$streamType failed - ${e.message}")
+            false
         }
     }
 

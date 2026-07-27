@@ -12,10 +12,11 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.api.Log
 import java.net.URLEncoder
 
 class RaghavAnidap : MainAPI() {
-    override var mainUrl = "https://anidap.se"
+    override var mainUrl = "https://anidap.lol"
     override var name = "Anidap"
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
@@ -230,34 +231,78 @@ class RaghavAnidap : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
+    suspend fun loadLinksByAnilistId(
+        anilistId: Int,
+        episode: Int,
+        isDub: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val cleanData = data.removePrefix("$mainUrl/").removePrefix("$mainUrl|").trim()
-        val parts = cleanData.split("|")
-        if (parts.size < 5) {
+        mainUrl = FirebaseDomainHelper.getDomain("anidap") ?: mainUrl
+        val detailRes = try {
+            app.get("$mainUrl/api/anime/$anilistId", headers = baseHeaders, timeout = 30_000L)
+        } catch (e: Exception) {
+            Log.d(TAG, "loadLinksByAnilistId: detail fetch failed - ${e.message}")
             return false
         }
-        val slug = parts[0]
-        val epNum = parts[1]
-        val type = parts[2]
-        val providerIds = parts[3].split(",").filter { it.isNotBlank() }
-        val tipsMap: Map<String, String> = if (parts[4].isNotBlank()) {
-            parts[4].split(";;").mapNotNull { entry ->
-                val eqIdx = entry.indexOf('=')
-                if (eqIdx > 0) entry.substring(0, eqIdx) to entry.substring(eqIdx + 1)
-                else null
-            }.toMap()
-        } else emptyMap()
+        val detailRoot = try {
+            parseJson<com.fasterxml.jackson.databind.JsonNode>(detailRes.text)
+        } catch (e: Exception) {
+            Log.d(TAG, "loadLinksByAnilistId: detail parse failed - ${e.message}")
+            return false
+        }
+        val dataNode = detailRoot.path("data")
+        val detail = try {
+            parseJson<AnimeDetail>(dataNode.toString())
+        } catch (e: Exception) {
+            Log.d(TAG, "loadLinksByAnilistId: AnimeDetail parse failed - ${e.message}")
+            return false
+        }
+        val slug = detail.slug ?: detail.id ?: return false
+        val type = if (isDub) "dub" else "sub"
 
+        val serversUrl = "$chadUrl/servers?id=$slug&epNum=$episode"
+        val serversRes = try {
+            cfAppGetAnidap(
+                serversUrl,
+                headers = mapOf("Referer" to "$mainUrl/", "Accept" to "application/json")
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "loadLinksByAnilistId: servers fetch failed - ${e.message}")
+            return false
+        }
+        val servers = if (serversRes.code == 200 && !serversRes.text.contains("bot_detected") && !serversRes.text.contains("\"error\"")) {
+            try { parseJson<ServersResponse>(serversRes.text) } catch (e: Exception) { ServersResponse() }
+        } else ServersResponse()
+
+        val providerList = (if (isDub) servers.dubProviders else servers.subProviders)
+            ?.filter { it.id.isNotBlank() } ?: emptyList()
+        if (providerList.isEmpty()) {
+            Log.d(TAG, "loadLinksByAnilistId: no $type providers for alId=$anilistId ep=$episode")
+            return false
+        }
+
+        val providerIdsCsv = providerList.joinToString(",") { it.id }
+        val tipsMap = providerList.associate { it.id to (it.tip ?: "") }
+
+        return fetchSourcesForSlug(slug, episode, type, providerIdsCsv, tipsMap, subtitleCallback, callback)
+    }
+
+    private suspend fun fetchSourcesForSlug(
+        slug: String,
+        episode: Int,
+        type: String,
+        providerIdsCsv: String,
+        tipsMap: Map<String, String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val providerIds = providerIdsCsv.split(",").filter { it.isNotBlank() }
         if (providerIds.isEmpty()) return false
+        val epNum = episode.toString()
 
         var found = false
         for (providerId in providerIds) {
-            val tip = tipsMap[providerId]
             try {
                 val sourcesUrl = "$chadUrl/sources?id=$slug&epNum=$epNum&type=$type&providerId=$providerId"
                 val sourcesRes = cfAppGetAnidap(
@@ -353,9 +398,37 @@ class RaghavAnidap : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
+                Log.d(TAG, "fetchSourcesForSlug: provider=$providerId failed - ${e.message}")
             }
         }
 
         return found
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val cleanData = data.removePrefix("$mainUrl/").removePrefix("$mainUrl|").trim()
+        val parts = cleanData.split("|")
+        if (parts.size < 5) {
+            return false
+        }
+        val slug = parts[0]
+        val epNum = parts[1]
+        val type = parts[2]
+        val providerIdsCsv = parts[3]
+        val tipsMap: Map<String, String> = if (parts[4].isNotBlank()) {
+            parts[4].split(";;").mapNotNull { entry ->
+                val eqIdx = entry.indexOf('=')
+                if (eqIdx > 0) entry.substring(0, eqIdx) to entry.substring(eqIdx + 1)
+                else null
+            }.toMap()
+        } else emptyMap()
+
+        val epNumInt = epNum.toIntOrNull() ?: return false
+        return fetchSourcesForSlug(slug, epNumInt, type, providerIdsCsv, tipsMap, subtitleCallback, callback)
     }
 }

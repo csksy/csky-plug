@@ -28,6 +28,7 @@ import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.api.Log
 import org.jsoup.nodes.Document
 
 class AniDb : MainAPI() {
@@ -80,6 +81,68 @@ class AniDb : MainAPI() {
         mainUrl = FirebaseDomainHelper.getDomain("anidb") ?: mainUrl
         val browseRes = cfAppGet("$mainUrl/browse?q=$query").document
         return searchResponseBuilder(browseRes).toNewSearchResponseList()
+    }
+
+    suspend fun loadLinksByAnilistId(
+        anilistId: Int,
+        title: String,
+        jpTitle: String?,
+        episode: Int,
+        isDub: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        mainUrl = FirebaseDomainHelper.getDomain("anidb") ?: mainUrl
+        val searchQueries = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
+        if (searchQueries.isEmpty()) return false
+
+        val maxCandidatesPerQuery = 5
+        var matchedUrl: String? = null
+        for (q in searchQueries) {
+            val searchList = try {
+                search(q, 1).items
+            } catch (e: Throwable) {
+                Log.d("AniDb", "loadLinksByAnilistId: search '$q' failed - ${e.message}")
+                continue
+            }
+            for (r in searchList.take(maxCandidatesPerQuery)) {
+                val candidateUrl = r.url
+                val doc = try {
+                    cfAppGet(candidateUrl).document
+                } catch (e: Throwable) {
+                    continue
+                }
+                val candidateAnilistId = doc.selectFirst("a[href*=anilist.co/anime/]")?.attr("href")?.substringAfter("anime/")?.substringBefore("/")?.toIntOrNull()
+                if (candidateAnilistId == anilistId) {
+                    matchedUrl = candidateUrl
+                    break
+                }
+            }
+            if (matchedUrl != null) break
+        }
+        if (matchedUrl == null) {
+            Log.d("AniDb", "loadLinksByAnilistId: no candidate matched anilistId=$anilistId")
+            return false
+        }
+
+        val loadResult = try {
+            load(matchedUrl)
+        } catch (e: Throwable) {
+            Log.d("AniDb", "loadLinksByAnilistId: load($matchedUrl) failed - ${e.message}")
+            return false
+        } as? com.lagradost.cloudstream3.AnimeLoadResponse ?: return false
+
+        val epKey = if (isDub) DubStatus.Dubbed else DubStatus.Subbed
+        val matchedEp = loadResult.episodes?.get(epKey)?.find { it.episode == episode } ?: run {
+            Log.d("AniDb", "loadLinksByAnilistId: episode $episode not found for $matchedUrl")
+            return false
+        }
+        return try {
+            loadLinks(matchedEp.data, false, subtitleCallback, callback)
+        } catch (e: Throwable) {
+            Log.d("AniDb", "loadLinksByAnilistId: loadLinks failed - ${e.message}")
+            false
+        }
     }
 
     override suspend fun load(url: String): LoadResponse? {

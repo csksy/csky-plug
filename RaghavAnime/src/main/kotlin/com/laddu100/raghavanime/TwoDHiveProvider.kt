@@ -12,6 +12,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Deferred
+import com.lagradost.api.Log
 
 class RaghavTwoDHive : MainAPI() {
     override var mainUrl = "https://2dhive.com"
@@ -262,6 +263,25 @@ class RaghavTwoDHive : MainAPI() {
             }
         } catch (_: Exception) {}
         return "https://anicloud-hls-proxy.n3779118.workers.dev/m3u8-proxy"
+    }
+
+    suspend fun loadLinksByMalId(
+        malId: Int,
+        episode: Int,
+        isDub: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        mainUrl = FirebaseDomainHelper.getDomain("twodhive") ?: mainUrl
+        val epUrl = "$mainUrl/episode?anime=$malId&ep_num=$episode"
+        val type = if (isDub) "dub" else "sub"
+        val data = "$epUrl|$type"
+        return try {
+            loadLinks(data, false, subtitleCallback, callback)
+        } catch (e: Exception) {
+            Log.d("RaghavTwoDHive", "loadLinksByMalId: malId=$malId ep=$episode type=$type failed - ${e.message}")
+            false
+        }
     }
 
     override suspend fun loadLinks(

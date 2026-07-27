@@ -11,6 +11,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.api.Log
 import java.net.URLEncoder
 
 class RaghavAnimo : MainAPI() {
@@ -149,10 +150,73 @@ class RaghavAnimo : MainAPI() {
 
     data class AnimoEpData(val animeId: Int, val episodeNum: Int, val isDub: Boolean)
 
+    suspend fun loadLinksByAnilistId(
+        anilistId: Int,
+        title: String,
+        jpTitle: String?,
+        episode: Int,
+        isDub: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        mainUrl = FirebaseDomainHelper.getDomain("animo") ?: mainUrl
+        val searchQueries = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
+        if (searchQueries.isEmpty()) return false
+
+        var matchedAnimeId: Int? = null
+        for (q in searchQueries) {
+            val encoded = try { URLEncoder.encode(q, "UTF-8") } catch (e: Exception) { continue }
+            val text = try {
+                app.get("$apiUrl/anime/search?keyword=$encoded", headers = apiHeaders, timeout = 15_000L).text
+            } catch (e: Exception) {
+                Log.d("RaghavAnimo", "loadLinksByAnilistId: search '$q' failed - ${e.message}")
+                continue
+            }
+            val resp = try { parseJson<SearchResp>(text) } catch (e: Exception) { continue }
+            val items = resp.data ?: emptyList()
+            val match = items.firstOrNull { it.al_id == anilistId }
+            if (match?.id != null) {
+                matchedAnimeId = match.id
+                break
+            }
+        }
+        if (matchedAnimeId == null) {
+            Log.d("RaghavAnimo", "loadLinksByAnilistId: no Animo result with al_id=$anilistId")
+            return false
+        }
+
+        val epText = try {
+            app.get("$apiUrl/anime/$matchedAnimeId/episodes", headers = apiHeaders, timeout = 15_000L).text
+        } catch (e: Exception) {
+            Log.d("RaghavAnimo", "loadLinksByAnilistId: episodes fetch failed - ${e.message}")
+            return false
+        }
+        val epResp = try { parseJson<EpisodesResp>(epText) } catch (e: Exception) { return false }
+        val episodes = epResp.data ?: emptyList()
+        val matchedEp = episodes.firstOrNull { it.number == episode } ?: run {
+            Log.d("RaghavAnimo", "loadLinksByAnilistId: episode $episode not found for animeId=$matchedAnimeId")
+            return false
+        }
+
+        val supportsDub = matchedEp.dub == true
+        val supportsSub = matchedEp.sub == true
+        if (isDub && !supportsDub) {
+            Log.d("RaghavAnimo", "loadLinksByAnilistId: dub not available for ep $episode")
+            return false
+        }
+        if (!isDub && !supportsSub) {
+            Log.d("RaghavAnimo", "loadLinksByAnilistId: sub not available for ep $episode")
+            return false
+        }
+
+        val epData = AnimoEpData(matchedAnimeId, episode, isDub).toJson()
+        return loadLinks(epData, false, subtitleCallback, callback)
+    }
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class SearchResp(val success: Boolean? = null, val data: List<SearchItem>? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class SearchItem(val id: Int? = null, val titles: Title? = null, val images: Image? = null)
+    data class SearchItem(val id: Int? = null, val mal_id: Int? = null, val al_id: Int? = null, val titles: Title? = null, val images: Image? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class Title(val romaji: String? = null, val english: String? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
