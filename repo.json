@@ -1,0 +1,9 @@
+{
+  "name": "csky plug",
+  "iconUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQj4rS0JsbH1yeTb4gymngSu6mbYeyqQ3rBCinu5dA1q54ViWf3CPaLLPyy&s=10",
+  "description": "csky CloudStream extensions",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/csksy/csky-plug/builds/plugins.json"
+  ]
+}
