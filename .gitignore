@@ -9,3 +9,5 @@
 .cxx
 local.properties
 *.cs3
+build/
+.kotlin/
