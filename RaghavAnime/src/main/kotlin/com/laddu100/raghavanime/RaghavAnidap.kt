@@ -15,7 +15,7 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import java.net.URLEncoder
 
 class RaghavAnidap : MainAPI() {
-    override var mainUrl = "https://anidap.se"
+    override var mainUrl = "https://anidap.lol"
     override var name = "Anidap"
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
@@ -138,7 +138,7 @@ class RaghavAnidap : MainAPI() {
             try {
                 val res = app.get(url, headers = baseHeaders, timeout = 15_000L)
                 val body = res.text
-                if (body.contains("error code", ignoreCase = true)) {
+                if (body.contains("error", ignoreCase = true) && !body.contains("results")) {
                     lastError = "server error: ${body.take(50)}"
                     kotlinx.coroutines.delay(2000L * attempt)
                     continue

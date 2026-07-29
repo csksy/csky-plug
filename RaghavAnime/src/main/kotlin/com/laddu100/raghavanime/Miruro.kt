@@ -34,7 +34,7 @@ class Miruro : MainAPI() {
         var context: Context? = null
     }
 
-    override var mainUrl = "https://www.miruro.ru"
+    override var mainUrl = "https://www.miruro.com"
     override var name = "Miruro"
     override val hasMainPage = true
     override var lang = "en"

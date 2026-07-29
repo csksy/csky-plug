@@ -406,7 +406,7 @@ suspend fun cfAppGetAnidap(
             h["Accept-Language"] = "en-US,en;q=0.9"
         }
         if (!h.containsKey("Origin")) {
-            h["Origin"] = "https://anidap.se"
+            h["Origin"] = "https://anidap.lol"
         }
         if (!h.containsKey("Sec-Fetch-Dest")) {
             h["Sec-Fetch-Dest"] = "empty"
