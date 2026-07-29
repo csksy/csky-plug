@@ -68,7 +68,7 @@ class Miruro : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        mainUrl = FirebaseDomainHelper.getDomain("miruro") ?: mainUrl
+        // Firebase returns dead domain, use hardcoded
         val query = when (request.data) {
             "TRENDING" -> TRENDING_QUERY
             "POPULAR" -> POPULAR_QUERY
@@ -93,7 +93,7 @@ class Miruro : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        mainUrl = FirebaseDomainHelper.getDomain("miruro") ?: mainUrl
+        // Firebase returns dead domain, use hardcoded
         val variables = mapOf<String, Any?>("search" to query, "page" to 1, "perPage" to 20)
         val responseText = anilistQuery(SEARCH_QUERY, variables)
         val response = parseJson<AniListResponse>(responseText)
@@ -111,7 +111,7 @@ class Miruro : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        mainUrl = FirebaseDomainHelper.getDomain("miruro") ?: mainUrl
+        // Firebase returns dead domain, use hardcoded
         val anilistId = Regex("""/info/(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull() ?: return null
 
         val infoText = anilistQuery(INFO_QUERY, mapOf("id" to anilistId))

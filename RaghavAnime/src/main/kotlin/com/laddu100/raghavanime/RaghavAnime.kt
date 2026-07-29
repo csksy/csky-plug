@@ -14,6 +14,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.nicehttp.RequestBodyTypes
+import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 
@@ -234,7 +235,7 @@ class RaghavAnime : MainAPI() {
         runAllAsync(
             {
                 Log.d("RaghavAnime", "[Miruro] START aniId=$aniId ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val miruro = Miruro()
                     Log.d("RaghavAnime", "[Miruro] mainUrl=${miruro.mainUrl}")
                     val loadResult = miruro.load("${miruro.mainUrl}/info/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
@@ -252,14 +253,14 @@ class RaghavAnime : MainAPI() {
                             Log.d("RaghavAnime", "[Miruro] ep $episode not found in list")
                         }
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[Miruro] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[Miruro] END")
             },
             {
                 Log.d("RaghavAnime", "[AniSuge] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val aniSuge = AniSugeProvider()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[AniSuge] searchTitles=$searchTitles")
@@ -274,14 +275,14 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[AniSuge] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[AniSuge] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[AniSuge] END")
             },
             {
                 Log.d("RaghavAnime", "[AniWaves] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val aniWaves = AniWaves()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val aniWavesTargets = listOfNotNull(title, jpTitle).map { cleanTitle(it) }
@@ -328,14 +329,14 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[AniWaves] no match found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[AniWaves] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[AniWaves] END")
             },
             {
                 Log.d("RaghavAnime", "[Anikai] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val anikai = Anikai()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[Anikai] searchTitles=$searchTitles")
@@ -350,14 +351,14 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[Anikai] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[Anikai] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[Anikai] END")
             },
             {
                 Log.d("RaghavAnime", "[AniDb] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val aniDb = AniDb()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[AniDb] searchTitles=$searchTitles")
@@ -372,24 +373,24 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[AniDb] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[AniDb] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[AniDb] END")
             },
             {
                 Log.d("RaghavAnime", "[AniKage] START aniId=$aniId ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val anikage = RaghavAniKage()
                     anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[AniKage] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[AniKage] END")
             },
             {
                 Log.d("RaghavAnime", "[Anineko] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val anineko = Anineko()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[Anineko] searchTitles=$searchTitles")
@@ -404,7 +405,7 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[Anineko] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[Anineko] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[Anineko] END")
@@ -414,7 +415,7 @@ class RaghavAnime : MainAPI() {
             },
             {
                 Log.d("RaghavAnime", "[2DHive] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val twoDHive = RaghavTwoDHive()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[2DHive] searchTitles=$searchTitles")
@@ -429,14 +430,14 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[2DHive] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[2DHive] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[2DHive] END")
             },
             {
                 Log.d("RaghavAnime", "[AniKoto] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val anikoto = RaghavAnikoto()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[AniKoto] searchTitles=$searchTitles")
@@ -451,24 +452,24 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[AniKoto] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[AniKoto] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[AniKoto] END")
             },
             {
                 Log.d("RaghavAnime", "[Enma] START aniId=$aniId ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val enma = RaghavEnma()
                     enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[Enma] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[Enma] END")
             },
             {
                 Log.d("RaghavAnime", "[Animo] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val animo = RaghavAnimo()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[Animo] searchTitles=$searchTitles")
@@ -483,36 +484,24 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[Animo] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[Animo] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[Animo] END")
             },
             {
                 Log.d("RaghavAnime", "[Anidap] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val anidap = RaghavAnidap()
-                    val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
-                    Log.d("RaghavAnime", "[Anidap] searchTitles=$searchTitles")
-                    val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
-                        doSearch = { anidap.search(it) },
-                        doLoad = { anidap.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
-                        sourceTag = "Anidap"
-                    )
-                    if (epData != null) {
-                        Log.d("RaghavAnime", "[Anidap] found epData, loading links")
-                        anidap.loadLinks(epData, false, subtitleCallback, callback)
-                    } else {
-                        Log.d("RaghavAnime", "[Anidap] no epData found")
-                    }
-                } catch (e: Throwable) {
+                    anidap.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[Anidap] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[Anidap] END")
             },
             {
                 Log.d("RaghavAnime", "[Senshi] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val senshi = RaghavSenshi()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[Senshi] searchTitles=$searchTitles")
@@ -527,14 +516,14 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[Senshi] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[Senshi] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[Senshi] END")
             },
             {
                 Log.d("RaghavAnime", "[AniNami] START aniId=$aniId ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val aniNami = RaghavAniNami()
                     Log.d("RaghavAnime", "[AniNami] mainUrl=${aniNami.mainUrl}")
                     val loadResult = aniNami.load("${aniNami.mainUrl}/anime/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
@@ -552,14 +541,14 @@ class RaghavAnime : MainAPI() {
                             Log.d("RaghavAnime", "[AniNami] ep $episode not found in list")
                         }
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[AniNami] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[AniNami] END")
             },
             {
                 Log.d("RaghavAnime", "[AniDao] START ep=$episode isDub=$isDub")
-                try {
+                try { withTimeout(30_000L) {
                     val aniDao = RaghavAniDao()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     Log.d("RaghavAnime", "[AniDao] searchTitles=$searchTitles")
@@ -574,7 +563,7 @@ class RaghavAnime : MainAPI() {
                     } else {
                         Log.d("RaghavAnime", "[AniDao] no epData found")
                     }
-                } catch (e: Throwable) {
+                } } catch (e: Throwable) {
                     Log.d("RaghavAnime", "[AniDao] FAILED: ${e.message}")
                 }
                 Log.d("RaghavAnime", "[AniDao] END")
