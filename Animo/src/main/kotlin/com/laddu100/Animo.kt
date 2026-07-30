@@ -263,21 +263,35 @@ class Animo : MainAPI() {
             for (type in typesToTry) {
                 for ((labelKey, urlFn) in embedFormats) {
                     val embedUrl = urlFn(type)
-                    val streamUrl = withTimeoutOrNull(30_000L) {
-                        extractStreamFromWebView(embedUrl)
-                    }
-                    if (streamUrl != null && streamUrl.isNotEmpty()) {
-                        val label = "$name $labelKey ($type)"
-                        callback.invoke(
-                            newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
-                                this.referer = embedUrl
-                                this.headers = mapOf(
-                                    "Referer" to embedUrl,
-                                    "User-Agent" to ua
-                                )
-                            }
-                        )
-                        found = true
+                    try {
+                        val (request, _) = com.lagradost.cloudstream3.network.WebViewResolver(
+                            interceptUrl = Regex("""cdn\.4animo\.xyz/p\?t="""),
+                            userAgent = ua,
+                            useOkhttp = false,
+                            additionalUrls = emptyList(),
+                            script = null,
+                            scriptCallback = null,
+                            timeout = 30_000L
+                        ).resolveUsingWebView(embedUrl) { req ->
+                            req.url.toString().contains("cdn.4animo.xyz/p?t=") &&
+                                req.url.toString().contains("mpegurl")
+                        }
+                        if (request != null) {
+                            val streamUrl = request.url.toString()
+                            val label = "$name $labelKey ($type)"
+                            callback.invoke(
+                                newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
+                                    this.referer = embedUrl
+                                    this.headers = mapOf(
+                                        "Referer" to embedUrl,
+                                        "User-Agent" to ua
+                                    )
+                                }
+                            )
+                            found = true
+                        }
+                    } catch (e: Exception) {
+                        Log.e("Animo", "WebViewResolver: ${e.message}")
                     }
                 }
             }
