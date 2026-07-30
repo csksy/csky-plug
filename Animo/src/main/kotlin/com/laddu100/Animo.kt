@@ -169,8 +169,8 @@ class Animo : MainAPI() {
         }
 
         val playHeaders = mapOf(
-            "Referer" to "$mainUrl/",
-            "Origin" to mainUrl,
+            "Referer" to "$cdnUrl/",
+            "Origin" to cdnUrl,
             "User-Agent" to ua
         )
 
@@ -254,29 +254,32 @@ class Animo : MainAPI() {
         }
 
         if (!found) {
+            val embedFormats = listOf(
+                Pair("a-1", { t: String -> "$cdnUrl/embed/a-1/${epData.episodeId}/$t" }),
+                Pair("s-1", { t: String -> "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$t" }),
+                Pair("hd-1", { t: String -> "$cdnUrl/embed/hd-1/ani/${epData.animeId}/${epData.episodeNum}/$t" }),
+                Pair("hd-2", { t: String -> "$cdnUrl/embed/hd-2/ani/${epData.animeId}/${epData.episodeNum}/$t" })
+            )
             for (type in typesToTry) {
-                val embedUrls = listOf(
-                    "$cdnUrl/embed/a-1/${epData.episodeId}/$type",
-                    "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$type",
-                    "$cdnUrl/embed/hd-1/ani/${epData.animeId}/${epData.episodeNum}/$type"
-                )
-                for (embedUrl in embedUrls) {
+                for ((labelKey, urlFn) in embedFormats) {
+                    val embedUrl = urlFn(type)
                     val streamUrl = withTimeoutOrNull(30_000L) {
                         extractStreamFromWebView(embedUrl)
                     }
                     if (streamUrl != null && streamUrl.isNotEmpty()) {
-                        val label = "$name ($type)"
+                        val label = "$name $labelKey ($type)"
                         callback.invoke(
                             newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
-                                this.referer = "$cdnUrl/"
-                                this.headers = playHeaders
+                                this.referer = embedUrl
+                                this.headers = mapOf(
+                                    "Referer" to embedUrl,
+                                    "User-Agent" to ua
+                                )
                             }
                         )
                         found = true
-                        break
                     }
                 }
-                if (found) break
             }
         }
 
