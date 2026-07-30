@@ -24,41 +24,50 @@ class AniChanProvider : MainAPI() {
         "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
     override val mainPage = mainPageOf(
-        "trending" to "Trending",
-        "popular" to "Popular",
-        "recent" to "Recently Added"
+        "trending" to "Trending Now",
+        "season" to "Airing This Season",
+        "popular" to "All-Time Popular"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val html = app.get(mainUrl, headers = mapOf("User-Agent" to browserUA), timeout = 30_000L).text
-        val doc = Jsoup.parse(html)
+        return try {
+            val html = app.get(mainUrl, headers = mapOf("User-Agent" to browserUA), timeout = 30_000L).text
+            val doc = Jsoup.parse(html)
 
-        val sectionId = when (request.data) {
-            "trending" -> "an-top-trending-title"
-            "popular" -> "an-popular-title"
-            "recent" -> "an-recent-added-title"
-            else -> return newHomePageResponse(request.name, emptyList())
-        }
-
-        val section = doc.selectFirst("section[aria-labelledby=\"$sectionId\"]")
-            ?: return newHomePageResponse(request.name, emptyList())
-
-        val items = section.select(".an-home-list-item, article.an-anime-card").mapNotNull { el ->
-            val href = el.attr("href").ifEmpty { el.selectFirst("a")?.attr("href") ?: return@mapNotNull null }
-            val title = el.selectFirst("img")?.attr("alt")?.ifBlank { null }
-                ?: el.selectFirst(".an-card-title, h3")?.text()
-                ?: return@mapNotNull null
-            val poster = el.selectFirst("img")?.let { img ->
-                val src = img.attr("data-src").ifBlank { img.attr("src") }
-                if (src.startsWith("//")) "https:$src" else src
+            val keyword = when (request.data) {
+                "trending" -> "Trending"
+                "season" -> "Airing"
+                "popular" -> "Popular"
+                else -> return newHomePageResponse(request.name, emptyList())
             }
-            val anilistId = Regex("""/anime/(\d+)""").find(href)?.groupValues?.get(1)?.toIntOrNull()
-                ?: return@mapNotNull null
-            newAnimeSearchResponse(title, anilistId.toString(), TvType.Anime) {
-                this.posterUrl = poster
+
+            val items = mutableListOf<SearchResponse>()
+            for (section in doc.select("section.section")) {
+                val header = section.selectFirst(".section-h h2")?.text() ?: continue
+                if (!header.contains(keyword, ignoreCase = true)) continue
+
+                for (card in section.select("a.card")) {
+                    val href = card.attr("href")
+                    val anilistId = Regex("""/anime/(\d+)""").find(href)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+                    val title = card.selectFirst(".nm")?.text()?.trim()
+                        ?: card.selectFirst("img")?.attr("alt")?.trim()
+                        ?: continue
+                    val poster = card.selectFirst("img")?.attr("src")
+                    val yearText = card.selectFirst(".meta2")?.text() ?: ""
+                    val year = Regex("""\b(19\d{2}|20\d{2})\b""").find(yearText)?.groupValues?.get(1)?.toIntOrNull()
+                    items.add(newAnimeSearchResponse(title, anilistId.toString(), TvType.Anime) {
+                        this.posterUrl = poster
+                        this.year = year
+                    })
+                }
+                break
             }
+
+            newHomePageResponse(request.name, items)
+        } catch (e: Exception) {
+            Log.e("AniChan", "getMainPage: ${e.message}")
+            newHomePageResponse(request.name, emptyList())
         }
-        return newHomePageResponse(request.name, items)
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
