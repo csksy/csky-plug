@@ -1,0 +1,1299 @@
+--------- beginning of main
+07-30 20:12:15.904 24286 24286 D InputTransport: Input channel destroyed: '3ee195c', fd=325
+07-30 20:12:15.906 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=navigationBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:15.906 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=statusBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:15.911 24286 24298 I BLASTBufferQueue: [VRI[MainActivity]@6f7b882#1](f:0,a:1,s:0) destructor()
+07-30 20:12:15.911 24286 24298 D BufferQueueConsumer: [VRI[MainActivity]@6f7b882#1(BLAST Consumer)1](id:5ede00000001,api:0,p:-1,c:24286) disconnect
+07-30 20:12:15.942 24286 24286 D VRI[MainActivity]@4c299b0: mThreadedRenderer.initializeIfNeeded()#2 mSurface={isValid=true 0xb40000706e88e000}
+07-30 20:12:15.943 24286 24286 D InputMethodManagerUtils: startInputInner - Id : 0
+07-30 20:12:15.943 24286 24286 I InputMethodManager: startInputInner - IInputMethodManagerGlobalInvoker.startInputOrWindowGainedFocus
+07-30 20:12:15.946 24286 24298 D InputTransport: Input channel constructed: 'ClientS', fd=275
+07-30 20:12:16.399 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:16.465 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:16.477 24286 24286 I ImeTracker: com.lagradost.cloudstream3:4e7da548: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:16.477 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:16.477 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:16.552 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:16.552 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:16.553 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:16.575 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:17.128 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:17.629 24286 24424 D ApiError: -------------------------------------------------------------------
+07-30 20:12:17.629 24286 24424 D ApiError: safeApiCall: null
+07-30 20:12:17.629 24286 24424 D ApiError: safeApiCall: null
+07-30 20:12:17.629 24286 24286 I Dialog  : mIsDeviceDefault = false, mIsSamsungBasicInteraction = false, isMetaDataInActivity = false
+07-30 20:12:17.629 24286 24424 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:17.629 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invokeSuspend(ResultViewModel2.kt:2661)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:26)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:6)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invokeSuspend(Coroutines.kt:28)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:8)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:4)
+07-30 20:12:17.630 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$launchSafe$obj$1.invokeSuspend(ArchComponentExt.kt:156)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:17.630 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:17.630 24286 24424 D ApiError: -------------------------------------------------------------------
+07-30 20:12:17.658 24286 24286 I DecorView: setWindowBackground: isPopOver=false color=0 d=android.graphics.drawable.ColorDrawable@e614cdd
+07-30 20:12:17.660 24286 24286 I WindowManager: WindowManagerGlobal#addView, ty=2, view=com.android.internal.policy.DecorView{bceb11 V.E..V... R.....I. 0,0-0,0}[MainActivity], caller=android.view.WindowManagerImpl.addView:158 android.app.Dialog.show:511 com.lagradost.cloudstream3.MainActivity.showPreviewPopupDialog:899 
+07-30 20:12:17.661 24286 24286 I ViewRootImpl: dVRR is disabled
+07-30 20:12:17.662 24286 24323 D NativeCustomFrequencyManager: [NativeCFMS] BpCustomFrequencyManager::BpCustomFrequencyManager()
+07-30 20:12:17.671 24286 24286 D InputTransport: Input channel constructed: '87631a8', fd=279
+07-30 20:12:17.672 24286 24286 I InsetsController: onStateChanged: host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity, from=android.view.ViewRootImpl.setView:1999, state=InsetsState: {mDisplayFrame=Rect(0, 0 - 720, 1600), mDisplayCutout=DisplayCutout{insets=Rect(0, 59 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(320, 0 - 400, 59), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=720 displayHeight=1600 physicalDisplayWidth=720 physicalDisplayHeight=1600 density={1.875} cutoutSpec={M 0,0 H -21.33333333333333 V 31.46666666666667 H 21.33333333333333 V 0 H 0 Z @dp} rotation={0} scale={1.0} physicalPixelDisplaySizeRatio={1.0}}} sideOverrides={}}, mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=68, center=Point(68, 68)}, RoundedCorner{position=TopRight, radius=68, center=Point(652, 68)}, RoundedCorner{position=BottomRight, radius=68, center=Point(652, 1532)}, RoundedCorner{position=BottomLeft, radius=68, center=Point(68, 1532)}]}  mRoundedCornerFrame=Rect(0, 0 - 720, 1600), mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(637, 0 - 720, 59) rotation=0}, mDisplayShape=DisplayShape{ spec=-311912193 displayWidth=720 displayHeight=1600 physicalPixelDisplaySizeRatio=1.0 rotation=0 offsetX=0 offsetY=0 scale=1.0}, mSources= { InsetsSource: {845b0000 mType=statusBars mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0005 mType=mandatorySystemGestures mFrame=[0,0][720,82] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0006 mType=tappableElement mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {b6ec0001 mType=navigationBars mFrame=[0,1572][720,1600] mVisible=true mFlags=SUPPRESS_SCRIM mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0004 mType=systemGestures mFrame=[0,0][56,1600] mVisible=true mFlags= mSideHint=LEFT mBoundingRects=null}, InsetsSource: {b6ec0005 mType=mandatorySystemGestures mFrame=[0,1540][720,1600] mVisible=true mFlags= mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0006 mType=tappableElement mFrame=[0,0][0,0] mVisible=true mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {b6ec0024 mType=systemGestures mFrame=[664,0][720,1600] mVisible=true mFlags= mSideHint=RIGHT mBoundingRects=null}, InsetsSource: {3 mType=ime mFrame=[0,0][0,0] mVisible=false mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {27 mType=displayCutout mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null} }
+07-30 20:12:17.672 24286 24286 I VRI[MainActivity]@357476: synced displayState. AttachInfo displayState=2
+07-30 20:12:17.672 24286 24286 I VRI[MainActivity]@357476: setView = com.android.internal.policy.DecorView@bceb11 IsHRR=false TM=true
+07-30 20:12:17.673 24286 24286 I COMPACT : showToast = Error
+07-30 20:12:17.675 24286 24286 E Toast   : setGravity() shouldn't be called on text toasts, the values won't be used
+07-30 20:12:17.675 24286 24286 I Toast   : setView: it's a custom toast
+07-30 20:12:17.677 24286 24286 I Toast   : show: caller = com.lagradost.cloudstream3.CommonActivity.showToast:192 
+07-30 20:12:17.678 24286 24286 I Toast   : show: contextDispId = 0 mCustomDisplayId = -1 focusedDisplayId = 0 isActivityContext = true
+07-30 20:12:17.681 24286 24286 I WindowManager: WindowManagerGlobal#removeView, ty=2, view=com.android.internal.policy.DecorView{bceb11 V.E..V... R.....I. 0,0-0,0}[MainActivity], caller=android.view.WindowManagerGlobal.removeView:626 android.view.WindowManagerImpl.removeViewImmediate:216 android.app.Dialog.dismissDialog:808 
+07-30 20:12:17.681 24286 24286 I VRI[MainActivity]@357476: dispatchDetachedFromWindow
+07-30 20:12:17.687 24286 24286 D InputTransport: Input channel destroyed: '87631a8', fd=279
+07-30 20:12:17.690 24286 24286 V ToastPresenter: yOffset = 9
+07-30 20:12:17.690 24286 24286 I WindowManager: WindowManagerGlobal#addView, ty=2005, view=androidx.cardview.widget.CardView{64bf305 V.E..V... ......ID 0,0-0,0 #7f0a05be app:id/toast_layout_root}, caller=android.view.WindowManagerImpl.addView:158 android.widget.ToastPresenter.addToastView:424 android.widget.ToastPresenter.show:325 
+07-30 20:12:17.691 24286 24286 I ViewRootImpl: dVRR is disabled
+07-30 20:12:17.692 24286 24323 D NativeCustomFrequencyManager: [NativeCFMS] BpCustomFrequencyManager::BpCustomFrequencyManager()
+07-30 20:12:17.695 24286 24286 D InputTransport: Input channel constructed: 'c9467bb', fd=332
+07-30 20:12:17.696 24286 24286 I InsetsController: onStateChanged: host=Toast, from=android.view.ViewRootImpl.setView:1999, state=InsetsState: {mDisplayFrame=Rect(0, 0 - 720, 1600), mDisplayCutout=DisplayCutout{insets=Rect(0, 59 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(320, 0 - 400, 59), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=720 displayHeight=1600 physicalDisplayWidth=720 physicalDisplayHeight=1600 density={1.875} cutoutSpec={M 0,0 H -21.33333333333333 V 31.46666666666667 H 21.33333333333333 V 0 H 0 Z @dp} rotation={0} scale={1.0} physicalPixelDisplaySizeRatio={1.0}}} sideOverrides={}}, mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=68, center=Point(68, 68)}, RoundedCorner{position=TopRight, radius=68, center=Point(652, 68)}, RoundedCorner{position=BottomRight, radius=68, center=Point(652, 1532)}, RoundedCorner{position=BottomLeft, radius=68, center=Point(68, 1532)}]}  mRoundedCornerFrame=Rect(0, 0 - 0, 0), mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(637, 0 - 720, 59) rotation=0}, mDisplayShape=DisplayShape{ spec=-311912193 displayWidth=720 displayHeight=1600 physicalPixelDisplaySizeRatio=1.0 rotation=0 offsetX=0 offsetY=0 scale=1.0}, mSources= { InsetsSource: {845b0000 mType=statusBars mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0005 mType=mandatorySystemGestures mFrame=[0,0][720,82] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0006 mType=tappableElement mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {b6ec0001 mType=navigationBars mFrame=[0,1572][720,1600] mVisible=true mFlags=SUPPRESS_SCRIM mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0004 mType=systemGestures mFrame=[0,0][56,1600] mVisible=true mFlags= mSideHint=LEFT mBoundingRects=null}, InsetsSource: {b6ec0005 mType=mandatorySystemGestures mFrame=[0,1540][720,1600] mVisible=true mFlags= mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0006 mType=tappableElement mFrame=[0,0][0,0] mVisible=true mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {b6ec0024 mType=systemGestures mFrame=[664,0][720,1600] mVisible=true mFlags= mSideHint=RIGHT mBoundingRects=null}, InsetsSource: {3 mType=ime mFrame=[0,0][0,0] mVisible=false mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {27 mType=displayCutout mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null} }
+07-30 20:12:17.696 24286 24286 I VRI[Toast]@d402f5a: synced displayState. AttachInfo displayState=2
+07-30 20:12:17.696 24286 24286 I VRI[Toast]@d402f5a: setView = androidx.cardview.widget.CardView@64bf305 IsHRR=false TM=true
+07-30 20:12:17.698 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=navigationBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:17.698 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=statusBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:17.699 24286 24323 D HWUI    : HWUI - treat SMPTE_170M as sRGB
+07-30 20:12:17.704 24286 24286 D BufferQueueConsumer: [](id:5ede00000002,api:0,p:-1,c:24286) connect: controlledByApp=false
+07-30 20:12:17.704 24286 24286 I BLASTBufferQueue: [VRI[Toast]@d402f5a#2](f:0,a:0,s:0) constructor()
+07-30 20:12:17.704 24286 24286 I BLASTBufferQueue_Java: new BLASTBufferQueue, mName= VRI[Toast]@d402f5a mNativeObject= 0xb40000714ecc0800 sc.mNativeObject= 0xb400007140170840 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3397 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 android.view.Choreographer$CallbackRecord.run:1760 android.view.Choreographer.doCallbacks:1216 android.view.Choreographer.doFrame:1142 android.view.Choreographer$FrameDisplayEventReceiver.run:1707 
+07-30 20:12:17.705 24286 24286 I BLASTBufferQueue_Java: update, w= 148 h= 124 mName = VRI[Toast]@d402f5a mNativeObject= 0xb40000714ecc0800 sc.mNativeObject= 0xb400007140170840 format= -3 caller= android.graphics.BLASTBufferQueue.<init>:88 android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3397 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 
+07-30 20:12:17.705 24286 24286 I BLASTBufferQueue: [VRI[Toast]@d402f5a#2](f:0,a:0,s:0) update width=148 height=124 format=-3 mTransformHint=0
+07-30 20:12:17.705 24286 24286 I VRI[Toast]@d402f5a: Relayout returned: old=(0,59,720,1572) new=(294,1455,426,1563) relayoutAsync=false req=(132,108)0 dur=4 res=0x3 s={true 0xb40000715fbc6000} ch=true seqId=0
+07-30 20:12:17.706 24286 24286 D VRI[Toast]@d402f5a: mThreadedRenderer.initialize() mSurface={isValid=true 0xb40000715fbc6000} hwInitialized=true
+07-30 20:12:17.707 24286 24286 D VRI[Toast]@d402f5a: reportNextDraw android.view.ViewRootImpl.performTraversals:5193 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 android.view.Choreographer$CallbackRecord.run:1760 
+07-30 20:12:17.707 24286 24286 D VRI[Toast]@d402f5a: Setup new sync=wmsSync-VRI[Toast]@d402f5a#4
+07-30 20:12:17.707 24286 24286 I VRI[Toast]@d402f5a: Creating new active sync group VRI[Toast]@d402f5a#5
+07-30 20:12:17.708 24286 24286 D VRI[Toast]@d402f5a: registerCallbacksForSync syncBuffer=false
+07-30 20:12:17.708 24286 24454 D VRI[Toast]@d402f5a: Received frameDrawingCallback syncResult=0 frameNum=1.
+07-30 20:12:17.708 24286 24454 I VRI[Toast]@d402f5a: mWNT: t=0xb40000714eafcd80 mBlastBufferQueue=0xb40000714ecc0800 fn= 1 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$11.onFrameDraw:15016 android.view.ThreadedRenderer$1.onFrameDraw:761 <bottom of call stack> 
+07-30 20:12:17.709 24286 24454 I VRI[Toast]@d402f5a: Setting up sync and frameCommitCallback
+07-30 20:12:17.711 24286 24323 I BLASTBufferQueue: [VRI[Toast]@d402f5a#2](f:0,a:0,s:0) onFrameAvailable the first frame is available
+07-30 20:12:17.711 24286 24323 I BLASTBufferQueue: [VRI[Toast]@d402f5a#2](f:0,a:1,s:0) acquireNextBufferLocked size=148x124 mFrameNumber=1 applyTransaction=true mTimestamp=99819736222641(auto) mPendingTransactions.size=0 graphicBufferId=104307575750669 transform=0
+07-30 20:12:17.711 24286 24323 I VRI[Toast]@d402f5a: Received frameCommittedCallback lastAttemptedDrawFrameNum=1 didProduceBuffer=true
+07-30 20:12:17.712 24286 24323 D HWUI    : CFMS:: SetUp Pid : 24286    Tid : 24323
+07-30 20:12:17.712 24286 24286 D VRI[Toast]@d402f5a: reportDrawFinished seqId=0
+07-30 20:12:17.771 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:18.731 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:18.797 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:18.808 24286 24286 I NavComponent: Navigating to fragment: 2131362305
+07-30 20:12:18.811 24286 24286 I ImeTracker: com.lagradost.cloudstream3:34756135: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:18.811 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:18.811 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:18.830 24286 24286 D ScrollView: initGoToTop
+07-30 20:12:18.836 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:18.836 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:18.837 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:18.892 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.060 24286 24286 W Resources: Drawable com.lagradost.cloudstream3:drawable/go_forward_30 has unresolved theme attributes! Consider using Resources.getDrawable(int, Theme) or Context.getDrawable(int).
+07-30 20:12:19.060 24286 24286 W Resources: java.lang.RuntimeException
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.content.res.Resources.getDrawable(Resources.java:956)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzd(com.google.android.gms:play-services-cast-framework@@22.1.0:2)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzc(com.google.android.gms:play-services-cast-framework@@22.1.0:1)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.zza(com.google.android.gms:play-services-cast-framework@@22.1.0:41)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.onCreateView(com.google.android.gms:play-services-cast-framework@@22.1.0:30)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.ensureInflatedView(FragmentStateManager.java:418)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:285)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentLayoutInflaterFactory.onCreateView(FragmentLayoutInflaterFactory.java:142)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater$FactoryMerger.onCreateView(LayoutInflater.java:228)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.tryCreateView(LayoutInflater.java:965)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:901)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:865)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1027)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:576)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:468)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.lagradost.cloudstream3.databinding.FragmentResultSwipeBinding.inflate(FragmentResultSwipeBinding.java:140)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragmentHelper$-CC.$default$createBinding(BaseFragment.kt:51)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.createBinding(BaseFragment.kt:124)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.onCreateView(BaseFragment.kt:160)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.createView(FragmentStateManager.java:577)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:286)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.executeOpsTogether(FragmentManager.java:2214)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.removeRedundantOperationsAndExecute(FragmentManager.java:2115)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.execPendingActions(FragmentManager.java:2052)
+07-30 20:12:19.060 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager$5.run(FragmentManager.java:703)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.os.Handler.handleCallback(Handler.java:959)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.os.Handler.dispatchMessage(Handler.java:100)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.os.Looper.loopOnce(Looper.java:257)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.os.Looper.loop(Looper.java:342)
+07-30 20:12:19.060 24286 24286 W Resources: 	at android.app.ActivityThread.main(ActivityThread.java:9638)
+07-30 20:12:19.060 24286 24286 W Resources: 	at java.lang.reflect.Method.invoke(Native Method)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:619)
+07-30 20:12:19.060 24286 24286 W Resources: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:929)
+07-30 20:12:19.064 24286 24286 I SurfaceView@1bdf606: onWindowVisibilityChanged(0) true android.view.SurfaceView{1bdf606 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:19.064 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.071 24286 24286 I CS3ExoPlayer: SET STYLE = SaveCaptionStyle(foregroundColor=-1, backgroundColor=0, windowColor=0, edgeType=1, edgeColor=-16777216, typeface=null, typefaceFilePath=null, elevation=20, fixedTextSize=28.0, edgeSize=null, removeCaptions=false, removeBloat=true, upperCase=false, bold=true, italic=false, backgroundRadius=null, alignment=null)
+07-30 20:12:19.075 24286 24286 D VideoClickActionHolder: allVideoClickActions: [null:com.lagradost.cloudstream3.actions.temp.PlayInBrowserAction, null:com.lagradost.cloudstream3.actions.temp.CopyClipboardAction, null:com.lagradost.cloudstream3.actions.temp.ViewM3U8Action, null:com.lagradost.cloudstream3.actions.temp.PlayMirrorAction, null:com.lagradost.cloudstream3.actions.temp.VlcPackage, null:com.lagradost.cloudstream3.actions.temp.MpvPackage, null:com.lagradost.cloudstream3.actions.temp.MpvExPackage, null:com.lagradost.cloudstream3.actions.temp.NextPlayerPackage, null:com.lagradost.cloudstream3.actions.temp.JustPlayerPackage, null:com.lagradost.cloudstream3.actions.temp.fcast.FcastAction, null:com.lagradost.cloudstream3.actions.temp.LibreTorrentPackage, null:com.lagradost.cloudstream3.actions.temp.BiglyBTPackage, null:com.lagradost.cloudstream3.actions.temp.VlcNightlyPackage, null:com.lagradost.cloudstream3.actions.temp.WebVideoCastPackage, null:com.lagradost.cloudstream3.actions.temp.MpvYTDLPackage, null:com.lagradost.cloudstream3.actions.temp.MpvKtPackage, null:com.lagradost.cloudstream3.actions.temp.MpvKtPreviewPackage, null:com.lagradost.cloudstream3.actions.temp.OnlyPlayer, null:com.lagradost.cloudstream3.actions.temp.MpvRxPackage, null:com.lagradost.cloudstream3.actions.AlwaysAskAction]
+07-30 20:12:19.076 24286 24286 I ImeTracker: com.lagradost.cloudstream3:d761ad0a: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:19.076 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:19.076 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:19.077 24286 24404 I SYNCVM  : addFromUrl = https://anichan.net/135865
+07-30 20:12:19.078 24286 24424 D ApiError: -------------------------------------------------------------------
+07-30 20:12:19.078 24286 24424 D ApiError: safeApiCall: null
+07-30 20:12:19.078 24286 24424 D ApiError: safeApiCall: null
+07-30 20:12:19.078 24286 24424 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:19.078 24286 24404 I SYNCUTIL: getIdsFromUrl https://anichan.net/135865
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invokeSuspend(ResultViewModel2.kt:2661)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:26)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:6)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invokeSuspend(Coroutines.kt:28)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:8)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:4)
+07-30 20:12:19.078 24286 24424 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$launchSafe$obj$1.invokeSuspend(ArchComponentExt.kt:156)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:19.078 24286 24424 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:19.078 24286 24424 D ApiError: -------------------------------------------------------------------
+07-30 20:12:19.091 24286 24286 I SurfaceView@1bdf606: onWindowVisibilityChanged(8) false android.view.SurfaceView{1bdf606 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:19.091 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.091 24286 24286 I SurfaceView: 29226502 Detaching SV
+07-30 20:12:19.091 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.091 24286 24286 I SurfaceView@1bdf606: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:19.091 24286 24286 I SurfaceView@1bdf606: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:19.092 24286 24286 I SurfaceView@1bdf606: onWindowVisibilityChanged(0) true android.view.SurfaceView{1bdf606 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:19.092 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.102 24286 24286 I CS3ExoPlayer: reloadPlayer
+07-30 20:12:19.102 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:19.102 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:19.106 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:19.106 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=1 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:19.107 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{c888afe I.E..V... ......I. 0,0-0,0 #7f0a0546 app:id/start_panel} during layout: running second layout pass
+07-30 20:12:19.107 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{ef0c25f I.E..V... ......ID 720,0-720,1419 #7f0a0184 app:id/end_panel} during layout: running second layout pass
+07-30 20:12:19.109 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.109 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:19.112 24286 24455 I VRI[MainActivity]@4c299b0: mWNT: t=0xb4000070b62a2380 mBlastBufferQueue=0xb40000706b09d000 fn= 252 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:19.117 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.121 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.138 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.154 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.171 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.187 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.204 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.220 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.237 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.253 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.256 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:19.256 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:19.270 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.287 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.303 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.320 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.336 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.353 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.369 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.386 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.402 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.419 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.436 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:19.683 24286 24286 I WindowManager: WindowManagerGlobal#removeView, ty=2005, view=androidx.cardview.widget.CardView{64bf305 V.E..V... ........ 0,0-132,108 #7f0a05be app:id/toast_layout_root}, caller=android.view.WindowManagerGlobal.removeView:626 android.view.WindowManagerImpl.removeViewImmediate:216 android.widget.ToastPresenter.hide:348 
+07-30 20:12:19.683 24286 24286 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=false callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@8e12f67
+07-30 20:12:19.685 24286 24286 I VRI[Toast]@d402f5a: dispatchDetachedFromWindow
+07-30 20:12:19.685 24286 24286 I BLASTBufferQueue: [VRI[Toast]@d402f5a#2](f:0,a:1,s:0) destructor()
+07-30 20:12:19.685 24286 24286 D BufferQueueConsumer: [VRI[Toast]@d402f5a#2(BLAST Consumer)2](id:5ede00000002,api:0,p:-1,c:24286) disconnect
+07-30 20:12:19.692 24286 24286 D InputTransport: Input channel destroyed: 'c9467bb', fd=332
+07-30 20:12:19.823 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:19.934 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:19.948 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:19.964 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:19.981 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:19.998 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:20.008 24286 24286 D WindowOnBackDispatcher: onBackInvoked, owner=VRI[Toast]@d402f5a, callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@d5308cd
+07-30 20:12:20.011 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 0
+--------- beginning of system
+07-30 20:12:20.011 24286 24286 D Activity: onKeyDown(KEYCODE_BACK), activity=com.lagradost.cloudstream3.MainActivity@35ddabb
+07-30 20:12:20.012 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 1
+07-30 20:12:20.014 24286 24286 I ImeTracker: com.lagradost.cloudstream3:235439a6: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:20.014 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:20.014 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:20.016 24286 24286 I CS3ExoPlayer: onStop
+07-30 20:12:20.016 24286 24286 I CS3ExoPlayer: saveData
+07-30 20:12:20.016 24286 24286 I CS3ExoPlayer: handleEvent Pause
+07-30 20:12:20.064 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:20.071 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:20.071 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:20.071 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:20.091 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:20.165 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.167 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.173 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:20.175 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.186 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.196 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.213 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.229 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.246 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.248 24286 24286 I SurfaceView@1bdf606: onWindowVisibilityChanged(8) false android.view.SurfaceView{1bdf606 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:20.248 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.248 24286 24286 I SurfaceView: 29226502 Detaching SV
+07-30 20:12:20.248 24286 24286 D SurfaceView: 29226502 updateSurface: has no frame
+07-30 20:12:20.248 24286 24286 I SurfaceView@1bdf606: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:20.248 24286 24286 I SurfaceView@1bdf606: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:20.252 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:20.253 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:20.263 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:20.263 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=0 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:20.263 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:20.264 24286 24454 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000706e7d4000 mBlastBufferQueue=0xb40000706b09d000 fn= 280 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:20.534 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:20.633 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:20.644 24286 24286 I NavComponent: Navigating to fragment: 2131362305
+07-30 20:12:20.646 24286 24286 I ImeTracker: com.lagradost.cloudstream3:ce80f570: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:20.646 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:20.646 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:20.657 24286 24286 D ScrollView: initGoToTop
+07-30 20:12:20.660 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:20.661 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:20.661 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:20.707 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.838 24286 24286 W Resources: Drawable com.lagradost.cloudstream3:drawable/go_forward_30 has unresolved theme attributes! Consider using Resources.getDrawable(int, Theme) or Context.getDrawable(int).
+07-30 20:12:20.838 24286 24286 W Resources: java.lang.RuntimeException
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.content.res.Resources.getDrawable(Resources.java:956)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzd(com.google.android.gms:play-services-cast-framework@@22.1.0:2)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzc(com.google.android.gms:play-services-cast-framework@@22.1.0:1)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.zza(com.google.android.gms:play-services-cast-framework@@22.1.0:41)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.onCreateView(com.google.android.gms:play-services-cast-framework@@22.1.0:30)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.ensureInflatedView(FragmentStateManager.java:418)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:285)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentLayoutInflaterFactory.onCreateView(FragmentLayoutInflaterFactory.java:142)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater$FactoryMerger.onCreateView(LayoutInflater.java:228)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.tryCreateView(LayoutInflater.java:965)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:901)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:865)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1027)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:576)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:468)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.lagradost.cloudstream3.databinding.FragmentResultSwipeBinding.inflate(FragmentResultSwipeBinding.java:140)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragmentHelper$-CC.$default$createBinding(BaseFragment.kt:51)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.createBinding(BaseFragment.kt:124)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.onCreateView(BaseFragment.kt:160)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.createView(FragmentStateManager.java:577)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:286)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.executeOpsTogether(FragmentManager.java:2214)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.removeRedundantOperationsAndExecute(FragmentManager.java:2115)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.execPendingActions(FragmentManager.java:2052)
+07-30 20:12:20.838 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager$5.run(FragmentManager.java:703)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.os.Handler.handleCallback(Handler.java:959)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.os.Handler.dispatchMessage(Handler.java:100)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.os.Looper.loopOnce(Looper.java:257)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.os.Looper.loop(Looper.java:342)
+07-30 20:12:20.838 24286 24286 W Resources: 	at android.app.ActivityThread.main(ActivityThread.java:9638)
+07-30 20:12:20.838 24286 24286 W Resources: 	at java.lang.reflect.Method.invoke(Native Method)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:619)
+07-30 20:12:20.838 24286 24286 W Resources: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:929)
+07-30 20:12:20.841 24286 24286 I SurfaceView@4f2c164: onWindowVisibilityChanged(0) true android.view.SurfaceView{4f2c164 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:20.841 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.845 24286 24286 I CS3ExoPlayer: SET STYLE = SaveCaptionStyle(foregroundColor=-1, backgroundColor=0, windowColor=0, edgeType=1, edgeColor=-16777216, typeface=null, typefaceFilePath=null, elevation=20, fixedTextSize=28.0, edgeSize=null, removeCaptions=false, removeBloat=true, upperCase=false, bold=true, italic=false, backgroundRadius=null, alignment=null)
+07-30 20:12:20.848 24286 24286 I ImeTracker: com.lagradost.cloudstream3:13fd0e13: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:20.848 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:20.848 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:20.849 24286 24399 I SYNCVM  : addFromUrl = https://anichan.net/21
+07-30 20:12:20.849 24286 24399 I SYNCUTIL: getIdsFromUrl https://anichan.net/21
+07-30 20:12:20.849 24286 24406 D ApiError: -------------------------------------------------------------------
+07-30 20:12:20.849 24286 24406 D ApiError: safeApiCall: null
+07-30 20:12:20.849 24286 24406 D ApiError: safeApiCall: null
+07-30 20:12:20.849 24286 24406 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:20.849 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:20.849 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:20.849 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:20.849 24286 24406 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:20.849 24286 24406 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invokeSuspend(ResultViewModel2.kt:2661)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:26)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:6)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invokeSuspend(Coroutines.kt:28)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:8)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:4)
+07-30 20:12:20.850 24286 24406 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$launchSafe$obj$1.invokeSuspend(ArchComponentExt.kt:156)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:20.850 24286 24406 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:20.850 24286 24406 D ApiError: -------------------------------------------------------------------
+07-30 20:12:20.858 24286 24286 I SurfaceView@4f2c164: onWindowVisibilityChanged(8) false android.view.SurfaceView{4f2c164 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:20.858 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.858 24286 24286 I SurfaceView: 83018084 Detaching SV
+07-30 20:12:20.858 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.858 24286 24286 I SurfaceView@4f2c164: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:20.858 24286 24286 I SurfaceView@4f2c164: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:20.859 24286 24286 I SurfaceView@4f2c164: onWindowVisibilityChanged(0) true android.view.SurfaceView{4f2c164 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:20.860 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.863 24286 24286 I CS3ExoPlayer: reloadPlayer
+07-30 20:12:20.864 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:20.864 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:20.867 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:20.867 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=0 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:20.868 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{9bbd340 I.E..V... ......I. 0,0-0,0 #7f0a0546 app:id/start_panel} during layout: running second layout pass
+07-30 20:12:20.868 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{2d6a279 I.E..V... ......ID 720,0-720,1419 #7f0a0184 app:id/end_panel} during layout: running second layout pass
+07-30 20:12:20.869 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.870 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:20.872 24286 24455 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000706ea65d80 mBlastBufferQueue=0xb40000706b09d000 fn= 295 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:20.876 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.891 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.907 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.924 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.941 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.957 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.974 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:20.990 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.007 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.024 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.025 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:21.025 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:21.040 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.056 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.073 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.090 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.106 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.123 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.139 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.156 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.172 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.189 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.206 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.511 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:21.587 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.587 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.602 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.618 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.635 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.652 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.668 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.678 24286 24286 D WindowOnBackDispatcher: onBackInvoked, owner=VRI[Toast]@d402f5a, callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@d5308cd
+07-30 20:12:21.679 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 0
+07-30 20:12:21.680 24286 24286 D Activity: onKeyDown(KEYCODE_BACK), activity=com.lagradost.cloudstream3.MainActivity@35ddabb
+07-30 20:12:21.681 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 1
+07-30 20:12:21.682 24286 24286 I ImeTracker: com.lagradost.cloudstream3:899a99f4: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:21.682 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:21.682 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:21.684 24286 24286 I CS3ExoPlayer: onStop
+07-30 20:12:21.684 24286 24286 I CS3ExoPlayer: saveData
+07-30 20:12:21.684 24286 24286 I CS3ExoPlayer: handleEvent Pause
+07-30 20:12:21.730 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.737 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:21.737 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:21.738 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:21.758 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:21.837 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.838 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.845 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:21.847 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.857 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.866 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.883 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.902 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.908 24286 24286 I SurfaceView@4f2c164: onWindowVisibilityChanged(8) false android.view.SurfaceView{4f2c164 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:21.908 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.908 24286 24286 I SurfaceView: 83018084 Detaching SV
+07-30 20:12:21.908 24286 24286 D SurfaceView: 83018084 updateSurface: has no frame
+07-30 20:12:21.908 24286 24286 I SurfaceView@4f2c164: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:21.909 24286 24286 I SurfaceView@4f2c164: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:21.915 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:21.915 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:21.923 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:21.923 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=0 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:21.924 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:21.925 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:21.925 24286 24454 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000706ea67b80 mBlastBufferQueue=0xb40000706b09d000 fn= 321 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:21.989 24286 24292 I st.cloudstream3: Background concurrent mark compact GC freed 15MB AllocSpace bytes, 219(3536KB) LOS objects, 35% free, 44MB/68MB, paused 3.511ms,3.002ms total 255.275ms
+07-30 20:12:21.997 24286 24293 D InputTransport: Input channel destroyed: 'ClientS', fd=275
+07-30 20:12:22.036 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:22.045 24286 24356 D skia    : SkJpegCodec::onGetPixels + (460, 648)
+07-30 20:12:22.064 24286 24356 D skia    : SkJpegCodec::onGetPixels -
+07-30 20:12:22.068 24286 24356 D libMEOW : meow new tls: 0xb400007140133900
+07-30 20:12:22.068 24286 24356 D libMEOW : applied 1 plugins for [com.lagradost.cloudstream3]:
+07-30 20:12:22.068 24286 24356 D libMEOW :   plugin 1: [libMEOW_gift.so]:
+07-30 20:12:22.103 24286 24424 D skia    : SkJpegCodec::onGetPixels + (460, 639)
+07-30 20:12:22.103 24286 24393 D skia    : SkJpegCodec::onGetPixels + (460, 643)
+07-30 20:12:22.105 24286 24356 D skia    : SkJpegCodec::onGetPixels + (460, 636)
+07-30 20:12:22.115 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:22.116 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:22.116 24286 24356 D skia    : SkJpegCodec::onGetPixels -
+07-30 20:12:22.120 24286 24424 D skia    : SkJpegCodec::onGetPixels -
+07-30 20:12:22.124 24286 24393 D skia    : SkJpegCodec::onGetPixels -
+07-30 20:12:22.128 24286 24393 D libMEOW : meow new tls: 0xb40000706b25bb00
+07-30 20:12:22.128 24286 24393 D libMEOW : applied 1 plugins for [com.lagradost.cloudstream3]:
+07-30 20:12:22.128 24286 24393 D libMEOW :   plugin 1: [libMEOW_gift.so]:
+07-30 20:12:22.154 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:22.374 24286 24393 D skia    : SkJpegCodec::onGetPixels + (460, 650)
+07-30 20:12:22.384 24286 24393 D skia    : SkJpegCodec::onGetPixels -
+07-30 20:12:22.452 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:22.701 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:22.783 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:22.794 24286 24286 I NavComponent: Navigating to fragment: 2131362305
+07-30 20:12:22.795 24286 24286 I ImeTracker: com.lagradost.cloudstream3:63b5d7bf: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:22.796 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:22.796 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:22.810 24286 24286 D ScrollView: initGoToTop
+07-30 20:12:22.814 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:22.814 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:22.815 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:22.863 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.009 24286 24286 W Resources: Drawable com.lagradost.cloudstream3:drawable/go_forward_30 has unresolved theme attributes! Consider using Resources.getDrawable(int, Theme) or Context.getDrawable(int).
+07-30 20:12:23.009 24286 24286 W Resources: java.lang.RuntimeException
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.content.res.Resources.getDrawable(Resources.java:956)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzd(com.google.android.gms:play-services-cast-framework@@22.1.0:2)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzc(com.google.android.gms:play-services-cast-framework@@22.1.0:1)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.zza(com.google.android.gms:play-services-cast-framework@@22.1.0:41)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.onCreateView(com.google.android.gms:play-services-cast-framework@@22.1.0:30)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.ensureInflatedView(FragmentStateManager.java:418)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:285)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentLayoutInflaterFactory.onCreateView(FragmentLayoutInflaterFactory.java:142)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater$FactoryMerger.onCreateView(LayoutInflater.java:228)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.tryCreateView(LayoutInflater.java:965)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:901)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:865)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1027)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:576)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:468)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.lagradost.cloudstream3.databinding.FragmentResultSwipeBinding.inflate(FragmentResultSwipeBinding.java:140)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragmentHelper$-CC.$default$createBinding(BaseFragment.kt:51)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.createBinding(BaseFragment.kt:124)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.onCreateView(BaseFragment.kt:160)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.createView(FragmentStateManager.java:577)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:286)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.executeOpsTogether(FragmentManager.java:2214)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.removeRedundantOperationsAndExecute(FragmentManager.java:2115)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.execPendingActions(FragmentManager.java:2052)
+07-30 20:12:23.009 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager$5.run(FragmentManager.java:703)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.os.Handler.handleCallback(Handler.java:959)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.os.Handler.dispatchMessage(Handler.java:100)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.os.Looper.loopOnce(Looper.java:257)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.os.Looper.loop(Looper.java:342)
+07-30 20:12:23.009 24286 24286 W Resources: 	at android.app.ActivityThread.main(ActivityThread.java:9638)
+07-30 20:12:23.009 24286 24286 W Resources: 	at java.lang.reflect.Method.invoke(Native Method)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:619)
+07-30 20:12:23.009 24286 24286 W Resources: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:929)
+07-30 20:12:23.012 24286 24286 I SurfaceView@fca6235: onWindowVisibilityChanged(0) true android.view.SurfaceView{fca6235 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:23.012 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.016 24286 24286 I CS3ExoPlayer: SET STYLE = SaveCaptionStyle(foregroundColor=-1, backgroundColor=0, windowColor=0, edgeType=1, edgeColor=-16777216, typeface=null, typefaceFilePath=null, elevation=20, fixedTextSize=28.0, edgeSize=null, removeCaptions=false, removeBloat=true, upperCase=false, bold=true, italic=false, backgroundRadius=null, alignment=null)
+07-30 20:12:23.019 24286 24286 I ImeTracker: com.lagradost.cloudstream3:9cbfb118: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:23.020 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:23.020 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:23.020 24286 24424 I SYNCVM  : addFromUrl = https://anichan.net/101922
+07-30 20:12:23.020 24286 24424 I SYNCUTIL: getIdsFromUrl https://anichan.net/101922
+07-30 20:12:23.021 24286 24393 D ApiError: -------------------------------------------------------------------
+07-30 20:12:23.021 24286 24393 D ApiError: safeApiCall: null
+07-30 20:12:23.021 24286 24393 D ApiError: safeApiCall: null
+07-30 20:12:23.021 24286 24393 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invokeSuspend(ResultViewModel2.kt:2661)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:26)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:6)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invokeSuspend(Coroutines.kt:28)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:8)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:4)
+07-30 20:12:23.021 24286 24393 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$launchSafe$obj$1.invokeSuspend(ArchComponentExt.kt:156)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:23.021 24286 24393 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:23.021 24286 24393 D ApiError: -------------------------------------------------------------------
+07-30 20:12:23.031 24286 24286 I SurfaceView@fca6235: onWindowVisibilityChanged(8) false android.view.SurfaceView{fca6235 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:23.031 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.031 24286 24286 I SurfaceView: 264921653 Detaching SV
+07-30 20:12:23.031 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.031 24286 24286 I SurfaceView@fca6235: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:23.031 24286 24286 I SurfaceView@fca6235: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:23.033 24286 24286 I SurfaceView@fca6235: onWindowVisibilityChanged(0) true android.view.SurfaceView{fca6235 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:23.033 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.037 24286 24286 I CS3ExoPlayer: reloadPlayer
+07-30 20:12:23.037 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:23.037 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:23.040 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:23.041 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=0 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:23.041 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{5493cc7 I.E..V... ......I. 0,0-0,0 #7f0a0546 app:id/start_panel} during layout: running second layout pass
+07-30 20:12:23.041 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{99db2f4 I.E..V... ......ID 720,0-720,1419 #7f0a0184 app:id/end_panel} during layout: running second layout pass
+07-30 20:12:23.042 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.043 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:23.046 24286 24455 I VRI[MainActivity]@4c299b0: mWNT: t=0xb4000070b62a1000 mBlastBufferQueue=0xb40000706b09d000 fn= 378 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:23.049 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.057 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.074 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.091 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.107 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.124 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.140 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.157 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.173 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.190 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.206 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.223 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.239 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.256 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.273 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.289 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.306 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.322 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.339 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.356 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.372 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.694 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:23.724 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:23.736 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:23.752 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:23.769 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:23.785 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:23.802 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:23.812 24286 24286 D WindowOnBackDispatcher: onBackInvoked, owner=VRI[Toast]@d402f5a, callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@d5308cd
+07-30 20:12:23.812 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 0
+07-30 20:12:23.812 24286 24286 D Activity: onKeyDown(KEYCODE_BACK), activity=com.lagradost.cloudstream3.MainActivity@35ddabb
+07-30 20:12:23.813 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 1
+07-30 20:12:23.815 24286 24286 I ImeTracker: com.lagradost.cloudstream3:3b1853dd: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:23.815 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:23.815 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:23.818 24286 24286 I CS3ExoPlayer: onStop
+07-30 20:12:23.818 24286 24286 I CS3ExoPlayer: saveData
+07-30 20:12:23.818 24286 24286 I CS3ExoPlayer: handleEvent Pause
+07-30 20:12:23.871 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:23.990 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.991 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:23.997 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:24.000 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:24.006 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:24.017 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:24.033 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:24.050 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:24.054 24286 24286 I SurfaceView@fca6235: onWindowVisibilityChanged(8) false android.view.SurfaceView{fca6235 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:24.054 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:24.054 24286 24286 I SurfaceView: 264921653 Detaching SV
+07-30 20:12:24.054 24286 24286 D SurfaceView: 264921653 updateSurface: has no frame
+07-30 20:12:24.054 24286 24286 I SurfaceView@fca6235: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:24.054 24286 24286 I SurfaceView@fca6235: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:24.057 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:24.057 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:24.067 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:24.067 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=1 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:24.068 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:24.073 24286 24454 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000706ea67880 mBlastBufferQueue=0xb40000706b09d000 fn= 404 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:24.488 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:24.991 24286 24286 I COMPACT : showToast = Reloaded
+07-30 20:12:24.994 24286 24286 E Toast   : setGravity() shouldn't be called on text toasts, the values won't be used
+07-30 20:12:24.994 24286 24286 I Toast   : setView: it's a custom toast
+07-30 20:12:24.995 24286 24286 I Toast   : show: caller = com.lagradost.cloudstream3.CommonActivity.showToast:192 
+07-30 20:12:24.996 24286 24286 I Toast   : show: contextDispId = 0 mCustomDisplayId = -1 focusedDisplayId = 0 isActivityContext = true
+07-30 20:12:25.008 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:25.008 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:25.009 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:25.031 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:25.071 24286 24286 V ToastPresenter: yOffset = 9
+07-30 20:12:25.071 24286 24286 I WindowManager: WindowManagerGlobal#addView, ty=2005, view=androidx.cardview.widget.CardView{14f43bd V.E..V... ......ID 0,0-0,0 #7f0a05be app:id/toast_layout_root}, caller=android.view.WindowManagerImpl.addView:158 android.widget.ToastPresenter.addToastView:424 android.widget.ToastPresenter.show:325 
+07-30 20:12:25.073 24286 24286 I ViewRootImpl: dVRR is disabled
+07-30 20:12:25.075 24286 24323 D NativeCustomFrequencyManager: [NativeCFMS] BpCustomFrequencyManager::BpCustomFrequencyManager()
+07-30 20:12:25.079 24286 24286 D InputTransport: Input channel constructed: '96f9998', fd=294
+07-30 20:12:25.080 24286 24286 I InsetsController: onStateChanged: host=Toast, from=android.view.ViewRootImpl.setView:1999, state=InsetsState: {mDisplayFrame=Rect(0, 0 - 720, 1600), mDisplayCutout=DisplayCutout{insets=Rect(0, 59 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(320, 0 - 400, 59), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=720 displayHeight=1600 physicalDisplayWidth=720 physicalDisplayHeight=1600 density={1.875} cutoutSpec={M 0,0 H -21.33333333333333 V 31.46666666666667 H 21.33333333333333 V 0 H 0 Z @dp} rotation={0} scale={1.0} physicalPixelDisplaySizeRatio={1.0}}} sideOverrides={}}, mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=68, center=Point(68, 68)}, RoundedCorner{position=TopRight, radius=68, center=Point(652, 68)}, RoundedCorner{position=BottomRight, radius=68, center=Point(652, 1532)}, RoundedCorner{position=BottomLeft, radius=68, center=Point(68, 1532)}]}  mRoundedCornerFrame=Rect(0, 0 - 0, 0), mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(637, 0 - 720, 59) rotation=0}, mDisplayShape=DisplayShape{ spec=-311912193 displayWidth=720 displayHeight=1600 physicalPixelDisplaySizeRatio=1.0 rotation=0 offsetX=0 offsetY=0 scale=1.0}, mSources= { InsetsSource: {845b0000 mType=statusBars mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0005 mType=mandatorySystemGestures mFrame=[0,0][720,82] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0006 mType=tappableElement mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {b6ec0001 mType=navigationBars mFrame=[0,1572][720,1600] mVisible=true mFlags=SUPPRESS_SCRIM mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0004 mType=systemGestures mFrame=[0,0][56,1600] mVisible=true mFlags= mSideHint=LEFT mBoundingRects=null}, InsetsSource: {b6ec0005 mType=mandatorySystemGestures mFrame=[0,1540][720,1600] mVisible=true mFlags= mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0006 mType=tappableElement mFrame=[0,0][0,0] mVisible=true mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {b6ec0024 mType=systemGestures mFrame=[664,0][720,1600] mVisible=true mFlags= mSideHint=RIGHT mBoundingRects=null}, InsetsSource: {3 mType=ime mFrame=[0,0][0,0] mVisible=false mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {27 mType=displayCutout mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null} }
+07-30 20:12:25.081 24286 24286 I VRI[Toast]@6919db2: synced displayState. AttachInfo displayState=2
+07-30 20:12:25.081 24286 24286 I VRI[Toast]@6919db2: setView = androidx.cardview.widget.CardView@14f43bd IsHRR=false TM=true
+07-30 20:12:25.090 24286 24286 D BufferQueueConsumer: [](id:5ede00000003,api:0,p:-1,c:24286) connect: controlledByApp=false
+07-30 20:12:25.090 24286 24286 I BLASTBufferQueue: [VRI[Toast]@6919db2#3](f:0,a:0,s:0) constructor()
+07-30 20:12:25.091 24286 24286 I BLASTBufferQueue_Java: new BLASTBufferQueue, mName= VRI[Toast]@6919db2 mNativeObject= 0xb40000714ed39400 sc.mNativeObject= 0xb4000070375fb400 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3397 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 android.view.Choreographer$CallbackRecord.run:1760 android.view.Choreographer.doCallbacks:1216 android.view.Choreographer.doFrame:1142 android.view.Choreographer$FrameDisplayEventReceiver.run:1707 
+07-30 20:12:25.091 24286 24286 I BLASTBufferQueue_Java: update, w= 198 h= 124 mName = VRI[Toast]@6919db2 mNativeObject= 0xb40000714ed39400 sc.mNativeObject= 0xb4000070375fb400 format= -3 caller= android.graphics.BLASTBufferQueue.<init>:88 android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3397 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 
+07-30 20:12:25.091 24286 24286 I BLASTBufferQueue: [VRI[Toast]@6919db2#3](f:0,a:0,s:0) update width=198 height=124 format=-3 mTransformHint=0
+07-30 20:12:25.091 24286 24286 I VRI[Toast]@6919db2: Relayout returned: old=(0,59,720,1572) new=(269,1455,451,1563) relayoutAsync=false req=(182,108)0 dur=5 res=0x3 s={true 0xb4000070370a0800} ch=true seqId=0
+07-30 20:12:25.092 24286 24286 D VRI[Toast]@6919db2: mThreadedRenderer.initialize() mSurface={isValid=true 0xb4000070370a0800} hwInitialized=true
+07-30 20:12:25.093 24286 24286 D VRI[Toast]@6919db2: reportNextDraw android.view.ViewRootImpl.performTraversals:5193 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 android.view.Choreographer$CallbackRecord.run:1760 
+07-30 20:12:25.093 24286 24286 D VRI[Toast]@6919db2: Setup new sync=wmsSync-VRI[Toast]@6919db2#6
+07-30 20:12:25.093 24286 24286 I VRI[Toast]@6919db2: Creating new active sync group VRI[Toast]@6919db2#7
+07-30 20:12:25.093 24286 24286 D VRI[Toast]@6919db2: registerCallbacksForSync syncBuffer=false
+07-30 20:12:25.094 24286 24455 D VRI[Toast]@6919db2: Received frameDrawingCallback syncResult=0 frameNum=1.
+07-30 20:12:25.094 24286 24455 I VRI[Toast]@6919db2: mWNT: t=0xb40000706eb98b00 mBlastBufferQueue=0xb40000714ed39400 fn= 1 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$11.onFrameDraw:15016 android.view.ThreadedRenderer$1.onFrameDraw:761 <bottom of call stack> 
+07-30 20:12:25.094 24286 24455 I VRI[Toast]@6919db2: Setting up sync and frameCommitCallback
+07-30 20:12:25.095 24286 24323 I BLASTBufferQueue: [VRI[Toast]@6919db2#3](f:0,a:0,s:0) onFrameAvailable the first frame is available
+07-30 20:12:25.096 24286 24323 I BLASTBufferQueue: [VRI[Toast]@6919db2#3](f:0,a:1,s:0) acquireNextBufferLocked size=198x124 mFrameNumber=1 applyTransaction=true mTimestamp=99827120916180(auto) mPendingTransactions.size=0 graphicBufferId=104307575750678 transform=0
+07-30 20:12:25.096 24286 24323 I VRI[Toast]@6919db2: Received frameCommittedCallback lastAttemptedDrawFrameNum=1 didProduceBuffer=true
+07-30 20:12:25.097 24286 24323 D HWUI    : CFMS:: SetUp Pid : 24286    Tid : 24323
+07-30 20:12:25.097 24286 24286 D VRI[Toast]@6919db2: reportDrawFinished seqId=0
+07-30 20:12:25.098 24286 24323 D HWUI    : HWUI - treat SMPTE_170M as sRGB
+07-30 20:12:25.198 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:25.391 24286 24423 D ApiError: -------------------------------------------------------------------
+07-30 20:12:25.391 24286 24423 D ApiError: safeApiCall: null
+07-30 20:12:25.391 24286 24423 D ApiError: safeApiCall: null
+07-30 20:12:25.391 24286 24423 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:25.391 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:25.391 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:25.391 24286 24423 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:25.391 24286 24423 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:25.391 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invokeSuspend(HomeViewModel.kt:305)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invoke(HomeViewModel.kt:8)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invoke(HomeViewModel.kt:4)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ParCollectionsKt$amap$4$1$1.invokeSuspend(ParCollections.kt:39)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:25.392 24286 24423 D ApiError: -------------------------------------------------------------------
+07-30 20:12:25.392 24286 24423 D ApiError: -------------------------------------------------------------------
+07-30 20:12:25.392 24286 24423 D ApiError: safeApiCall: null
+07-30 20:12:25.392 24286 24423 D ApiError: safeApiCall: null
+07-30 20:12:25.392 24286 24423 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:25.392 24286 24404 D ApiError: -------------------------------------------------------------------
+07-30 20:12:25.392 24286 24404 D ApiError: safeApiCall: null
+07-30 20:12:25.392 24286 24404 D ApiError: safeApiCall: null
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:25.392 24286 24423 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invokeSuspend(HomeViewModel.kt:305)
+07-30 20:12:25.392 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invoke(HomeViewModel.kt:8)
+07-30 20:12:25.393 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invoke(HomeViewModel.kt:4)
+07-30 20:12:25.393 24286 24423 W System.err: 	at com.lagradost.cloudstream3.ParCollectionsKt$amap$4$1$1.invokeSuspend(ParCollections.kt:39)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:25.393 24286 24423 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:25.393 24286 24423 D ApiError: -------------------------------------------------------------------
+07-30 20:12:25.394 24286 24404 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invokeSuspend(HomeViewModel.kt:305)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invoke(HomeViewModel.kt:8)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.home.HomeViewModel$updatePreviewResponses$add$1.invoke(HomeViewModel.kt:4)
+07-30 20:12:25.394 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ParCollectionsKt$amap$4$1$1.invokeSuspend(ParCollections.kt:39)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:25.394 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:25.394 24286 24404 D ApiError: -------------------------------------------------------------------
+07-30 20:12:27.001 24286 24286 I WindowManager: WindowManagerGlobal#removeView, ty=2005, view=androidx.cardview.widget.CardView{14f43bd V.E..V... ........ 0,0-182,108 #7f0a05be app:id/toast_layout_root}, caller=android.view.WindowManagerGlobal.removeView:626 android.view.WindowManagerImpl.removeViewImmediate:216 android.widget.ToastPresenter.hide:348 
+07-30 20:12:27.001 24286 24286 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=false callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@eeb310a
+07-30 20:12:27.004 24286 24286 I VRI[Toast]@6919db2: dispatchDetachedFromWindow
+07-30 20:12:27.004 24286 24286 I BLASTBufferQueue: [VRI[Toast]@6919db2#3](f:0,a:1,s:0) destructor()
+07-30 20:12:27.004 24286 24286 D BufferQueueConsumer: [VRI[Toast]@6919db2#3(BLAST Consumer)3](id:5ede00000003,api:0,p:-1,c:24286) disconnect
+07-30 20:12:27.010 24286 24286 D InputTransport: Input channel destroyed: '96f9998', fd=294
+07-30 20:12:27.911 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:27.993 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:28.004 24286 24286 I NavComponent: Navigating to fragment: 2131362305
+07-30 20:12:28.006 24286 24286 I ImeTracker: com.lagradost.cloudstream3:2f51a2fa: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:28.006 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:28.006 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:28.017 24286 24286 D ScrollView: initGoToTop
+07-30 20:12:28.020 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:28.020 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:28.021 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:28.066 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.196 24286 24286 W Resources: Drawable com.lagradost.cloudstream3:drawable/go_forward_30 has unresolved theme attributes! Consider using Resources.getDrawable(int, Theme) or Context.getDrawable(int).
+07-30 20:12:28.196 24286 24286 W Resources: java.lang.RuntimeException
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.content.res.Resources.getDrawable(Resources.java:956)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzd(com.google.android.gms:play-services-cast-framework@@22.1.0:2)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzc(com.google.android.gms:play-services-cast-framework@@22.1.0:1)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.zza(com.google.android.gms:play-services-cast-framework@@22.1.0:41)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.onCreateView(com.google.android.gms:play-services-cast-framework@@22.1.0:30)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.ensureInflatedView(FragmentStateManager.java:418)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:285)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentLayoutInflaterFactory.onCreateView(FragmentLayoutInflaterFactory.java:142)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater$FactoryMerger.onCreateView(LayoutInflater.java:228)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.tryCreateView(LayoutInflater.java:965)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:901)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:865)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1027)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:576)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:468)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.lagradost.cloudstream3.databinding.FragmentResultSwipeBinding.inflate(FragmentResultSwipeBinding.java:140)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragmentHelper$-CC.$default$createBinding(BaseFragment.kt:51)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.createBinding(BaseFragment.kt:124)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.onCreateView(BaseFragment.kt:160)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.createView(FragmentStateManager.java:577)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:286)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.executeOpsTogether(FragmentManager.java:2214)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.removeRedundantOperationsAndExecute(FragmentManager.java:2115)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.execPendingActions(FragmentManager.java:2052)
+07-30 20:12:28.196 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager$5.run(FragmentManager.java:703)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.os.Handler.handleCallback(Handler.java:959)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.os.Handler.dispatchMessage(Handler.java:100)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.os.Looper.loopOnce(Looper.java:257)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.os.Looper.loop(Looper.java:342)
+07-30 20:12:28.196 24286 24286 W Resources: 	at android.app.ActivityThread.main(ActivityThread.java:9638)
+07-30 20:12:28.196 24286 24286 W Resources: 	at java.lang.reflect.Method.invoke(Native Method)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:619)
+07-30 20:12:28.196 24286 24286 W Resources: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:929)
+07-30 20:12:28.199 24286 24286 I SurfaceView@7262083: onWindowVisibilityChanged(0) true android.view.SurfaceView{7262083 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:28.199 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.202 24286 24286 I CS3ExoPlayer: SET STYLE = SaveCaptionStyle(foregroundColor=-1, backgroundColor=0, windowColor=0, edgeType=1, edgeColor=-16777216, typeface=null, typefaceFilePath=null, elevation=20, fixedTextSize=28.0, edgeSize=null, removeCaptions=false, removeBloat=true, upperCase=false, bold=true, italic=false, backgroundRadius=null, alignment=null)
+07-30 20:12:28.205 24286 24286 I ImeTracker: com.lagradost.cloudstream3:b724e6a: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:28.205 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:28.205 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:28.207 24286 24354 D ApiError: -------------------------------------------------------------------
+07-30 20:12:28.207 24286 24354 D ApiError: safeApiCall: null
+07-30 20:12:28.207 24286 24354 D ApiError: safeApiCall: null
+07-30 20:12:28.207 24286 24354 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invokeSuspend(ResultViewModel2.kt:2661)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:26)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:6)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invokeSuspend(Coroutines.kt:28)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:8)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:4)
+07-30 20:12:28.207 24286 24354 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$launchSafe$obj$1.invokeSuspend(ArchComponentExt.kt:156)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:28.207 24286 24354 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:28.207 24286 24354 D ApiError: -------------------------------------------------------------------
+07-30 20:12:28.207 24286 24354 I SYNCVM  : addFromUrl = https://anichan.net/135865
+07-30 20:12:28.207 24286 24354 I SYNCUTIL: getIdsFromUrl https://anichan.net/135865
+07-30 20:12:28.216 24286 24286 I SurfaceView@7262083: onWindowVisibilityChanged(8) false android.view.SurfaceView{7262083 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:28.216 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.216 24286 24286 I SurfaceView: 119939203 Detaching SV
+07-30 20:12:28.216 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.216 24286 24286 I SurfaceView@7262083: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:28.216 24286 24286 I SurfaceView@7262083: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:28.217 24286 24286 I SurfaceView@7262083: onWindowVisibilityChanged(0) true android.view.SurfaceView{7262083 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:28.217 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.221 24286 24286 I CS3ExoPlayer: reloadPlayer
+07-30 20:12:28.221 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:28.221 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:28.225 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:28.225 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=0 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:28.226 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{5105c0f I.E..V... ......I. 0,0-0,0 #7f0a0546 app:id/start_panel} during layout: running second layout pass
+07-30 20:12:28.226 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{69df49c I.E..V... ......ID 720,0-720,1419 #7f0a0184 app:id/end_panel} during layout: running second layout pass
+07-30 20:12:28.227 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.227 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:28.230 24286 24454 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000706ae87280 mBlastBufferQueue=0xb40000706b09d000 fn= 466 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:28.236 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.251 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.268 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.284 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.301 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.317 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.334 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.350 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.367 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.383 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.385 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:28.385 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:28.400 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.416 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.433 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.450 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.466 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.483 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.499 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.516 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.532 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.549 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:28.566 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:30.994 24286 24286 I VRI[MainActivity]@4c299b0: call setFrameRateCategory for touch hint category=no preference, reason=boost timeout, vri=VRI[MainActivity]@4c299b0
+07-30 20:12:35.819 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:35.822 24286 24286 I VRI[MainActivity]@4c299b0: call setFrameRateCategory for touch hint category=high hint, reason=touch, vri=VRI[MainActivity]@4c299b0
+07-30 20:12:35.910 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:35.911 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:35.925 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:35.942 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:35.958 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:35.975 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:35.991 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:36.008 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:36.024 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:36.041 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:36.051 24286 24286 D WindowOnBackDispatcher: onBackInvoked, owner=VRI[Toast]@6919db2, callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@d5308cd
+07-30 20:12:36.051 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 0
+07-30 20:12:36.051 24286 24286 D Activity: onKeyDown(KEYCODE_BACK), activity=com.lagradost.cloudstream3.MainActivity@35ddabb
+07-30 20:12:36.053 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 1
+07-30 20:12:36.056 24286 24286 I ImeTracker: com.lagradost.cloudstream3:bbe91717: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:36.056 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:36.056 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:36.058 24286 24286 I CS3ExoPlayer: onStop
+07-30 20:12:36.058 24286 24286 I CS3ExoPlayer: saveData
+07-30 20:12:36.058 24286 24286 I CS3ExoPlayer: handleEvent Pause
+07-30 20:12:36.109 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:36.115 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:36.115 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:36.116 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:36.137 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:36.185 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.186 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.192 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:36.193 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.208 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.229 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.239 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.257 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.273 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.289 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.293 24286 24286 I SurfaceView@7262083: onWindowVisibilityChanged(8) false android.view.SurfaceView{7262083 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:36.293 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.293 24286 24286 I SurfaceView: 119939203 Detaching SV
+07-30 20:12:36.293 24286 24286 D SurfaceView: 119939203 updateSurface: has no frame
+07-30 20:12:36.293 24286 24286 I SurfaceView@7262083: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:36.293 24286 24286 I SurfaceView@7262083: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:36.298 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:36.299 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:36.306 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:36.306 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=0 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:36.307 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:36.309 24286 24455 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000706eb98c80 mBlastBufferQueue=0xb40000706b09d000 fn= 494 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:36.347 24286 24292 I st.cloudstream3: Background concurrent mark compact GC freed 18MB AllocSpace bytes, 180(2896KB) LOS objects, 33% free, 47MB/71MB, paused 3.649ms,2.730ms total 282.008ms
+07-30 20:12:36.760 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:36.841 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:36.853 24286 24286 I NavComponent: Navigating to fragment: 2131362305
+07-30 20:12:36.854 24286 24286 I ImeTracker: com.lagradost.cloudstream3:5dfa3742: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:36.854 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:36.854 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:36.869 24286 24286 D ScrollView: initGoToTop
+07-30 20:12:36.873 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:36.873 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:36.874 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:36.927 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.072 24286 24286 W Resources: Drawable com.lagradost.cloudstream3:drawable/go_forward_30 has unresolved theme attributes! Consider using Resources.getDrawable(int, Theme) or Context.getDrawable(int).
+07-30 20:12:37.072 24286 24286 W Resources: java.lang.RuntimeException
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.content.res.Resources.getDrawable(Resources.java:956)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzd(com.google.android.gms:play-services-cast-framework@@22.1.0:2)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.zzq.zzc(com.google.android.gms:play-services-cast-framework@@22.1.0:1)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.zza(com.google.android.gms:play-services-cast-framework@@22.1.0:41)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.google.android.gms.cast.framework.media.widget.MiniControllerFragment.onCreateView(com.google.android.gms:play-services-cast-framework@@22.1.0:30)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.ensureInflatedView(FragmentStateManager.java:418)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:285)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentLayoutInflaterFactory.onCreateView(FragmentLayoutInflaterFactory.java:142)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater$FactoryMerger.onCreateView(LayoutInflater.java:228)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.tryCreateView(LayoutInflater.java:965)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:901)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.createViewFromTag(LayoutInflater.java:865)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1027)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflate(LayoutInflater.java:1030)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.rInflateChildren(LayoutInflater.java:988)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:576)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.view.LayoutInflater.inflate(LayoutInflater.java:468)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.lagradost.cloudstream3.databinding.FragmentResultSwipeBinding.inflate(FragmentResultSwipeBinding.java:140)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.result.ResultFragmentPhone$1.invoke(ResultFragmentPhone.kt:112)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragmentHelper$-CC.$default$createBinding(BaseFragment.kt:51)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.createBinding(BaseFragment.kt:124)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.lagradost.cloudstream3.ui.BaseFragment.onCreateView(BaseFragment.kt:160)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.Fragment.performCreateView(Fragment.java:3119)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.createView(FragmentStateManager.java:577)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentStateManager.moveToExpectedState(FragmentStateManager.java:286)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.executeOpsTogether(FragmentManager.java:2214)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.removeRedundantOperationsAndExecute(FragmentManager.java:2115)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager.execPendingActions(FragmentManager.java:2052)
+07-30 20:12:37.072 24286 24286 W Resources: 	at androidx.fragment.app.FragmentManager$5.run(FragmentManager.java:703)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.os.Handler.handleCallback(Handler.java:959)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.os.Handler.dispatchMessage(Handler.java:100)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.os.Looper.loopOnce(Looper.java:257)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.os.Looper.loop(Looper.java:342)
+07-30 20:12:37.072 24286 24286 W Resources: 	at android.app.ActivityThread.main(ActivityThread.java:9638)
+07-30 20:12:37.072 24286 24286 W Resources: 	at java.lang.reflect.Method.invoke(Native Method)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:619)
+07-30 20:12:37.072 24286 24286 W Resources: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:929)
+07-30 20:12:37.075 24286 24286 I SurfaceView@886ca54: onWindowVisibilityChanged(0) true android.view.SurfaceView{886ca54 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:37.075 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.080 24286 24286 I CS3ExoPlayer: SET STYLE = SaveCaptionStyle(foregroundColor=-1, backgroundColor=0, windowColor=0, edgeType=1, edgeColor=-16777216, typeface=null, typefaceFilePath=null, elevation=20, fixedTextSize=28.0, edgeSize=null, removeCaptions=false, removeBloat=true, upperCase=false, bold=true, italic=false, backgroundRadius=null, alignment=null)
+07-30 20:12:37.083 24286 24286 I ImeTracker: com.lagradost.cloudstream3:da9463af: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:37.083 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:37.083 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:37.084 24286 24372 I SYNCVM  : addFromUrl = https://anichan.net/194829
+07-30 20:12:37.084 24286 24372 I SYNCUTIL: getIdsFromUrl https://anichan.net/194829
+07-30 20:12:37.084 24286 24404 D ApiError: -------------------------------------------------------------------
+07-30 20:12:37.084 24286 24404 D ApiError: safeApiCall: null
+07-30 20:12:37.084 24286 24404 D ApiError: safeApiCall: null
+07-30 20:12:37.084 24286 24404 W System.err: com.lagradost.cloudstream3.ErrorLoadingException
+07-30 20:12:37.084 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invokeSuspend(APIRepository.kt:118)
+07-30 20:12:37.084 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:8)
+07-30 20:12:37.084 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2$1.invoke(APIRepository.kt:4)
+07-30 20:12:37.084 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:37.084 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturnIgnoreTimeout(Undispatched.kt:50)
+07-30 20:12:37.084 24286 24404 W System.err: 	at kotlinx.coroutines.TimeoutKt.setupTimeout(Timeout.kt:233)
+07-30 20:12:37.084 24286 24404 W System.err: 	at kotlinx.coroutines.TimeoutKt.withTimeout(Timeout.kt:29)
+07-30 20:12:37.084 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invokeSuspend(APIRepository.kt:87)
+07-30 20:12:37.084 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:8)
+07-30 20:12:37.084 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository$load$2.invoke(APIRepository.kt:2)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invokeSuspend(ArchComponentExt.kt:243)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:8)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$safeApiCall$2.invoke(ArchComponentExt.kt:4)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatched(Undispatched.kt:66)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:43)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:497)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.BuildersKt.withContext(dex-id-7a922e046e848f9c32ce1964dfc6ebe0e3d51976:1)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt.safeApiCall(ArchComponentExt.kt:241)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.APIRepository.load(APIRepository.kt:86)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invokeSuspend(ResultViewModel2.kt:2661)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:26)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.ui.result.ResultViewModel2$load$1.invoke(ResultViewModel2.kt:6)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invokeSuspend(Coroutines.kt:28)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:8)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.utils.Coroutines$ioSafe$1.invoke(Coroutines.kt:4)
+07-30 20:12:37.085 24286 24404 W System.err: 	at com.lagradost.cloudstream3.mvvm.ArchComponentExtKt$launchSafe$obj$1.invokeSuspend(ArchComponentExt.kt:156)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:34)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:124)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:586)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:798)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:717)
+07-30 20:12:37.085 24286 24404 W System.err: 	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:704)
+07-30 20:12:37.085 24286 24404 D ApiError: -------------------------------------------------------------------
+07-30 20:12:37.095 24286 24286 I SurfaceView@886ca54: onWindowVisibilityChanged(8) false android.view.SurfaceView{886ca54 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:37.095 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.095 24286 24286 I SurfaceView: 143051348 Detaching SV
+07-30 20:12:37.095 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.095 24286 24286 I SurfaceView@886ca54: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:37.095 24286 24286 I SurfaceView@886ca54: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:37.096 24286 24286 I SurfaceView@886ca54: onWindowVisibilityChanged(0) true android.view.SurfaceView{886ca54 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:37.096 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.100 24286 24286 I CS3ExoPlayer: reloadPlayer
+07-30 20:12:37.100 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:37.100 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:37.104 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:37.104 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=0 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:37.105 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{25844f I.E..V... ......I. 0,0-0,0 #7f0a0546 app:id/start_panel} during layout: running second layout pass
+07-30 20:12:37.105 24286 24286 W View    : requestLayout() improperly called by android.widget.FrameLayout{26397dc I.E..V... ......ID 720,0-720,1419 #7f0a0184 app:id/end_panel} during layout: running second layout pass
+07-30 20:12:37.106 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.106 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:37.109 24286 24454 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000714ea3d780 mBlastBufferQueue=0xb40000706b09d000 fn= 510 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:37.118 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.132 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.149 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.166 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.182 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.199 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.215 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.232 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.248 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.265 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.266 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:37.266 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:37.282 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.298 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.315 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.331 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.348 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.364 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.381 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.397 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.414 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.430 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:37.447 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:38.761 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:38.791 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.803 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.820 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.836 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.853 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.869 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.886 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.902 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.911 24286 24286 D WindowOnBackDispatcher: onBackInvoked, owner=VRI[Toast]@6919db2, callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@d5308cd
+07-30 20:12:38.913 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 0
+07-30 20:12:38.913 24286 24286 D Activity: onKeyDown(KEYCODE_BACK), activity=com.lagradost.cloudstream3.MainActivity@35ddabb
+07-30 20:12:38.913 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme key 1
+07-30 20:12:38.914 24286 24286 I ImeTracker: com.lagradost.cloudstream3:c82101c9: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:38.914 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:38.915 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:38.916 24286 24286 I CS3ExoPlayer: onStop
+07-30 20:12:38.916 24286 24286 I CS3ExoPlayer: saveData
+07-30 20:12:38.916 24286 24286 I CS3ExoPlayer: handleEvent Pause
+07-30 20:12:38.965 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:38.971 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:38.972 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:38.972 24286 24286 I InputMethodManager: invalidateInput
+07-30 20:12:38.993 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:39.038 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.039 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.044 24286 24286 W PanelsChildGestureRegionObserver: failed to register view with ID 2131362883. already registered
+07-30 20:12:39.045 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.057 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.068 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.084 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.101 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.117 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.134 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.136 24286 24286 I SurfaceView@886ca54: onWindowVisibilityChanged(8) false android.view.SurfaceView{886ca54 V.E..V... ......I. 0,0-0,0} of VRI[MainActivity]@4c299b0
+07-30 20:12:39.136 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.136 24286 24286 I SurfaceView: 143051348 Detaching SV
+07-30 20:12:39.136 24286 24286 D SurfaceView: 143051348 updateSurface: has no frame
+07-30 20:12:39.136 24286 24286 I SurfaceView@886ca54: onDetachedFromWindow: tryReleaseSurfaces()
+07-30 20:12:39.136 24286 24286 I SurfaceView@886ca54: releaseSurfaces: viewRoot = VRI[MainActivity]@4c299b0
+07-30 20:12:39.140 24286 24286 I CS3ExoPlayer: releasePlayer
+07-30 20:12:39.140 24286 24286 I PlayerView: Handle event: PlayerAttachedEvent(player=null, source=Player)
+07-30 20:12:39.151 24286 24286 I BLASTBufferQueue_Java: update, w= 720 h= 1600 mName = VRI[MainActivity]@4c299b0 mNativeObject= 0xb40000706b09d000 sc.mNativeObject= 0xb40000706b0c86c0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3386 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 
+07-30 20:12:39.151 24286 24286 I VRI[MainActivity]@4c299b0: Relayout returned: old=(0,0,720,1600) new=(0,0,720,1600) relayoutAsync=true req=(720,1600)0 dur=1 res=0x0 s={true 0xb40000706e88e000} ch=false seqId=0
+07-30 20:12:39.152 24286 24286 I VRI[MainActivity]@4c299b0: registerCallbackForPendingTransactions
+07-30 20:12:39.153 24286 24455 I VRI[MainActivity]@4c299b0: mWNT: t=0xb40000714eafc600 mBlastBufferQueue=0xb40000706b09d000 fn= 539 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$9.onFrameDraw:6276 android.view.ViewRootImpl$3.onFrameDraw:2440 android.view.ThreadedRenderer$1.onFrameDraw:761 
+07-30 20:12:39.440 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:39.521 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:39.534 24286 24286 I ImeTracker: com.lagradost.cloudstream3:fd1328d6: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+07-30 20:12:39.534 24286 24286 I InputMethodManager_LC: hsifw() - flag : 0
+07-30 20:12:39.534 24286 24286 I InputMethodManager_LC: hsifw() - mService.hideSoftInput
+07-30 20:12:39.714 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:39.714 24286 24286 D AutofillManager: view not autofillable - not passing ime action check
+07-30 20:12:40.315 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:40.381 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:40.402 24286 24286 I Dialog  : mIsDeviceDefault = false, mIsSamsungBasicInteraction = false, isMetaDataInActivity = false
+07-30 20:12:40.406 24286 24286 I DecorView: setWindowBackground: isPopOver=false color=ff010102 d=android.graphics.drawable.InsetDrawable@f2c363b
+07-30 20:12:40.416 24286 24286 D ScrollView: initGoToTop
+07-30 20:12:40.422 24286 24286 I WindowManager: WindowManagerGlobal#addView, ty=2, view=com.android.internal.policy.DecorView{72dca21 V.E..V... R.....I. 0,0-0,0}[MainActivity], caller=android.view.WindowManagerImpl.addView:158 android.app.Dialog.show:511 com.lagradost.cloudstream3.ui.settings.SettingsUpdates.onCreatePreferences$lambda$5:154 
+07-30 20:12:40.423 24286 24286 I ViewRootImpl: dVRR is disabled
+07-30 20:12:40.424 24286 24323 D NativeCustomFrequencyManager: [NativeCFMS] BpCustomFrequencyManager::BpCustomFrequencyManager()
+07-30 20:12:40.435 24286 24286 D InputTransport: Input channel constructed: '8525390', fd=331
+07-30 20:12:40.436 24286 24286 I InsetsController: onStateChanged: host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity, from=android.view.ViewRootImpl.setView:1999, state=InsetsState: {mDisplayFrame=Rect(0, 0 - 720, 1600), mDisplayCutout=DisplayCutout{insets=Rect(0, 59 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(320, 0 - 400, 59), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=720 displayHeight=1600 physicalDisplayWidth=720 physicalDisplayHeight=1600 density={1.875} cutoutSpec={M 0,0 H -21.33333333333333 V 31.46666666666667 H 21.33333333333333 V 0 H 0 Z @dp} rotation={0} scale={1.0} physicalPixelDisplaySizeRatio={1.0}}} sideOverrides={}}, mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=68, center=Point(68, 68)}, RoundedCorner{position=TopRight, radius=68, center=Point(652, 68)}, RoundedCorner{position=BottomRight, radius=68, center=Point(652, 1532)}, RoundedCorner{position=BottomLeft, radius=68, center=Point(68, 1532)}]}  mRoundedCornerFrame=Rect(0, 0 - 720, 1600), mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(637, 0 - 720, 59) rotation=0}, mDisplayShape=DisplayShape{ spec=-311912193 displayWidth=720 displayHeight=1600 physicalPixelDisplaySizeRatio=1.0 rotation=0 offsetX=0 offsetY=0 scale=1.0}, mSources= { InsetsSource: {845b0000 mType=statusBars mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0005 mType=mandatorySystemGestures mFrame=[0,0][720,82] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0006 mType=tappableElement mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {b6ec0001 mType=navigationBars mFrame=[0,1572][720,1600] mVisible=true mFlags=SUPPRESS_SCRIM mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0004 mType=systemGestures mFrame=[0,0][56,1600] mVisible=true mFlags= mSideHint=LEFT mBoundingRects=null}, InsetsSource: {b6ec0005 mType=mandatorySystemGestures mFrame=[0,1540][720,1600] mVisible=true mFlags= mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0006 mType=tappableElement mFrame=[0,0][0,0] mVisible=true mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {b6ec0024 mType=systemGestures mFrame=[664,0][720,1600] mVisible=true mFlags= mSideHint=RIGHT mBoundingRects=null}, InsetsSource: {27 mType=displayCutout mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null} }
+07-30 20:12:40.436 24286 24286 I VRI[MainActivity]@89b4e46: synced displayState. AttachInfo displayState=2
+07-30 20:12:40.436 24286 24286 I VRI[MainActivity]@89b4e46: setView = com.android.internal.policy.DecorView@72dca21 IsHRR=false TM=true
+07-30 20:12:40.734 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=navigationBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:40.734 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=statusBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:40.735 24286 24286 D BufferQueueConsumer: [](id:5ede00000004,api:0,p:-1,c:24286) connect: controlledByApp=false
+07-30 20:12:40.736 24286 24286 I BLASTBufferQueue: [VRI[MainActivity]@89b4e46#4](f:0,a:0,s:0) constructor()
+07-30 20:12:40.736 24286 24286 I BLASTBufferQueue_Java: new BLASTBufferQueue, mName= VRI[MainActivity]@89b4e46 mNativeObject= 0xb4000070b62e3400 sc.mNativeObject= 0xb40000703c8686c0 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3397 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 android.view.Choreographer$CallbackRecord.run:1760 android.view.Choreographer.doCallbacks:1216 android.view.Choreographer.doFrame:1142 android.view.Choreographer$FrameDisplayEventReceiver.run:1707 
+07-30 20:12:40.736 24286 24286 I BLASTBufferQueue_Java: update, w= 804 h= 1633 mName = VRI[MainActivity]@89b4e46 mNativeObject= 0xb4000070b62e3400 sc.mNativeObject= 0xb40000703c8686c0 format= -3 caller= android.graphics.BLASTBufferQueue.<init>:88 android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3397 android.view.ViewRootImpl.relayoutWindow:11361 android.view.ViewRootImpl.performTraversals:4544 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 
+07-30 20:12:40.736 24286 24286 I BLASTBufferQueue: [VRI[MainActivity]@89b4e46#4](f:0,a:0,s:0) update width=804 height=1633 format=-3 mTransformHint=0
+07-30 20:12:40.737 24286 24286 I VRI[MainActivity]@89b4e46: Relayout returned: old=(0,59,720,1572) new=(18,59,702,1572) relayoutAsync=false req=(684,1513)0 dur=6 res=0x3 s={true 0xb400007033ee4800} ch=true seqId=0
+07-30 20:12:40.738 24286 24286 D VRI[MainActivity]@89b4e46: mThreadedRenderer.initialize() mSurface={isValid=true 0xb400007033ee4800} hwInitialized=true
+07-30 20:12:40.740 24286 24286 D VRI[MainActivity]@89b4e46: reportNextDraw android.view.ViewRootImpl.performTraversals:5193 android.view.ViewRootImpl.doTraversal:3708 android.view.ViewRootImpl$TraversalRunnable.run:12542 android.view.Choreographer$CallbackRecord.run:1751 android.view.Choreographer$CallbackRecord.run:1760 
+07-30 20:12:40.740 24286 24286 D VRI[MainActivity]@89b4e46: Setup new sync=wmsSync-VRI[MainActivity]@89b4e46#8
+07-30 20:12:40.741 24286 24286 I VRI[MainActivity]@89b4e46: Creating new active sync group VRI[MainActivity]@89b4e46#9
+07-30 20:12:40.741 24286 24286 D VRI[MainActivity]@89b4e46: registerCallbacksForSync syncBuffer=false
+07-30 20:12:40.745 24286 24454 D VRI[MainActivity]@89b4e46: Received frameDrawingCallback syncResult=0 frameNum=1.
+07-30 20:12:40.745 24286 24454 I VRI[MainActivity]@89b4e46: mWNT: t=0xb40000706ea67b80 mBlastBufferQueue=0xb4000070b62e3400 fn= 1 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$11.onFrameDraw:15016 android.view.ThreadedRenderer$1.onFrameDraw:761 <bottom of call stack> 
+07-30 20:12:40.745 24286 24454 I VRI[MainActivity]@89b4e46: Setting up sync and frameCommitCallback
+07-30 20:12:40.749 24286 24323 I BLASTBufferQueue: [VRI[MainActivity]@89b4e46#4](f:0,a:0,s:0) onFrameAvailable the first frame is available
+07-30 20:12:40.750 24286 24323 I BLASTBufferQueue: [VRI[MainActivity]@89b4e46#4](f:0,a:1,s:0) acquireNextBufferLocked size=804x1633 mFrameNumber=1 applyTransaction=true mTimestamp=99842774847565(auto) mPendingTransactions.size=0 graphicBufferId=104307575750684 transform=0
+07-30 20:12:40.750 24286 24323 I VRI[MainActivity]@89b4e46: Received frameCommittedCallback lastAttemptedDrawFrameNum=1 didProduceBuffer=true
+07-30 20:12:40.751 24286 24323 D HWUI    : CFMS:: SetUp Pid : 24286    Tid : 24323
+07-30 20:12:40.751 24286 24286 D VRI[MainActivity]@89b4e46: reportDrawFinished seqId=0
+07-30 20:12:40.756 24286 24323 D HWUI    : HWUI - treat SMPTE_170M as sRGB
+07-30 20:12:40.764 24286 24286 I ImeFocusController: onPreWindowFocus: skipped hasWindowFocus=false mHasImeFocus=true
+07-30 20:12:40.765 24286 24286 I ImeFocusController: onPostWindowFocus: skipped hasWindowFocus=false mHasImeFocus=true
+07-30 20:12:40.799 24286 24286 D VRI[MainActivity]@89b4e46: mThreadedRenderer.initializeIfNeeded()#2 mSurface={isValid=true 0xb400007033ee4800}
+07-30 20:12:40.799 24286 24286 I ImeFocusController: onPreWindowFocus: skipped hasWindowFocus=true mHasImeFocus=false
+07-30 20:12:40.799 24286 24286 I ImeFocusController: onPostWindowFocus: skipped hasWindowFocus=true mHasImeFocus=false
+07-30 20:12:41.906 24286 24286 I VRI[MainActivity]@89b4e46: ViewPostIme pointer 0
+07-30 20:12:41.906 24286 24286 I VRI[MainActivity]@89b4e46: call setFrameRateCategory for touch hint category=high hint, reason=touch, vri=VRI[MainActivity]@89b4e46
+07-30 20:12:42.001 24286 24286 I VRI[MainActivity]@89b4e46: ViewPostIme pointer 1
+07-30 20:12:42.062 24286 24286 I WindowManager: WindowManagerGlobal#removeView, ty=2, view=com.android.internal.policy.DecorView{72dca21 V.E..V... R....... 0,0-684,1513}[MainActivity], caller=android.view.WindowManagerGlobal.removeView:626 android.view.WindowManagerImpl.removeViewImmediate:216 android.app.Dialog.dismissDialog:808 
+07-30 20:12:42.062 24286 24286 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=false callback=android.view.ViewRootImpl$$ExternalSyntheticLambda15@a949c59
+07-30 20:12:42.065 24286 24323 D HWUI    : endAllActiveAnimators on 0xb40000703c9b2600 (RippleDrawable) with handle 0xb4000070370942a0
+07-30 20:12:42.065 24286 24286 I VRI[MainActivity]@89b4e46: dispatchDetachedFromWindow
+07-30 20:12:42.070 24286 24296 I BLASTBufferQueue: [VRI[MainActivity]@89b4e46#4](f:0,a:1,s:0) destructor()
+07-30 20:12:42.070 24286 24296 D BufferQueueConsumer: [VRI[MainActivity]@89b4e46#4(BLAST Consumer)4](id:5ede00000004,api:0,p:-1,c:24286) disconnect
+07-30 20:12:42.074 24286 24286 D InputTransport: Input channel destroyed: '8525390', fd=331
+07-30 20:12:42.086 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=navigationBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:42.086 24286 24286 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=statusBars, host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity
+07-30 20:12:42.104 24286 24286 D VRI[MainActivity]@4c299b0: mThreadedRenderer.initializeIfNeeded()#2 mSurface={isValid=true 0xb40000706e88e000}
+07-30 20:12:42.105 24286 24286 D InputMethodManagerUtils: startInputInner - Id : 0
+07-30 20:12:42.105 24286 24286 I InputMethodManager: startInputInner - IInputMethodManagerGlobalInvoker.startInputOrWindowGainedFocus
+07-30 20:12:42.109 24286 24481 D InputTransport: Input channel constructed: 'ClientS', fd=288
+07-30 20:12:42.531 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 0
+07-30 20:12:42.613 24286 24286 I VRI[MainActivity]@4c299b0: ViewPostIme pointer 1
+07-30 20:12:42.636 24286 24286 I Dialog  : mIsDeviceDefault = false, mIsSamsungBasicInteraction = false, isMetaDataInActivity = false
+07-30 20:12:42.639 24286 24286 I DecorView: setWindowBackground: isPopOver=false color=ff010102 d=android.graphics.drawable.InsetDrawable@1d96bc4
+07-30 20:12:42.648 24286 24286 D ScrollView: initGoToTop
+07-30 20:12:42.653 24286 24286 I WindowManager: WindowManagerGlobal#addView, ty=2, view=com.android.internal.policy.DecorView{f9e73eb V.E..V... R.....I. 0,0-0,0}[MainActivity], caller=android.view.WindowManagerImpl.addView:158 android.app.Dialog.show:511 com.lagradost.cloudstream3.ui.settings.SettingsUpdates.onCreatePreferences$lambda$5:154 
+07-30 20:12:42.655 24286 24286 I ViewRootImpl: dVRR is disabled
+07-30 20:12:42.656 24286 24323 D NativeCustomFrequencyManager: [NativeCFMS] BpCustomFrequencyManager::BpCustomFrequencyManager()
+07-30 20:12:42.664 24286 24286 D InputTransport: Input channel constructed: '9e58195', fd=341
+07-30 20:12:42.664 24286 24286 I InsetsController: onStateChanged: host=com.lagradost.cloudstream3/com.lagradost.cloudstream3.MainActivity, from=android.view.ViewRootImpl.setView:1999, state=InsetsState: {mDisplayFrame=Rect(0, 0 - 720, 1600), mDisplayCutout=DisplayCutout{insets=Rect(0, 59 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(320, 0 - 400, 59), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=720 displayHeight=1600 physicalDisplayWidth=720 physicalDisplayHeight=1600 density={1.875} cutoutSpec={M 0,0 H -21.33333333333333 V 31.46666666666667 H 21.33333333333333 V 0 H 0 Z @dp} rotation={0} scale={1.0} physicalPixelDisplaySizeRatio={1.0}}} sideOverrides={}}, mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=68, center=Point(68, 68)}, RoundedCorner{position=TopRight, radius=68, center=Point(652, 68)}, RoundedCorner{position=BottomRight, radius=68, center=Point(652, 1532)}, RoundedCorner{position=BottomLeft, radius=68, center=Point(68, 1532)}]}  mRoundedCornerFrame=Rect(0, 0 - 720, 1600), mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(637, 0 - 720, 59) rotation=0}, mDisplayShape=DisplayShape{ spec=-311912193 displayWidth=720 displayHeight=1600 physicalPixelDisplaySizeRatio=1.0 rotation=0 offsetX=0 offsetY=0 scale=1.0}, mSources= { InsetsSource: {845b0000 mType=statusBars mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0005 mType=mandatorySystemGestures mFrame=[0,0][720,82] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {845b0006 mType=tappableElement mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {b6ec0001 mType=navigationBars mFrame=[0,1572][720,1600] mVisible=true mFlags=SUPPRESS_SCRIM mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0004 mType=systemGestures mFrame=[0,0][56,1600] mVisible=true mFlags= mSideHint=LEFT mBoundingRects=null}, InsetsSource: {b6ec0005 mType=mandatorySystemGestures mFrame=[0,1540][720,1600] mVisible=true mFlags= mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {b6ec0006 mType=tappableElement mFrame=[0,0][0,0] mVisible=true mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {b6ec0024 mType=systemGestures mFrame=[664,0][720,1600] mVisible=true mFlags= mSideHint=RIGHT mBoundingRects=null}, InsetsSource: {27 mType=displayCutout mFrame=[0,0][720,59] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null} }
+07-30 20:12:42.665 24286 24286 I VRI[MainActivity]@8b2548: synced displayState. AttachInfo displayState=2
+07-30 20:12:42.665 24286 24286 I VRI[MainActivity]@8b2548: setView = com.android.internal.policy.DecorView@f9e73eb IsHRR=false TM=true
