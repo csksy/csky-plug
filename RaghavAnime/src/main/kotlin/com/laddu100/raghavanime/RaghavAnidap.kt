@@ -238,29 +238,25 @@ class RaghavAnidap : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[Anidap] loadLinksByAnilistId: aniId=$anilistId ep=$episode isDub=$isDub")
         try {
             val detailRes = app.get("$mainUrl/api/anime/$anilistId", headers = baseHeaders, timeout = 15_000L)
             val detailRoot = parseJson<com.fasterxml.jackson.databind.JsonNode>(detailRes.text)
             val dataNode = detailRoot.path("data")
             if (dataNode.isMissingNode) {
-                Log.d("RaghavAnime", "[Anidap] no data for aniId=$anilistId")
                 return false
             }
             val detail = parseJson<AnimeDetail>(dataNode.toString())
             val slug = detail.slug ?: detail.id ?: return false
-            Log.d("RaghavAnime", "[Anidap] found slug='$slug' for aniId=$anilistId")
 
             val serversUrl = "$chadUrl/servers?id=$slug&epNum=$episode"
             val serversRes = cfAppGetAnidap(serversUrl, headers = mapOf("Referer" to "$mainUrl/", "Accept" to "application/json"))
             if (serversRes.code != 200 || serversRes.text.contains("bot_detected") || serversRes.text.contains("\"error\"")) {
-                Log.d("RaghavAnime", "[Anidap] servers failed: code=${serversRes.code}")
+                Log.e("RaghavAnime", "[Anidap] servers failed: code=${serversRes.code}")
                 return false
             }
             val servers = try { parseJson<ServersResponse>(serversRes.text) } catch (e: Exception) { ServersResponse() }
             val providers = if (isDub) servers.dubProviders?.filter { it.id.isNotBlank() } ?: emptyList()
                            else servers.subProviders?.filter { it.id.isNotBlank() } ?: emptyList()
-            Log.d("RaghavAnime", "[Anidap] ${providers.size} ${if (isDub) "dub" else "sub"} providers")
 
             if (providers.isEmpty()) return false
 
@@ -317,13 +313,12 @@ class RaghavAnidap : MainAPI() {
                         found = true
                     }
                 } catch (e: Exception) {
-                    Log.d("RaghavAnime", "[Anidap] provider ${provider.id} failed: ${e.message}")
+                    Log.e("RaghavAnime", "[Anidap] provider ${provider.id} failed: ${e.message}")
                 }
             }
-            Log.d("RaghavAnime", "[Anidap] loadLinksByAnilistId done, found=$found")
             return found
         } catch (e: Exception) {
-            Log.d("RaghavAnime", "[Anidap] loadLinksByAnilistId failed: ${e.message}")
+            Log.e("RaghavAnime", "[Anidap] loadLinksByAnilistId failed: ${e.message}")
             return false
         }
     }

@@ -146,7 +146,7 @@ class AniChanProvider : MainAPI() {
             if (dubAvailable) {
                 val subEp = newEpisode(EpisodeData(anilistId, 1, false).toJson()) { this.name = title }
                 val dubEp = newEpisode(EpisodeData(anilistId, 1, true).toJson()) { this.name = title }
-                return newAnimeLoadResponse(title, url, TvType.AnimeMovie) {
+                return newAnimeLoadResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
                     this.backgroundPosterUrl = banner
                     this.plot = plot

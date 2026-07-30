@@ -174,7 +174,6 @@ class RaghavAniDao : MainAPI() {
                 AnimeEntry(url, title, poster)
             }
         } catch (e: Exception) {
-            Log.d("AniDao", "parseListPage $page: ${e.message}")
             emptyList()
         }
     }
@@ -303,7 +302,6 @@ class RaghavAniDao : MainAPI() {
 
         val altUrl = url.replace(Regex("-100-episode-"), "-episode-")
         if (altUrl != url) {
-            Log.d("AniDao", "soft-404 retry: $url -> $altUrl")
             val altDoc = app.get(altUrl, headers = baseHeaders).document
             if (hasAnyPanel(altDoc)) return altDoc
         }
@@ -346,7 +344,6 @@ class RaghavAniDao : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.d("AniDao", "resolveEmbed $embedUrl: ${e.message}")
             false
         }
     }
@@ -372,7 +369,6 @@ class RaghavAniDao : MainAPI() {
                 ?.let { URLDecoder.decode(it, "UTF-8") } ?: "English"
             subtitleCallback.invoke(SubtitleFile(label, decoded))
         } catch (e: Exception) {
-            Log.d("AniDao", "passSubtitle: ${e.message}")
         }
     }
 

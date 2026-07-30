@@ -281,30 +281,24 @@ class RaghavAniKage : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[AniKage] loadLinksByAnilistId: aniId=$anilistId ep=$episode isDub=$isDub")
         val searchQueries = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
         if (searchQueries.isEmpty()) {
-            Log.d("RaghavAnime", "[AniKage] no search queries")
             return false
         }
 
         var slug: String? = null
         for (query in searchQueries) {
-            Log.d("RaghavAnime", "[AniKage] searching slug for '$query' aniId=$anilistId")
             slug = findSlugByAnilistId(query, anilistId)
             if (slug != null) {
-                Log.d("RaghavAnime", "[AniKage] found slug='$slug'")
                 break
             }
         }
 
         if (slug == null) {
-            Log.d("RaghavAnime", "[AniKage] no slug found for aniId=$anilistId")
             return false
         }
 
         val type = if (isDub) "dub" else "sub"
-        Log.d("RaghavAnime", "[AniKage] fetching sources slug='$slug' ep=$episode type=$type")
         return fetchSources(slug, episode.toString(), type, subtitleCallback, callback)
     }
 
@@ -313,21 +307,19 @@ class RaghavAniKage : MainAPI() {
         val response = try {
             app.get(url, headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.d("RaghavAnime", "[AniKage] browse failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] browse failed: ${e.message}")
             return null
         }
 
         val parsed = try {
             parseJson<BrowseResponse>(response)
         } catch (e: Exception) {
-            Log.d("RaghavAnime", "[AniKage] browse parse failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] browse parse failed: ${e.message}")
             return null
         }
 
-        Log.d("RaghavAnime", "[AniKage] browse returned ${parsed.data.size} results")
         val match = parsed.data.firstOrNull { it.anilistId == anilistId }
         if (match == null) {
-            Log.d("RaghavAnime", "[AniKage] no anilistId=$anilistId in ${parsed.data.size} results")
         }
         return match?.slug?.takeIf { it.isNotBlank() }
     }
