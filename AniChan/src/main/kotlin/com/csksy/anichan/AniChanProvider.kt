@@ -65,7 +65,7 @@ class AniChanProvider : MainAPI() {
                 val title = m.title?.english ?: m.title?.romaji ?: return@mapNotNull null
                 val id = m.id ?: return@mapNotNull null
                 val poster = m.coverImage?.extraLarge ?: m.coverImage?.large ?: ""
-                newAnimeSearchResponse(title, id.toString(), TvType.Anime) {
+                newAnimeSearchResponse(title, "/anime/$id", TvType.Anime) {
                     this.posterUrl = poster
                     this.year = m.seasonYear
                 }
@@ -90,7 +90,7 @@ class AniChanProvider : MainAPI() {
                 val title = item.title ?: item.titleRomaji ?: return@mapNotNull null
                 val id = item.id ?: return@mapNotNull null
                 val tvType = if (item.format == "MOVIE") TvType.AnimeMovie else TvType.Anime
-                newAnimeSearchResponse(title, id.toString(), tvType) {
+                newAnimeSearchResponse(title, "/anime/$id", tvType) {
                     this.posterUrl = item.poster
                     this.year = item.startDate?.year
                 }
@@ -102,7 +102,7 @@ class AniChanProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val anilistId = url.toIntOrNull() ?: return null
+        val anilistId = url.substringAfterLast("/").toIntOrNull() ?: return null
 
         val metaQuery = "{ Media(id: $anilistId) { id title { english romaji } coverImage { large extraLarge } bannerImage description genres episodes format seasonYear status nextAiringEpisode { episode } } }"
         val meta: AniListMediaDetail? = try {
