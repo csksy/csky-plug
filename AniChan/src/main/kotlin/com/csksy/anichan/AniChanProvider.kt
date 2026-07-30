@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.app
-import org.jsoup.Jsoup
 
 class AniChanProvider : MainAPI() {
     override var mainUrl = "https://anichan.net"
@@ -105,18 +104,21 @@ class AniChanProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val anilistId = url.toIntOrNull() ?: return null
 
-        val animeHtml = app.get("$mainUrl/anime/$anilistId", headers = mapOf("User-Agent" to browserUA), timeout = 30_000L).text
-        val doc = Jsoup.parse(animeHtml)
+        val metaQuery = "{ Media(id: $anilistId) { id title { english romaji } coverImage { large extraLarge } bannerImage description genres episodes format seasonYear status nextAiringEpisode { episode } } }"
+        val meta: AniListMediaDetail? = try {
+            val resp = app.post(anilistUrl, json = mapOf("query" to metaQuery), timeout = 15_000L).text
+            parseJson<AniListDetailResponse>(resp).data?.media
+        } catch (e: Exception) {
+            Log.e("AniChan", "load: AniList fetch failed: ${e.message}")
+            null
+        }
 
-        val title = doc.selectFirst("h1")?.text()?.trim()
-            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" —")
-            ?: return null
-
-        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
-        val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")
-        val genres = doc.select(".info-row:contains(Genres) a, .genres a").map { it.text().trim() }.filter { it.isNotBlank() }
-        val year = doc.selectFirst(".info-row:contains(Year) b")?.text()?.toIntOrNull()
-            ?: doc.selectFirst(".info-row:contains(Aired) b")?.text()?.substringBefore("-")?.trim()?.toIntOrNull()
+        val title = meta?.title?.english ?: meta?.title?.romaji ?: return null
+        val poster = meta?.coverImage?.extraLarge ?: meta?.coverImage?.large ?: ""
+        val banner = meta?.bannerImage ?: ""
+        val plot = meta?.description?.replace(Regex("<[^>]+>"), "")?.replace("\\n", "\n")
+        val genres = meta?.genres ?: emptyList()
+        val year = meta?.seasonYear
 
         val epData = try {
             val resp = app.get(
@@ -130,16 +132,21 @@ class AniChanProvider : MainAPI() {
             return null
         }
 
-        val epCount = epData.episodes ?: 0
-        val dubAvailable = epData.dubAvailable == true
-        val isMovie = epCount <= 1
+        var epCount = epData.episodes ?: 0
+        if (epCount == 0 && meta?.statusStr == "RELEASING") {
+            epCount = (meta?.nextAiringEpisode?.episode ?: 1) - 1
+            if (epCount < 1) epCount = 1
+        }
+        if (epCount == 0) epCount = 1
 
-        val titleMap = extractEpisodeTitles(animeHtml)
+        val dubAvailable = epData.dubAvailable == true
+        val isMovie = meta?.formatStr == "MOVIE" || epCount <= 1
 
         if (isMovie) {
             val movieData = EpisodeData(anilistId, 1).toJson()
             return newMovieLoadResponse(title, url, TvType.AnimeMovie, movieData) {
                 this.posterUrl = poster
+                this.backgroundPosterUrl = banner
                 this.plot = plot
                 this.tags = genres
                 this.year = year
@@ -147,25 +154,24 @@ class AniChanProvider : MainAPI() {
         }
 
         val subEpisodes = (1..epCount).map { epNum ->
-            val epTitle = titleMap[epNum] ?: "Episode $epNum"
             newEpisode(EpisodeData(anilistId, epNum).toJson()) {
                 this.episode = epNum
-                this.name = epTitle
+                this.name = "Episode $epNum"
             }
         }
 
         val dubEpisodes = if (dubAvailable) {
             (1..epCount).map { epNum ->
-                val epTitle = titleMap[epNum] ?: "Episode $epNum"
                 newEpisode(EpisodeData(anilistId, epNum).toJson()) {
                     this.episode = epNum
-                    this.name = epTitle
+                    this.name = "Episode $epNum"
                 }
             }
         } else emptyList()
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
+            this.backgroundPosterUrl = banner
             this.plot = plot
             this.tags = genres
             this.year = year
@@ -316,6 +322,33 @@ data class Subtitle(
 data class Audio(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("lang") val lang: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListDetailResponse(
+    @JsonProperty("data") val data: AniListDetailData? = null
+)
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListDetailData(
+    @JsonProperty("Media") val media: AniListMediaDetail? = null
+)
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListMediaDetail(
+    @JsonProperty("id") val id: Int? = null,
+    @JsonProperty("title") val title: AniListTitle? = null,
+    @JsonProperty("coverImage") val coverImage: AniListCover? = null,
+    @JsonProperty("bannerImage") val bannerImage: String? = null,
+    @JsonProperty("description") val description: String? = null,
+    @JsonProperty("genres") val genres: List<String>? = null,
+    @JsonProperty("episodes") val episodes: Int? = null,
+    @JsonProperty("format") val formatStr: String? = null,
+    @JsonProperty("seasonYear") val seasonYear: Int? = null,
+    @JsonProperty("status") val statusStr: String? = null,
+    @JsonProperty("nextAiringEpisode") val nextAiringEpisode: AniListAiring? = null
+)
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListAiring(
+    @JsonProperty("episode") val episode: Int? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
