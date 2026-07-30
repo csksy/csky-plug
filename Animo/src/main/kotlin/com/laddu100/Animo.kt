@@ -3,6 +3,7 @@ package com.laddu100
 import android.annotation.SuppressLint
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -15,14 +16,14 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.INFER_TYPE
-import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicReference
 import java.net.URLEncoder
 import kotlin.coroutines.resume
 
@@ -168,131 +169,96 @@ class Animo : MainAPI() {
             return false
         }
 
-        val playHeaders = mapOf(
-            "Referer" to "$cdnUrl/",
-            "Origin" to cdnUrl,
-            "User-Agent" to ua
+        // Only load the requested stream type — no fallback to avoid confusion
+        val type = epData.streamType
+
+        val embedFormats = listOf<Pair<String, () -> String>>(
+            Pair("a-1") { "$cdnUrl/embed/a-1/${epData.episodeId}/$type" },
+            Pair("s-1") { "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$type" },
+            Pair("hd-1") { "$cdnUrl/embed/hd-1/ani/${epData.animeId}/${epData.episodeNum}/$type" },
+            Pair("hd-2") { "$cdnUrl/embed/hd-2/ani/${epData.animeId}/${epData.episodeNum}/$type" }
         )
 
         var found = false
-        val typesToTry = if (epData.streamType == "dub") listOf("dub", "sub") else listOf("sub", "dub")
-        for (type in typesToTry) {
-            val embedUrls = listOf(
-                "$cdnUrl/embed/a-1/${epData.episodeId}/$type",
-                "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$type",
-                "$cdnUrl/embed/hd-1/${epData.animeId}/${epData.episodeNum}/$type"
-            )
-            for (embedUrl in embedUrls) {
-                try {
-                    val embedResp = app.get(embedUrl, headers = mapOf(
-                        "User-Agent" to ua,
-                        "Accept" to "text/html",
-                        "Referer" to "$mainUrl/"
-                    ), timeout = 15_000L)
-                    if (embedResp.code != 200) continue
-                    val embedHtml = embedResp.text
-                    if (embedHtml.contains("Just a moment") || embedHtml.contains("cloudflare")) continue
 
-                    val tokenMatch = Regex("getSources\\?t=([A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)").find(embedHtml)
-                    if (tokenMatch == null) continue
-                    val token = tokenMatch.groupValues[1]
+        // Phase 1: Try direct API (fast path — also gets subtitle tracks)
+        for ((labelKey, urlFn) in embedFormats) {
+            val embedUrl = urlFn()
+            try {
+                val embedResp = app.get(embedUrl, headers = mapOf(
+                    "User-Agent" to ua,
+                    "Accept" to "text/html,application/xhtml+xml",
+                    "Referer" to "$mainUrl/"
+                ), timeout = 15_000L)
+                if (embedResp.code != 200) continue
+                val embedHtml = embedResp.text
+                if (embedHtml.contains("Just a moment") || embedHtml.contains("cloudflare") || embedHtml.length < 500) continue
 
-                    val sourcesUrl = "$cdnUrl/stream/getSources?t=$token"
-                    val srcResp = app.get(sourcesUrl, headers = mapOf(
-                        "User-Agent" to ua,
-                        "Accept" to "application/json, text/plain, */*",
-                        "Referer" to embedUrl
-                    ), timeout = 15_000L)
-                    if (srcResp.code != 200) continue
-                    val srcText = srcResp.text
-                    if (srcText.contains("Just a moment") || srcText.contains("cloudflare") || srcText.contains("invalid token")) continue
+                val tokenMatch = Regex("getSources\\?t=([A-Za-z0-9_.-]+)").find(embedHtml)
+                if (tokenMatch == null) continue
+                val token = tokenMatch.groupValues[1].replace("\\u0026", "&").split("&")[0]
 
-                    val sources = parseJson<GetSourcesResponse>(srcText)
+                val srcResp = app.get("$cdnUrl/stream/getSources?t=$token", headers = mapOf(
+                    "User-Agent" to ua,
+                    "Accept" to "application/json, text/plain, */*",
+                    "Referer" to embedUrl
+                ), timeout = 15_000L)
+                if (srcResp.code != 200) continue
+                val srcText = srcResp.text
+                if (srcText.contains("Just a moment") || srcText.contains("invalid token")) continue
 
-                    sources.sources?.forEach { s ->
-                        val file = s.file ?: return@forEach
-                        val streamUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
-                        val label = "$name ($type)"
-                        if (s.type == "hls" || streamUrl.contains(".m3u8")) {
-                            try {
-                                M3u8Helper.generateM3u8(label, streamUrl, "$cdnUrl/", headers = playHeaders).forEach(callback)
-                            } catch (e: Exception) {
-                                callback.invoke(
-                                    newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
-                                        this.referer = "$cdnUrl/"
-                                        this.headers = playHeaders
-                                    }
-                                )
-                            }
-                            found = true
-                        } else {
-                            callback.invoke(
-                                newExtractorLink(label, label, streamUrl, type = INFER_TYPE) {
-                                    this.referer = "$cdnUrl/"
-                                    this.headers = playHeaders
-                                }
-                            )
-                            found = true
+                val sources = parseJson<GetSourcesResponse>(srcText)
+
+                sources.sources?.forEach { s ->
+                    val file = s.file ?: return@forEach
+                    val streamUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
+                    val label = "$name $labelKey ($type)"
+                    callback.invoke(
+                        newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
+                            this.referer = embedUrl
+                            this.headers = mapOf("Referer" to embedUrl, "User-Agent" to ua)
                         }
-                    }
-
-                    if (!sources.tracks.isNullOrEmpty()) {
-                        sources.tracks.forEach { t ->
-                            val file = t.file ?: return@forEach
-                            val subUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
-                            subtitleCallback.invoke(newSubtitleFile(t.label ?: "English", subUrl) {
-                                this.headers = playHeaders
-                            })
-                        }
-                    }
-                    if (found) break
-                } catch (e: Exception) {
-                    Log.e("Animo", "loadLinks: ${e.message}")
+                    )
+                    found = true
                 }
+
+                sources.tracks?.forEach { t ->
+                    val file = t.file ?: return@forEach
+                    val subUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
+                    subtitleCallback.invoke(newSubtitleFile(t.label ?: "English", subUrl) {
+                        this.headers = mapOf("Referer" to embedUrl, "User-Agent" to ua)
+                    })
+                }
+            } catch (e: Exception) {
+                // CF blocked or other error — fall through to WebView
             }
-            if (found) break
         }
 
+        // Phase 2: If direct API failed (CF blocked), use WebView with shouldInterceptRequest
+        // to capture /p?t= URL WITHOUT consuming the one-time token
         if (!found) {
-            val embedFormats = listOf(
-                Pair("a-1", { t: String -> "$cdnUrl/embed/a-1/${epData.episodeId}/$t" }),
-                Pair("s-1", { t: String -> "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$t" }),
-                Pair("hd-1", { t: String -> "$cdnUrl/embed/hd-1/ani/${epData.animeId}/${epData.episodeNum}/$t" }),
-                Pair("hd-2", { t: String -> "$cdnUrl/embed/hd-2/ani/${epData.animeId}/${epData.episodeNum}/$t" })
-            )
-            for (type in typesToTry) {
-                for ((labelKey, urlFn) in embedFormats) {
-                    val embedUrl = urlFn(type)
-                    try {
-                        val (request, _) = com.lagradost.cloudstream3.network.WebViewResolver(
-                            interceptUrl = Regex("""cdn\.4animo\.xyz/p\?t="""),
-                            userAgent = ua,
-                            useOkhttp = false,
-                            additionalUrls = emptyList(),
-                            script = null,
-                            scriptCallback = null,
-                            timeout = 30_000L
-                        ).resolveUsingWebView(embedUrl) { req ->
-                            req.url.toString().contains("cdn.4animo.xyz/p?t=") &&
-                                req.url.toString().contains("mpegurl")
-                        }
-                        if (request != null) {
-                            val streamUrl = request.url.toString()
-                            val label = "$name $labelKey ($type)"
-                            callback.invoke(
-                                newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
-                                    this.referer = embedUrl
-                                    this.headers = mapOf(
-                                        "Referer" to embedUrl,
-                                        "User-Agent" to ua
-                                    )
-                                }
-                            )
-                            found = true
-                        }
-                    } catch (e: Exception) {
-                        Log.e("Animo", "WebViewResolver: ${e.message}")
+            for ((labelKey, urlFn) in embedFormats) {
+                val embedUrl = urlFn()
+                try {
+                    val result = extractStreamUrlViaWebView(embedUrl) ?: continue
+                    val (streamUrl, cookies) = result
+                    val label = "$name $labelKey ($type)"
+                    val headers = mutableMapOf(
+                        "Referer" to embedUrl,
+                        "User-Agent" to ua
+                    )
+                    if (cookies.isNotEmpty()) {
+                        headers["Cookie"] = cookies
                     }
+                    callback.invoke(
+                        newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
+                            this.referer = embedUrl
+                            this.headers = headers
+                        }
+                    )
+                    found = true
+                } catch (e: Exception) {
+                    Log.e("Animo", "WebView $labelKey ($type): ${e.message}")
                 }
             }
         }
@@ -300,40 +266,76 @@ class Animo : MainAPI() {
         return found
     }
 
+    /**
+     * Loads the embed page in a WebView and intercepts the /p?t= stream URL via
+     * shouldInterceptRequest. Returns a DUMMY response so the WebView does NOT
+     * make the actual network request — this keeps the one-time token valid for
+     * ExoPlayer to use.
+     *
+     * Returns (streamUrl, cookies) or null.
+     */
     @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun extractStreamFromWebView(url: String): String? = withContext(Dispatchers.Main) {
+    private suspend fun extractStreamUrlViaWebView(embedUrl: String): Pair<String, String>? = withContext(Dispatchers.Main) {
         val context = com.lagradost.cloudstream3.CommonActivity.activity ?: return@withContext null
-        suspendCancellableCoroutine { cont ->
-            var foundUrl: String? = null
-            val webView = WebView(context)
-            try {
-                CookieManager.getInstance().setAcceptCookie(true)
-                CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-                webView.settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                    userAgentString = ua
-                }
-                webView.webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
 
-                    override fun onLoadResource(view: WebView?, resourceUrl: String?) {
-                        super.onLoadResource(view, resourceUrl)
-                        if (resourceUrl != null && foundUrl == null) {
-                            if (resourceUrl.contains("/p?t=") && resourceUrl.contains("cdn.4animo.xyz")) {
-                                foundUrl = resourceUrl
-                                if (cont.isActive) cont.resume(resourceUrl)
+        withTimeoutOrNull(30_000L) {
+            suspendCancellableCoroutine<Pair<String, String>?> { cont ->
+                val foundUrl = AtomicReference<String?>(null)
+                val webView = WebView(context)
+                try {
+                    CookieManager.getInstance().setAcceptCookie(true)
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+                    webView.settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        mediaPlaybackRequiresUserGesture = false
+                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        userAgentString = ua
+                        blockNetworkImage = true
+                    }
+                    webView.webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
+
+                        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                            val url = request?.url?.toString() ?: return null
+                            // Intercept the /p?t= stream URL BEFORE the WebView loads it.
+                            // Return a dummy m3u8 so the one-time token is NOT consumed.
+                            if (url.contains("cdn.4animo.xyz/p?t=") && foundUrl.get() == null) {
+                                foundUrl.set(url)
+                                val cookies = try {
+                                    CookieManager.getInstance().getCookie(cdnUrl) ?: ""
+                                } catch (_: Exception) { "" }
+                                if (cont.isActive) cont.resume(Pair(url, cookies))
+                                return WebResourceResponse(
+                                    "application/vnd.apple.mpegurl",
+                                    "UTF-8",
+                                    ByteArrayInputStream("#EXTM3U\n#EXT-X-ENDLIST\n".toByteArray())
+                                )
+                            }
+                            return null
+                        }
+
+                        override fun onLoadResource(view: WebView?, resourceUrl: String?) {
+                            super.onLoadResource(view, resourceUrl)
+                            // Fallback in case shouldInterceptRequest didn't fire
+                            if (resourceUrl != null && foundUrl.get() == null) {
+                                if (resourceUrl.contains("/p?t=") && resourceUrl.contains("cdn.4animo.xyz")) {
+                                    foundUrl.set(resourceUrl)
+                                    val cookies = try {
+                                        CookieManager.getInstance().getCookie(cdnUrl) ?: ""
+                                    } catch (_: Exception) { "" }
+                                    if (cont.isActive) cont.resume(Pair(resourceUrl, cookies))
+                                }
                             }
                         }
                     }
+                    webView.loadUrl(embedUrl)
+                } catch (e: Exception) {
+                    if (cont.isActive) cont.resume(null)
                 }
-                webView.loadUrl(url)
-            } catch (e: Exception) {
-                if (cont.isActive) cont.resume(null)
-            }
-            cont.invokeOnCancellation {
-                try { webView.destroy() } catch (_: Exception) {}
+                cont.invokeOnCancellation {
+                    try { webView.destroy() } catch (_: Exception) {}
+                }
             }
         }
     }
