@@ -29,38 +29,47 @@ class AniChanProvider : MainAPI() {
         "popular" to "All-Time Popular"
     )
 
+    private val anilistUrl = "https://graphql.anilist.co"
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         return try {
-            val html = app.get(mainUrl, headers = mapOf("User-Agent" to browserUA), timeout = 30_000L).text
-            val doc = Jsoup.parse(html)
-
-            val keyword = when (request.data) {
-                "trending" -> "Trending"
-                "season" -> "Airing"
-                "popular" -> "Popular"
-                else -> return newHomePageResponse(request.name, emptyList())
+            val sort = when (request.data) {
+                "trending" -> "TRENDING_DESC"
+                "season" -> "POPULARITY_DESC"
+                "popular" -> "POPULARITY_DESC"
+                else -> "TRENDING_DESC"
             }
 
-            val items = mutableListOf<SearchResponse>()
-            for (section in doc.select("section.section")) {
-                val header = section.selectFirst(".section-h h2")?.text() ?: continue
-                if (!header.contains(keyword, ignoreCase = true)) continue
-
-                for (card in section.select("a.card")) {
-                    val href = card.attr("href")
-                    val anilistId = Regex("""/anime/(\d+)""").find(href)?.groupValues?.get(1)?.toIntOrNull() ?: continue
-                    val title = card.selectFirst(".nm")?.text()?.trim()
-                        ?: card.selectFirst("img")?.attr("alt")?.trim()
-                        ?: continue
-                    val poster = card.selectFirst("img")?.attr("src")
-                    val yearText = card.selectFirst(".meta2")?.text() ?: ""
-                    val year = Regex("""\b(19\d{2}|20\d{2})\b""").find(yearText)?.groupValues?.get(1)?.toIntOrNull()
-                    items.add(newAnimeSearchResponse(title, anilistId.toString(), TvType.Anime) {
-                        this.posterUrl = poster
-                        this.year = year
-                    })
+            val (season, seasonYear) = if (request.data == "season") {
+                val cal = java.util.Calendar.getInstance()
+                val s = when (cal.get(java.util.Calendar.MONTH)) {
+                    in 0..2 -> "WINTER"
+                    in 3..5 -> "SPRING"
+                    in 6..8 -> "SUMMER"
+                    in 9..11 -> "FALL"
+                    else -> "WINTER"
                 }
-                break
+                s to cal.get(java.util.Calendar.YEAR)
+            } else null to null
+
+            val query = if (season != null) {
+                "{ Page(page: 1, perPage: 20) { media(type: ANIME, sort: [$sort], season: $season, seasonYear: $seasonYear) { id title { english romaji } coverImage { large extraLarge } format episodes seasonYear } } }"
+            } else {
+                "{ Page(page: 1, perPage: 20) { media(type: ANIME, sort: [$sort]) { id title { english romaji } coverImage { large extraLarge } format episodes seasonYear } } }"
+            }
+
+            val response = app.post(anilistUrl, json = mapOf("query" to query), timeout = 15_000L).text
+            val data = parseJson<AniListPage>(response)
+            val media = data.data?.page?.media ?: emptyList()
+
+            val items = media.mapNotNull { m ->
+                val title = m.title?.english ?: m.title?.romaji ?: return@mapNotNull null
+                val id = m.id ?: return@mapNotNull null
+                val poster = m.coverImage?.extraLarge ?: m.coverImage?.large ?: ""
+                newAnimeSearchResponse(title, id.toString(), TvType.Anime) {
+                    this.posterUrl = poster
+                    this.year = m.seasonYear
+                }
             }
 
             newHomePageResponse(request.name, items)
@@ -307,4 +316,39 @@ data class Subtitle(
 data class Audio(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("lang") val lang: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListPage(
+    @JsonProperty("data") val data: AniListPageData? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListPageData(
+    @JsonProperty("Page") val page: AniListPageMedia? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListPageMedia(
+    @JsonProperty("media") val media: List<AniListMedia>? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListMedia(
+    @JsonProperty("id") val id: Int? = null,
+    @JsonProperty("title") val title: AniListTitle? = null,
+    @JsonProperty("coverImage") val coverImage: AniListCover? = null,
+    @JsonProperty("seasonYear") val seasonYear: Int? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListTitle(
+    @JsonProperty("english") val english: String? = null,
+    @JsonProperty("romaji") val romaji: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListCover(
+    @JsonProperty("large") val large: String? = null,
+    @JsonProperty("extraLarge") val extraLarge: String? = null
 )
