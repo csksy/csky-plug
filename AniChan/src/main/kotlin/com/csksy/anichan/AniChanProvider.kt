@@ -29,7 +29,6 @@ class AniChanProvider : MainAPI() {
     )
 
     private val anilistUrl = "https://graphql.anilist.co"
-    private val jikanUrl = "https://api.jikan.moe/v4"
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         return try {
@@ -105,7 +104,7 @@ class AniChanProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val anilistId = url.substringAfterLast("/").toIntOrNull() ?: return null
 
-        val metaQuery = "{ Media(id: $anilistId) { id idMal title { english romaji } coverImage { large extraLarge } bannerImage description genres episodes format seasonYear status nextAiringEpisode { episode } } }"
+        val metaQuery = "{ Media(id: $anilistId) { id title { english romaji } coverImage { large extraLarge } bannerImage description genres episodes format seasonYear status nextAiringEpisode { episode } } }"
         val meta: AniListMediaDetail? = try {
             val resp = app.post(anilistUrl, json = mapOf("query" to metaQuery), timeout = 15_000L).text
             parseJson<AniListDetailResponse>(resp).data?.media
@@ -143,23 +142,34 @@ class AniChanProvider : MainAPI() {
         val dubAvailable = epData.dubAvailable == true
         val isMovie = meta?.formatStr == "MOVIE" || epCount <= 1
 
-        val titleMap = fetchJikanEpisodeTitles(meta?.idMal)
-
         if (isMovie) {
-            val movieData = EpisodeData(anilistId, 1, false).toJson()
-            return newMovieLoadResponse(title, url, TvType.AnimeMovie, movieData) {
-                this.posterUrl = poster
-                this.backgroundPosterUrl = banner
-                this.plot = plot
-                this.tags = genres
-                this.year = year
+            if (dubAvailable) {
+                val subEp = newEpisode(EpisodeData(anilistId, 1, false).toJson()) { this.name = title }
+                val dubEp = newEpisode(EpisodeData(anilistId, 1, true).toJson()) { this.name = title }
+                return newAnimeLoadResponse(title, url, TvType.AnimeMovie) {
+                    this.posterUrl = poster
+                    this.backgroundPosterUrl = banner
+                    this.plot = plot
+                    this.tags = genres
+                    this.year = year
+                    addEpisodes(DubStatus.Subbed, listOf(subEp))
+                    addEpisodes(DubStatus.Dubbed, listOf(dubEp))
+                }
+            } else {
+                return newMovieLoadResponse(title, url, TvType.AnimeMovie, EpisodeData(anilistId, 1, false).toJson()) {
+                    this.posterUrl = poster
+                    this.backgroundPosterUrl = banner
+                    this.plot = plot
+                    this.tags = genres
+                    this.year = year
+                }
             }
         }
 
         val subEpisodes = (1..epCount).map { epNum ->
             newEpisode(EpisodeData(anilistId, epNum, false).toJson()) {
                 this.episode = epNum
-                this.name = titleMap[epNum] ?: "Episode $epNum"
+                this.name = "Episode $epNum"
             }
         }
 
@@ -167,7 +177,7 @@ class AniChanProvider : MainAPI() {
             (1..epCount).map { epNum ->
                 newEpisode(EpisodeData(anilistId, epNum, true).toJson()) {
                     this.episode = epNum
-                    this.name = titleMap[epNum] ?: "Episode $epNum"
+                    this.name = "Episode $epNum"
                 }
             }
         } else emptyList()
@@ -249,31 +259,6 @@ class AniChanProvider : MainAPI() {
             Log.e("AniChan", "loadLinks: ${e.message}")
             false
         }
-    }
-
-    private suspend fun fetchJikanEpisodeTitles(malId: Int?): Map<Int, String> {
-        if (malId == null) return emptyMap()
-        val titleMap = mutableMapOf<Int, String>()
-        var page = 1
-        var hasMore = true
-        var safety = 0
-        while (hasMore && safety < 50) {
-            try {
-                val resp = app.get("$jikanUrl/anime/$malId/episodes?page=$page", timeout = 15_000L).text
-                val parsed = parseJson<JikanEpisodesResponse>(resp)
-                parsed.data?.forEach { ep ->
-                    val epNum = ep.malId ?: ep.sort ?: return@forEach
-                    val epTitle = ep.title?.takeIf { it.isNotBlank() } ?: "Episode $epNum"
-                    titleMap[epNum] = epTitle
-                }
-                hasMore = (parsed.pagination?.hasNextPage ?: false) && !parsed.data.isNullOrEmpty()
-                page++
-                safety++
-            } catch (e: Exception) {
-                break
-            }
-        }
-        return titleMap
     }
 
     private fun extractEpisodeTitles(html: String): Map<Int, String> {
@@ -363,7 +348,6 @@ data class AniListDetailData(
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniListMediaDetail(
     @JsonProperty("id") val id: Int? = null,
-    @JsonProperty("idMal") val idMal: Int? = null,
     @JsonProperty("title") val title: AniListTitle? = null,
     @JsonProperty("coverImage") val coverImage: AniListCover? = null,
     @JsonProperty("bannerImage") val bannerImage: String? = null,
@@ -415,18 +399,4 @@ data class AniListCover(
     @JsonProperty("extraLarge") val extraLarge: String? = null
 )
 
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class JikanEpisodesResponse(
-    @JsonProperty("data") val data: List<JikanEpisode>? = null,
-    @JsonProperty("pagination") val pagination: JikanPagination? = null
-)
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class JikanEpisode(
-    @JsonProperty("mal_id") val malId: Int? = null,
-    @JsonProperty("sort") val sort: Int? = null,
-    @JsonProperty("title") val title: String? = null
-)
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class JikanPagination(
-    @JsonProperty("has_next_page") val hasNextPage: Boolean? = null
-)
+

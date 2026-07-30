@@ -567,6 +567,14 @@ class RaghavAnime : MainAPI() {
                 }
                 Log.d("RaghavAnime", "[AniDao] END")
             },
+            {
+                try {
+                    val anichan = RaghavAniChan()
+                    anichan.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                } catch (e: Throwable) {
+                    Log.e("RaghavAnime", "[AniChan] FAILED: ${e.message}")
+                }
+            },
         )
 
         Log.d("RaghavAnime", "loadLinks END: aniId=$aniId ep=$episode")
