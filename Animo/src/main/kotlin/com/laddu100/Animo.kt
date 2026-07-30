@@ -254,32 +254,29 @@ class Animo : MainAPI() {
         }
 
         if (!found) {
-            val watchUrl = "$cdnUrl/embed/a-1/${epData.episodeId}/${epData.streamType}"
-            val streamUrl = withTimeoutOrNull(30_000L) {
-                extractStreamFromWebView(watchUrl)
-            }
-            if (streamUrl != null && streamUrl.isNotEmpty()) {
-                if (streamUrl.contains(".m3u8")) {
-                    try {
-                        M3u8Helper.generateM3u8(name, streamUrl, "$cdnUrl/", headers = playHeaders).forEach(callback)
-                    } catch (e: Exception) {
+            for (type in typesToTry) {
+                val embedUrls = listOf(
+                    "$cdnUrl/embed/a-1/${epData.episodeId}/$type",
+                    "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$type",
+                    "$cdnUrl/embed/hd-1/ani/${epData.animeId}/${epData.episodeNum}/$type"
+                )
+                for (embedUrl in embedUrls) {
+                    val streamUrl = withTimeoutOrNull(30_000L) {
+                        extractStreamFromWebView(embedUrl)
+                    }
+                    if (streamUrl != null && streamUrl.isNotEmpty()) {
+                        val label = "$name ($type)"
                         callback.invoke(
-                            newExtractorLink(name, name, streamUrl, type = ExtractorLinkType.M3U8) {
+                            newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
                                 this.referer = "$cdnUrl/"
                                 this.headers = playHeaders
                             }
                         )
+                        found = true
+                        break
                     }
-                    found = true
-                } else {
-                    callback.invoke(
-                        newExtractorLink(name, name, streamUrl, type = INFER_TYPE) {
-                            this.referer = "$cdnUrl/"
-                            this.headers = playHeaders
-                        }
-                    )
-                    found = true
                 }
+                if (found) break
             }
         }
 
@@ -307,7 +304,7 @@ class Animo : MainAPI() {
                     override fun onLoadResource(view: WebView?, resourceUrl: String?) {
                         super.onLoadResource(view, resourceUrl)
                         if (resourceUrl != null && foundUrl == null) {
-                            if (resourceUrl.contains(".m3u8") || resourceUrl.contains(".mp4")) {
+                            if (resourceUrl.contains("/p?t=") && resourceUrl.contains("cdn.4animo.xyz")) {
                                 foundUrl = resourceUrl
                                 if (cont.isActive) cont.resume(resourceUrl)
                             }
