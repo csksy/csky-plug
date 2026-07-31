@@ -209,6 +209,7 @@ object SubDLHelper {
                 }
                 entry = zis.nextEntry
             }
+            Log.d(TAG, "extracted SRT: ${bestMatch?.length ?: fallback?.length ?: 0} chars")
             return bestMatch ?: fallback
         } catch (e: Exception) {
             Log.d(TAG, "extractSrt error: ${e.message}")
@@ -229,6 +230,7 @@ object SubDLHelper {
                 return null
             }
             val bytes = resp.body.bytes()
+            Log.d(TAG, "downloaded ${dlUrl.take(60)} -> ${bytes.size} bytes, isZip=${bytes.size >= 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4b.toByte()}")
             val srtContent = if (bytes.size >= 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4b.toByte()) {
                 extractSrtFromZip(bytes, episode)
             } else {
@@ -240,8 +242,8 @@ object SubDLHelper {
             val safeKey = cacheKey.replace(Regex("[^a-zA-Z0-9]"), "_")
             val subFile = File(subDir, "${safeKey}.srt")
             subFile.writeText(srtContent)
-            Log.d(TAG, "cached subtitle: ${subFile.name} (${srtContent.length} chars)")
-            return subFile.absolutePath
+            Log.d(TAG, "cached subtitle: ${subFile.name} (${srtContent.length} chars) preview: ${srtContent.take(80).replace("\n", " ")}")
+            return "file://" + subFile.absolutePath
         } catch (e: Exception) {
             Log.d(TAG, "downloadAndCache error: ${e.message}")
         }
