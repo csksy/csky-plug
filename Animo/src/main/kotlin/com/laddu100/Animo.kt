@@ -8,6 +8,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.google.gson.JsonObject
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
@@ -185,113 +186,51 @@ class Animo : MainAPI() {
 
         var found = false
 
-        // Phase 1: Try direct API (fast path)
-        Log.i("Animo", "----- Phase 1: Direct API -----")
         for ((labelKey, urlFn) in embedFormats) {
             val embedUrl = urlFn()
-            Log.i("Animo", "[$labelKey] Trying direct: $embedUrl")
+            Log.i("Animo", "[$labelKey] Trying WebView approach for: $embedUrl")
             try {
-                val embedResp = app.get(embedUrl, headers = mapOf(
+                val result = extractViaWebView(embedUrl) ?: continue
+                val (masterUrl, masterContent, subtitles) = result
+
+                Log.i("Animo", "[$labelKey] Master URL: ${masterUrl.take(80)}...")
+                Log.i("Animo", "[$labelKey] Master content starts with #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
+                Log.i("Animo", "[$labelKey] Subtitles found: ${subtitles.size}")
+
+                val playHeaders = mapOf(
                     "User-Agent" to ua,
-                    "Accept" to "text/html,application/xhtml+xml",
-                    "Referer" to "$mainUrl/"
-                ), timeout = 15_000L)
-                Log.i("Animo", "[$labelKey] Embed response code: ${embedResp.code}")
-                if (embedResp.code != 200) continue
-                val embedHtml = embedResp.text
-                if (embedHtml.contains("Just a moment") || embedHtml.contains("cloudflare") || embedHtml.length < 500) {
-                    Log.i("Animo", "[$labelKey] CF challenge (len=${embedHtml.length})")
-                    continue
-                }
+                    "Accept" to "*/*",
+                    "Referer" to embedUrl,
+                    "Origin" to cdnUrl
+                )
 
-                val tokenMatch = Regex("getSources\\?t=([A-Za-z0-9_.-]+)").find(embedHtml)
-                if (tokenMatch == null) continue
-                val token = tokenMatch.groupValues[1].replace("\\u0026", "&").split("&")[0]
-                Log.i("Animo", "[$labelKey] Token: ${token.take(30)}...")
+                if (masterContent.trim().startsWith("#EXTM3U")) {
+                    // Parse variant streams from master playlist
+                    val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
+                    val variants = variantPattern.findAll(masterContent).toList()
+                    Log.i("Animo", "[$labelKey] Parsed ${variants.size} variants from master playlist")
 
-                val srcResp = app.get("$cdnUrl/stream/getSources?t=$token", headers = mapOf(
-                    "User-Agent" to ua, "Accept" to "application/json",
-                    "Referer" to embedUrl
-                ), timeout = 15_000L)
-                if (srcResp.code != 200) continue
-                val srcText = srcResp.text
-                if (srcText.contains("Just a moment") || srcText.contains("invalid token")) continue
-
-                val sources = parseJson<GetSourcesResponse>(srcText)
-                Log.i("Animo", "[$labelKey] Sources: ${sources.sources?.size ?: 0}, Tracks: ${sources.tracks?.size ?: 0}")
-
-                sources.sources?.forEach { s ->
-                    val file = s.file ?: return@forEach
-                    val streamUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
-                    val masterHeaders = mapOf("User-Agent" to ua, "Accept" to "*/*", "Referer" to embedUrl)
-                    try {
-                        val masterResp = app.get(streamUrl, headers = masterHeaders, timeout = 15_000L)
-                        val masterText = masterResp.text
-                        if (masterResp.code == 200 && masterText.trim().startsWith("#EXTM3U")) {
-                            val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
-                            val variants = variantPattern.findAll(masterText).toList()
-                            if (variants.isEmpty()) {
-                                val label = "$name $labelKey ($type)"
-                                callback.invoke(newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
-                                    this.referer = embedUrl; this.headers = masterHeaders
-                                })
-                                found = true
-                            } else {
-                                variants.forEach { match ->
-                                    val quality = if (match.groupValues[1].isNotEmpty()) match.groupValues[1] else "${match.groupValues[2]}p"
-                                    val variantUrl = match.groupValues[4].trim().let { if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}" }
-                                    val label = "$name $labelKey ($type) - $quality"
-                                    callback.invoke(newExtractorLink(label, label, variantUrl, type = ExtractorLinkType.M3U8) {
-                                        this.referer = embedUrl; this.headers = masterHeaders
-                                    })
-                                }
-                                found = true
+                    if (variants.isEmpty()) {
+                        // Media playlist directly (no master)
+                        val label = "$name $labelKey ($type)"
+                        Log.i("Animo", "[$labelKey] No variants — media playlist, adding directly")
+                        callback.invoke(
+                            newExtractorLink(label, label, masterUrl, type = ExtractorLinkType.M3U8) {
+                                this.referer = embedUrl
+                                this.headers = playHeaders
                             }
-                        }
-                    } catch (e: Exception) { Log.e("Animo", "[$labelKey] master fetch: ${e.message}") }
-                }
-
-                sources.tracks?.forEach { t ->
-                    val file = t.file ?: return@forEach
-                    val subUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
-                    subtitleCallback.invoke(newSubtitleFile(t.label ?: "English", subUrl) {
-                        this.headers = mapOf("Referer" to embedUrl, "User-Agent" to ua)
-                    })
-                }
-                if (found) break
-            } catch (e: Exception) {
-                Log.e("Animo", "[$labelKey] Direct: ${e.message}")
-            }
-        }
-
-        // Phase 2: WebView fallback — intercept ALL /p?t= URLs, check each
-        if (!found) {
-            Log.i("Animo", "----- Phase 2: WebView fallback -----")
-            for ((labelKey, urlFn) in embedFormats) {
-                val embedUrl = urlFn()
-                Log.i("Animo", "[$labelKey] Starting WebView for: $embedUrl")
-                try {
-                    val result = extractStreamViaWebView(embedUrl, subtitleCallback)
-                    if (result == null) {
-                        Log.e("Animo", "[$labelKey] WebView returned null")
-                        continue
-                    }
-
-                    val (masterUrl, variants, subtitleUrls) = result
-                    Log.i("Animo", "[$labelKey] Master URL: ${masterUrl.take(80)}...")
-                    Log.i("Animo", "[$labelKey] Variants found: ${variants.size}")
-                    Log.i("Animo", "[$labelKey] Subtitles found: ${subtitleUrls.size}")
-
-                    val playHeaders = mapOf(
-                        "User-Agent" to ua,
-                        "Accept" to "*/*",
-                        "Referer" to embedUrl,
-                        "Origin" to cdnUrl
-                    )
-
-                    if (variants.isNotEmpty()) {
-                        // Master playlist was consumed — variant URLs have fresh tokens
-                        variants.forEach { (quality, variantUrl) ->
+                        )
+                        found = true
+                    } else {
+                        variants.forEach { match ->
+                            val quality = if (match.groupValues[1].isNotEmpty()) {
+                                match.groupValues[1]
+                            } else {
+                                "${match.groupValues[2]}p"
+                            }
+                            val variantUrl = match.groupValues[4].trim().let {
+                                if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
+                            }
                             val label = "$name $labelKey ($type) - $quality"
                             Log.i("Animo", "[$labelKey] Adding variant: $quality -> ${variantUrl.take(80)}...")
                             callback.invoke(
@@ -303,22 +242,24 @@ class Animo : MainAPI() {
                         }
                         found = true
                     }
-
-                    // Add any subtitle tracks found
-                    subtitleUrls.forEach { (label, subUrl) ->
-                        Log.i("Animo", "[$labelKey] Adding subtitle: $label")
-                        subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
-                            this.headers = playHeaders
-                        })
-                    }
-
-                    if (found) {
-                        Log.i("Animo", "[$labelKey] Success! Breaking.")
-                        break
-                    }
-                } catch (e: Exception) {
-                    Log.e("Animo", "[$labelKey] WebView: ${e.message}")
+                } else {
+                    Log.e("Animo", "[$labelKey] Master content is not M3U8: ${masterContent.take(100)}")
                 }
+
+                // Add subtitle tracks
+                subtitles.forEach { (label, subUrl) ->
+                    Log.i("Animo", "[$labelKey] Adding subtitle: $label -> ${subUrl.take(80)}...")
+                    subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
+                        this.headers = playHeaders
+                    })
+                }
+
+                if (found) {
+                    Log.i("Animo", "[$labelKey] Success! Breaking.")
+                    break
+                }
+            } catch (e: Exception) {
+                Log.e("Animo", "[$labelKey] Exception: ${e.message}")
             }
         }
 
@@ -326,23 +267,22 @@ class Animo : MainAPI() {
         return found
     }
 
-    data class VariantStream(val quality: String, val url: String)
     data class SubtitleTrack(val label: String, val url: String)
-    data class WebViewResult(val masterUrl: String, val variants: List<VariantStream>, val subtitles: List<SubtitleTrack>)
+    data class ExtractResult(val masterUrl: String, val masterContent: String, val subtitles: List<SubtitleTrack>)
 
     /**
-     * Loads the embed page in a WebView. Intercepts ALL /p?t= URLs via
-     * shouldInterceptRequest. For each, fetches it to check if it's m3u8 or
-     * subtitle. The m3u8 (master) is parsed for variant URLs (which have
-     * fresh, unconsumed tokens). Subtitle URLs are collected separately.
+     * Loads the embed page in a WebView. After page loads, uses evaluateJavascript
+     * to:
+     * 1. Extract the sourcesUrl token from the page's JavaScript
+     * 2. Call the getSources API via fetch() (runs in WebView context, uses
+     *    WebView's cf_clearance cookies automatically)
+     * 3. Parse JSON to get master m3u8 URL + subtitle tracks
+     * 4. Fetch the master m3u8 content via fetch() (in WebView context)
      *
-     * Returns WebViewResult(masterUrl, variants, subtitles) or null.
+     * Returns ExtractResult(masterUrl, masterContent, subtitles) or null.
      */
     @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun extractStreamViaWebView(
-        embedUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit
-    ): WebViewResult? = withContext(Dispatchers.Main) {
+    private suspend fun extractViaWebView(embedUrl: String): ExtractResult? = withContext(Dispatchers.Main) {
         val context = com.lagradost.cloudstream3.CommonActivity.activity ?: run {
             Log.e("Animo", "WebView: no activity context")
             return@withContext null
@@ -350,12 +290,12 @@ class Animo : MainAPI() {
 
         Log.i("Animo", "WebView: loading $embedUrl")
 
-        val result = withTimeoutOrNull(40_000L) {
-            suspendCancellableCoroutine<WebViewResult?> { cont ->
-                val foundMaster = java.util.concurrent.atomic.AtomicReference<String?>(null)
-                val variants = java.util.concurrent.atomic.AtomicReference<List<VariantStream>>(emptyList())
-                val subtitles = java.util.concurrent.atomic.AtomicReference<List<SubtitleTrack>>(emptyList())
+        val result = withTimeoutOrNull(45_000L) {
+            suspendCancellableCoroutine<ExtractResult?> { cont ->
                 val webView = WebView(context)
+                var pageLoaded = false
+                var processed = false
+
                 try {
                     CookieManager.getInstance().setAcceptCookie(true)
                     CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
@@ -370,104 +310,18 @@ class Animo : MainAPI() {
                     webView.webViewClient = object : WebViewClient() {
                         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
 
-                        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                            val url = request?.url?.toString() ?: return null
-
-                            // Intercept ALL /p?t= URLs
-                            if (url.contains("cdn.4animo.xyz/p?t=") && foundMaster.get() == null) {
-                                Log.i("Animo", "WebView INTERCEPTED /p?t=: ${url.take(100)}...")
-
-                                // Fetch this URL ourselves to check content type
-                                val fetchHeaders = mapOf(
-                                    "User-Agent" to ua,
-                                    "Accept" to "*/*",
-                                    "Referer" to embedUrl,
-                                    "Origin" to cdnUrl
-                                )
-                                try {
-                                    val resp = kotlinx.coroutines.runBlocking {
-                                        app.get(url, headers = fetchHeaders, timeout = 15_000L)
-                                    }
-                                    val body = resp.text
-                                    val bodyStart = body.take(200)
-                                    Log.i("Animo", "WebView /p?t= code=${resp.code} bodyStart=${bodyStart.take(100)}")
-
-                                    if (resp.code == 200 && body.trim().startsWith("#EXTM3U")) {
-                                        // This is the m3u8!
-                                        Log.i("Animo", "WebView: Found M3U8 playlist!")
-                                        foundMaster.set(url)
-
-                                        // Check if master playlist (has variants)
-                                        val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
-                                        val foundVariants = variantPattern.findAll(body).map { match ->
-                                            val quality = if (match.groupValues[1].isNotEmpty()) {
-                                                match.groupValues[1]
-                                            } else {
-                                                "${match.groupValues[2]}p"
-                                            }
-                                            val variantUrl = match.groupValues[4].trim().let {
-                                                if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
-                                            }
-                                            Log.i("Animo", "WebView: Variant $quality -> ${variantUrl.take(80)}...")
-                                            VariantStream(quality, variantUrl)
-                                        }.toList()
-
-                                        if (foundVariants.isEmpty()) {
-                                            // Media playlist directly (no master)
-                                            Log.i("Animo", "WebView: Media playlist (no variants), using directly")
-                                            variants.set(listOf(VariantStream("default", url)))
-                                        } else {
-                                            variants.set(foundVariants)
-                                        }
-
-                                        // Resume the coroutine with the result
-                                        val currentSubs = subtitles.get()
-                                        if (cont.isActive) cont.resume(WebViewResult(url, variants.get(), currentSubs))
-
-                                        // Return dummy so WebView doesn't consume the token
-                                        return WebResourceResponse(
-                                            "application/vnd.apple.mpegurl", "UTF-8",
-                                            ByteArrayInputStream("#EXTM3U\n#EXT-X-ENDLIST\n".toByteArray())
-                                        )
-                                    } else if (resp.code == 200 && (body.contains("WEBVTT") || body.contains("-->"))) {
-                                        // This is a subtitle track
-                                        Log.i("Animo", "WebView: Found subtitle track")
-                                        val subLabel = "Sub ${subtitles.get().size + 1}"
-                                        val currentSubs = subtitles.get()
-                                        subtitles.set(currentSubs + SubtitleTrack(subLabel, url))
-                                        // Return dummy subtitle so WebView doesn't consume
-                                        return WebResourceResponse(
-                                            "text/vtt", "UTF-8",
-                                            ByteArrayInputStream("WEBVTT\n\n".toByteArray())
-                                        )
-                                    } else {
-                                        Log.i("Animo", "WebView: Unknown content (code=${resp.code}), skipping")
-                                        // Return dummy to avoid consuming
-                                        return WebResourceResponse(
-                                            "application/octet-stream", "UTF-8",
-                                            ByteArrayInputStream(ByteArray(0))
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("Animo", "WebView: fetch failed: ${e.message}")
-                                    return null
-                                }
-                            }
-                            return null
-                        }
-
-                        override fun onLoadResource(view: WebView?, resourceUrl: String?) {
-                            super.onLoadResource(view, resourceUrl)
-                            if (resourceUrl != null && foundMaster.get() == null) {
-                                if (resourceUrl.contains("/p?t=") && resourceUrl.contains("cdn.4animo.xyz")) {
-                                    Log.i("Animo", "WebView onLoadResource: ${resourceUrl.take(100)}...")
-                                }
-                            }
-                        }
-
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
                             Log.i("Animo", "WebView onPageFinished: $url")
+                            if (!pageLoaded && url != null && url.contains("/embed/")) {
+                                pageLoaded = true
+                                // Give the page a moment to execute its JS and set sourcesUrl
+                                view?.postDelayed({
+                                    if (!processed && cont.isActive) {
+                                        processEmbedPage(view, embedUrl, cont) { processed = it }
+                                    }
+                                }, 1500L)
+                            }
                         }
                     }
                     webView.loadUrl(embedUrl)
@@ -482,9 +336,135 @@ class Animo : MainAPI() {
         }
 
         if (result == null) {
-            Log.e("Animo", "WebView: timed out after 40s")
+            Log.e("Animo", "WebView: timed out after 45s")
         }
         result
+    }
+
+    /**
+     * Called after the embed page loads. Extracts sourcesUrl, calls getSources,
+     * fetches master m3u8 — all via evaluateJavascript + fetch() in WebView context.
+     */
+    private fun processEmbedPage(
+        webView: WebView,
+        embedUrl: String,
+        cont: kotlinx.coroutines.CancellableContinuation<ExtractResult?>,
+        setProcessed: (Boolean) -> Unit
+    ) {
+        Log.i("Animo", "processEmbedPage: extracting sourcesUrl via JS...")
+
+        // Step 1: Extract sourcesUrl and call getSources via fetch() in WebView context
+        // The fetch runs in the WebView's JS context, so it uses the WebView's cookies (cf_clearance)
+        val js = """
+            (function() {
+                try {
+                    var sourcesUrl = window.sourcesUrl;
+                    if (!sourcesUrl) {
+                        // Try to extract from script tags
+                        var scripts = document.querySelectorAll('script');
+                        for (var i = 0; i < scripts.length; i++) {
+                            var m = scripts[i].textContent.match(/sourcesUrl\s*=\s*['"]([^'"]+)['"]/);
+                            if (m) { sourcesUrl = m[1]; break; }
+                        }
+                    }
+                    if (!sourcesUrl) return JSON.stringify({error: 'no sourcesUrl found'});
+
+                    var fullUrl = sourcesUrl.startsWith('http') ? sourcesUrl : (window.location.origin + sourcesUrl);
+
+                    // Use synchronous XHR to get the getSources JSON
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', fullUrl, false);
+                    xhr.setRequestHeader('Accept', 'application/json');
+                    try { xhr.send(); } catch(e) { return JSON.stringify({error: 'xhr send failed: ' + e.message}); }
+
+                    if (xhr.status !== 200) return JSON.stringify({error: 'getSources status ' + xhr.status});
+
+                    var data = JSON.parse(xhr.responseText);
+                    var m3u8File = data.sources && data.sources[0] ? data.sources[0].file : null;
+                    if (!m3u8File) return JSON.stringify({error: 'no source file'});
+
+                    var m3u8Url = m3u8File.startsWith('http') ? m3u8File : (window.location.origin + m3u8File);
+
+                    // Now fetch the master m3u8
+                    var xhr2 = new XMLHttpRequest();
+                    xhr2.open('GET', m3u8Url, false);
+                    xhr2.setRequestHeader('Accept', '*/*');
+                    try { xhr2.send(); } catch(e) { return JSON.stringify({error: 'm3u8 fetch failed: ' + e.message}); }
+
+                    var masterContent = xhr2.responseText;
+                    var tracks = [];
+                    if (data.tracks) {
+                        for (var i = 0; i < data.tracks.length; i++) {
+                            var t = data.tracks[i];
+                            if (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind) {
+                                var tFile = t.file.startsWith('http') ? t.file : (window.location.origin + t.file);
+                                tracks.push({label: t.label || ('Sub ' + (i+1)), file: tFile});
+                            }
+                        }
+                    }
+
+                    return JSON.stringify({
+                        masterUrl: m3u8Url,
+                        masterContent: masterContent,
+                        masterStatus: xhr2.status,
+                        tracks: tracks
+                    });
+                } catch(e) {
+                    return JSON.stringify({error: e.message});
+                }
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(js) { resultStr ->
+            Log.i("Animo", "JS result (first 200): ${(resultStr ?: "null").take(200)}")
+
+            if (resultStr == null || resultStr == "null") {
+                Log.e("Animo", "JS returned null")
+                setProcessed(true)
+                if (cont.isActive) cont.resume(null)
+                return@evaluateJavascript
+            }
+
+            try {
+                // evaluateJavascript returns the value as a JSON-encoded string
+                // So we need to parse it twice: once to get the string, once to parse the JSON
+                val jsonString = parseJson<String>(resultStr)
+                val data = parseJson<JsonObject>(jsonString)
+
+                if (data.has("error")) {
+                    Log.e("Animo", "JS error: ${data.get("error").asString}")
+                    setProcessed(true)
+                    if (cont.isActive) cont.resume(null)
+                    return@evaluateJavascript
+                }
+
+                val masterUrl = data.get("masterUrl").asString
+                val masterContent = data.get("masterContent").asString
+                val masterStatus = data.get("masterStatus").asInt
+                Log.i("Animo", "JS: masterUrl=${masterUrl.take(80)}...")
+                Log.i("Animo", "JS: masterStatus=$masterStatus")
+                Log.i("Animo", "JS: masterContent starts with #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
+
+                val tracks = mutableListOf<SubtitleTrack>()
+                if (data.has("tracks") && data.get("tracks").isJsonArray) {
+                    data.get("tracks").asJsonArray.forEach { trackElem ->
+                        val track = trackElem.asJsonObject
+                        tracks.add(SubtitleTrack(
+                            track.get("label").asString,
+                            track.get("file").asString
+                        ))
+                    }
+                }
+
+                setProcessed(true)
+                if (cont.isActive) cont.resume(ExtractResult(masterUrl, masterContent, tracks))
+            } catch (e: Exception) {
+                Log.e("Animo", "JS parse exception: ${e.message}")
+                Log.e("Animo", "Raw result: ${resultStr.take(500)}")
+                setProcessed(true)
+                if (cont.isActive) cont.resume(null)
+            }
+        }
     }
 
     private fun AnimeSearchItem.toSearchResponse(): SearchResponse? {
