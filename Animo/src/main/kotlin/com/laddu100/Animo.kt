@@ -166,11 +166,16 @@ class Animo : MainAPI() {
         val epData = try {
             parseJson<EpisodeData>(data)
         } catch (e: Exception) {
+            Log.e("Animo", "loadLinks: failed to parse data: ${e.message}")
             return false
         }
 
-        // Only load the requested stream type — no fallback to avoid confusion
+        Log.i("Animo", "========== loadLinks START ==========")
+        Log.i("Animo", "episodeId=${epData.episodeId} embedId=${epData.embedId} animeId=${epData.animeId} epNum=${epData.episodeNum} streamType=${epData.streamType}")
+
+        // Only load the requested stream type — no fallback
         val type = epData.streamType
+        Log.i("Animo", "Requested stream type: $type")
 
         val embedFormats = listOf<Pair<String, () -> String>>(
             Pair("a-1") { "$cdnUrl/embed/a-1/${epData.episodeId}/$type" },
@@ -181,106 +186,244 @@ class Animo : MainAPI() {
 
         var found = false
 
-        // Phase 1: Try direct API (fast path — also gets subtitle tracks)
+        // Phase 1: Try direct API (fast path)
+        Log.i("Animo", "----- Phase 1: Direct API -----")
         for ((labelKey, urlFn) in embedFormats) {
             val embedUrl = urlFn()
+            Log.i("Animo", "[$labelKey] Trying direct: $embedUrl")
             try {
                 val embedResp = app.get(embedUrl, headers = mapOf(
                     "User-Agent" to ua,
                     "Accept" to "text/html,application/xhtml+xml",
                     "Referer" to "$mainUrl/"
                 ), timeout = 15_000L)
-                if (embedResp.code != 200) continue
+                Log.i("Animo", "[$labelKey] Embed response code: ${embedResp.code}")
+                if (embedResp.code != 200) {
+                    Log.i("Animo", "[$labelKey] Skipping: non-200")
+                    continue
+                }
                 val embedHtml = embedResp.text
-                if (embedHtml.contains("Just a moment") || embedHtml.contains("cloudflare") || embedHtml.length < 500) continue
+                if (embedHtml.contains("Just a moment") || embedHtml.contains("cloudflare") || embedHtml.length < 500) {
+                    Log.i("Animo", "[$labelKey] Skipping: CF challenge detected (len=${embedHtml.length})")
+                    continue
+                }
+                Log.i("Animo", "[$labelKey] Embed HTML OK (len=${embedHtml.length})")
 
                 val tokenMatch = Regex("getSources\\?t=([A-Za-z0-9_.-]+)").find(embedHtml)
-                if (tokenMatch == null) continue
+                if (tokenMatch == null) {
+                    Log.i("Animo", "[$labelKey] No getSources token found in HTML")
+                    continue
+                }
                 val token = tokenMatch.groupValues[1].replace("\\u0026", "&").split("&")[0]
+                Log.i("Animo", "[$labelKey] Found token: ${token.take(30)}...")
 
                 val srcResp = app.get("$cdnUrl/stream/getSources?t=$token", headers = mapOf(
                     "User-Agent" to ua,
                     "Accept" to "application/json, text/plain, */*",
                     "Referer" to embedUrl
                 ), timeout = 15_000L)
+                Log.i("Animo", "[$labelKey] getSources response code: ${srcResp.code}")
                 if (srcResp.code != 200) continue
                 val srcText = srcResp.text
-                if (srcText.contains("Just a moment") || srcText.contains("invalid token")) continue
+                if (srcText.contains("Just a moment") || srcText.contains("invalid token")) {
+                    Log.i("Animo", "[$labelKey] getSources blocked/invalid")
+                    continue
+                }
 
                 val sources = parseJson<GetSourcesResponse>(srcText)
+                Log.i("Animo", "[$labelKey] Sources count: ${sources.sources?.size ?: 0}, Tracks: ${sources.tracks?.size ?: 0}")
 
                 sources.sources?.forEach { s ->
                     val file = s.file ?: return@forEach
                     val streamUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
-                    val label = "$name $labelKey ($type)"
-                    callback.invoke(
-                        newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
-                            this.referer = embedUrl
-                            this.headers = mapOf("Referer" to embedUrl, "User-Agent" to ua)
+                    Log.i("Animo", "[$labelKey] Source file: $streamUrl (type=${s.type})")
+
+                    // Fetch the master playlist using cookies to extract variant URLs
+                    try {
+                        val masterHeaders = mapOf(
+                            "User-Agent" to ua,
+                            "Accept" to "*/*",
+                            "Referer" to embedUrl,
+                            "Origin" to cdnUrl
+                        )
+                        Log.i("Animo", "[$labelKey] Fetching master playlist: $streamUrl")
+                        val masterResp = app.get(streamUrl, headers = masterHeaders, timeout = 15_000L)
+                        Log.i("Animo", "[$labelKey] Master playlist code: ${masterResp.code}")
+                        val masterText = masterResp.text
+                        Log.i("Animo", "[$labelKey] Master body (first 300): ${masterText.take(300)}")
+
+                        if (masterResp.code == 200 && masterText.trim().startsWith("#EXTM3U")) {
+                            // Parse variant streams
+                            val variantPattern = Regex("""#EXT-X-STREAM-INF:[^
+]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^
+]*
+([^
+#][^
+]*)""")
+                            val variants = variantPattern.findAll(masterText).toList()
+                            Log.i("Animo", "[$labelKey] Parsed ${variants.size} variants from master playlist")
+
+                            if (variants.isEmpty()) {
+                                // It's a media playlist directly (no master), pass it through
+                                Log.i("Animo", "[$labelKey] No variants — media playlist, passing through")
+                                val label = "$name $labelKey ($type)"
+                                callback.invoke(
+                                    newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
+                                        this.referer = embedUrl
+                                        this.headers = masterHeaders
+                                    }
+                                )
+                                found = true
+                            } else {
+                                variants.forEach { match ->
+                                    val quality = if (match.groupValues[1].isNotEmpty()) {
+                                        match.groupValues[1]
+                                    } else {
+                                        "${match.groupValues[2]}p"
+                                    }
+                                    val variantUrl = match.groupValues[4].trim().let {
+                                        if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
+                                    }
+                                    val label = "$name $labelKey ($type) - $quality"
+                                    Log.i("Animo", "[$labelKey] Adding variant: $quality -> ${variantUrl.take(80)}...")
+                                    callback.invoke(
+                                        newExtractorLink(label, label, variantUrl, type = ExtractorLinkType.M3U8) {
+                                            this.referer = embedUrl
+                                            this.headers = masterHeaders
+                                        }
+                                    )
+                                }
+                                found = true
+                            }
+                        } else {
+                            Log.e("Animo", "[$labelKey] Master playlist invalid: code=${masterResp.code} startsWithM3U8=${masterText.trim().startsWith("#EXTM3U")}")
                         }
-                    )
-                    found = true
+                    } catch (e: Exception) {
+                        Log.e("Animo", "[$labelKey] Failed to fetch/parse master playlist: ${e.message}")
+                    }
                 }
 
                 sources.tracks?.forEach { t ->
                     val file = t.file ?: return@forEach
                     val subUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
+                    Log.i("Animo", "[$labelKey] Subtitle track: ${t.label} -> $subUrl")
                     subtitleCallback.invoke(newSubtitleFile(t.label ?: "English", subUrl) {
                         this.headers = mapOf("Referer" to embedUrl, "User-Agent" to ua)
                     })
                 }
+                if (found) {
+                    Log.i("Animo", "[$labelKey] Found sources via direct API, breaking")
+                    break
+                }
             } catch (e: Exception) {
-                // CF blocked or other error — fall through to WebView
+                Log.e("Animo", "[$labelKey] Direct API exception: ${e.message}")
             }
         }
 
-        // Phase 2: If direct API failed (CF blocked), use WebView with shouldInterceptRequest
-        // to capture /p?t= URL WITHOUT consuming the one-time token
+        // Phase 2: WebView fallback (CF blocked direct API)
         if (!found) {
+            Log.i("Animo", "----- Phase 2: WebView fallback -----")
             for ((labelKey, urlFn) in embedFormats) {
                 val embedUrl = urlFn()
+                Log.i("Animo", "[$labelKey] Starting WebView for: $embedUrl")
                 try {
-                    val result = extractStreamUrlViaWebView(embedUrl) ?: continue
-                    val (streamUrl, cookies) = result
-                    val label = "$name $labelKey ($type)"
-                    val headers = mutableMapOf(
+                    val result = extractStreamUrlViaWebView(embedUrl)
+                    if (result == null) {
+                        Log.e("Animo", "[$labelKey] WebView returned null")
+                        continue
+                    }
+                    val (masterUrl, cookies) = result
+                    Log.i("Animo", "[$labelKey] WebView captured master URL: ${masterUrl.take(80)}...")
+                    Log.i("Animo", "[$labelKey] Cookies: $cookies")
+                    Log.i("Animo", "[$labelKey] Has cf_clearance: ${cookies.contains("cf_clearance")}")
+
+                    // Fetch master playlist with cookies
+                    val masterHeaders = mutableMapOf(
+                        "User-Agent" to ua,
+                        "Accept" to "*/*",
                         "Referer" to embedUrl,
-                        "User-Agent" to ua
+                        "Origin" to cdnUrl
                     )
                     if (cookies.isNotEmpty()) {
-                        headers["Cookie"] = cookies
+                        masterHeaders["Cookie"] = cookies
                     }
-                    callback.invoke(
-                        newExtractorLink(label, label, streamUrl, type = ExtractorLinkType.M3U8) {
-                            this.referer = embedUrl
-                            this.headers = headers
+
+                    Log.i("Animo", "[$labelKey] Fetching master playlist with cookies...")
+                    val masterResp = app.get(masterUrl, headers = masterHeaders, timeout = 15_000L)
+                    Log.i("Animo", "[$labelKey] Master playlist code: ${masterResp.code}")
+                    val masterText = masterResp.text
+                    Log.i("Animo", "[$labelKey] Master body (first 300): ${masterText.take(300)}")
+
+                    if (masterResp.code == 200 && masterText.trim().startsWith("#EXTM3U")) {
+                        val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
+                        val variants = variantPattern.findAll(masterText).toList()
+                        Log.i("Animo", "[$labelKey] Parsed ${variants.size} variants")
+
+                        if (variants.isEmpty()) {
+                            val label = "$name $labelKey ($type)"
+                            Log.i("Animo", "[$labelKey] No variants — passing media playlist directly")
+                            callback.invoke(
+                                newExtractorLink(label, label, masterUrl, type = ExtractorLinkType.M3U8) {
+                                    this.referer = embedUrl
+                                    this.headers = masterHeaders
+                                }
+                            )
+                            found = true
+                        } else {
+                            variants.forEach { match ->
+                                val quality = if (match.groupValues[1].isNotEmpty()) {
+                                    match.groupValues[1]
+                                } else {
+                                    "${match.groupValues[2]}p"
+                                }
+                                val variantUrl = match.groupValues[4].trim().let {
+                                    if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
+                                }
+                                val label = "$name $labelKey ($type) - $quality"
+                                Log.i("Animo", "[$labelKey] Adding variant: $quality")
+                                callback.invoke(
+                                    newExtractorLink(label, label, variantUrl, type = ExtractorLinkType.M3U8) {
+                                        this.referer = embedUrl
+                                        this.headers = masterHeaders
+                                    }
+                                )
+                            }
+                            found = true
+                            Log.i("Animo", "[$labelKey] Successfully added ${variants.size} variants, breaking")
+                            break
                         }
-                    )
-                    found = true
+                    } else {
+                        Log.e("Animo", "[$labelKey] Master playlist fetch failed: code=${masterResp.code} startsM3U8=${masterText.trim().startsWith("#EXTM3U")}")
+                    }
                 } catch (e: Exception) {
-                    Log.e("Animo", "WebView $labelKey ($type): ${e.message}")
+                    Log.e("Animo", "[$labelKey] WebView exception: ${e.message}")
                 }
             }
         }
 
+        Log.i("Animo", "========== loadLinks END (found=$found) ==========")
         return found
     }
 
     /**
      * Loads the embed page in a WebView and intercepts the /p?t= stream URL via
      * shouldInterceptRequest. Returns a DUMMY response so the WebView does NOT
-     * make the actual network request — this keeps the one-time token valid for
-     * ExoPlayer to use.
+     * consume the one-time token. Extracts cookies from multiple sources.
      *
      * Returns (streamUrl, cookies) or null.
      */
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun extractStreamUrlViaWebView(embedUrl: String): Pair<String, String>? = withContext(Dispatchers.Main) {
-        val context = com.lagradost.cloudstream3.CommonActivity.activity ?: return@withContext null
+        val context = com.lagradost.cloudstream3.CommonActivity.activity ?: run {
+            Log.e("Animo", "WebView: no activity context")
+            return@withContext null
+        }
 
-        withTimeoutOrNull(30_000L) {
+        Log.i("Animo", "WebView: loading $embedUrl")
+
+        val result = withTimeoutOrNull(30_000L) {
             suspendCancellableCoroutine<Pair<String, String>?> { cont ->
-                val foundUrl = AtomicReference<String?>(null)
+                val foundUrl = java.util.concurrent.atomic.AtomicReference<String?>(null)
                 val webView = WebView(context)
                 try {
                     CookieManager.getInstance().setAcceptCookie(true)
@@ -298,14 +441,59 @@ class Animo : MainAPI() {
 
                         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                             val url = request?.url?.toString() ?: return null
-                            // Intercept the /p?t= stream URL BEFORE the WebView loads it.
-                            // Return a dummy m3u8 so the one-time token is NOT consumed.
+
+                            // Intercept the /p?t= stream URL BEFORE the WebView loads it
                             if (url.contains("cdn.4animo.xyz/p?t=") && foundUrl.get() == null) {
                                 foundUrl.set(url)
-                                val cookies = try {
+                                Log.i("Animo", "WebView INTERCEPTED: $url")
+
+                                // Method 1: Get cookies from the request headers (most reliable)
+                                val requestCookies = try {
+                                    val headers = request.requestHeaders
+                                    headers?.get("Cookie") ?: headers?.get("cookie") ?: ""
+                                } catch (e: Exception) {
+                                    Log.e("Animo", "WebView: failed to get request headers: ${e.message}")
+                                    ""
+                                }
+                                Log.i("Animo", "WebView request cookies: $requestCookies")
+
+                                // Method 2: Get cookies from CookieManager for cdn domain
+                                val cmCdnCookies = try {
                                     CookieManager.getInstance().getCookie(cdnUrl) ?: ""
-                                } catch (_: Exception) { "" }
-                                if (cont.isActive) cont.resume(Pair(url, cookies))
+                                } catch (e: Exception) { "" }
+                                Log.i("Animo", "WebView CookieManager (cdn): $cmCdnCookies")
+
+                                // Method 3: Get cookies for main domain
+                                val cmMainCookies = try {
+                                    CookieManager.getInstance().getCookie(mainUrl) ?: ""
+                                } catch (e: Exception) { "" }
+                                Log.i("Animo", "WebView CookieManager (main): $cmMainCookies")
+
+                                // Method 4: Get cookies for parent domain
+                                val cmParentCookies = try {
+                                    CookieManager.getInstance().getCookie("https://4animo.xyz") ?: ""
+                                } catch (e: Exception) { "" }
+                                Log.i("Animo", "WebView CookieManager (parent): $cmParentCookies")
+
+                                // Combine all cookies, deduplicate by name
+                                val allCookieStrs = listOf(requestCookies, cmCdnCookies, cmMainCookies, cmParentCookies)
+                                    .filter { it.isNotEmpty() }
+                                val combined = mutableMapOf<String, String>()
+                                allCookieStrs.forEach { cookieStr ->
+                                    cookieStr.split(";").forEach { pair ->
+                                        val parts = pair.trim().split("=", limit = 2)
+                                        if (parts.size == 2) {
+                                            combined[parts[0].trim()] = parts[1].trim()
+                                        }
+                                    }
+                                }
+                                val finalCookies = combined.entries.joinToString("; ") { "${it.key}=${it.value}" }
+                                Log.i("Animo", "WebView FINAL cookies: $finalCookies")
+                                Log.i("Animo", "WebView has cf_clearance: ${finalCookies.contains("cf_clearance")}")
+
+                                if (cont.isActive) cont.resume(Pair(url, finalCookies))
+
+                                // Return dummy m3u8 so token is NOT consumed by WebView
                                 return WebResourceResponse(
                                     "application/vnd.apple.mpegurl",
                                     "UTF-8",
@@ -317,20 +505,29 @@ class Animo : MainAPI() {
 
                         override fun onLoadResource(view: WebView?, resourceUrl: String?) {
                             super.onLoadResource(view, resourceUrl)
-                            // Fallback in case shouldInterceptRequest didn't fire
                             if (resourceUrl != null && foundUrl.get() == null) {
                                 if (resourceUrl.contains("/p?t=") && resourceUrl.contains("cdn.4animo.xyz")) {
                                     foundUrl.set(resourceUrl)
-                                    val cookies = try {
-                                        CookieManager.getInstance().getCookie(cdnUrl) ?: ""
-                                    } catch (_: Exception) { "" }
-                                    if (cont.isActive) cont.resume(Pair(resourceUrl, cookies))
+                                    Log.i("Animo", "WebView onLoadResource captured: $resourceUrl")
+                                    val cmCdnCookies = try { CookieManager.getInstance().getCookie(cdnUrl) ?: "" } catch (_: Exception) { "" }
+                                    val cmMainCookies = try { CookieManager.getInstance().getCookie(mainUrl) ?: "" } catch (_: Exception) { "" }
+                                    val cmParentCookies = try { CookieManager.getInstance().getCookie("https://4animo.xyz") ?: "" } catch (_: Exception) { "" }
+                                    val combined = mutableMapOf<String, String>()
+                                    listOf(cmCdnCookies, cmMainCookies, cmParentCookies).filter { it.isNotEmpty() }.forEach { cookieStr ->
+                                        cookieStr.split(";").forEach { pair ->
+                                            val parts = pair.trim().split("=", limit = 2)
+                                            if (parts.size == 2) combined[parts[0].trim()] = parts[1].trim()
+                                        }
+                                    }
+                                    val finalCookies = combined.entries.joinToString("; ") { "${it.key}=${it.value}" }
+                                    if (cont.isActive) cont.resume(Pair(resourceUrl, finalCookies))
                                 }
                             }
                         }
                     }
                     webView.loadUrl(embedUrl)
                 } catch (e: Exception) {
+                    Log.e("Animo", "WebView exception: ${e.message}")
                     if (cont.isActive) cont.resume(null)
                 }
                 cont.invokeOnCancellation {
@@ -338,6 +535,11 @@ class Animo : MainAPI() {
                 }
             }
         }
+
+        if (result == null) {
+            Log.e("Animo", "WebView: timed out after 30s")
+        }
+        result
     }
 
     private fun AnimeSearchItem.toSearchResponse(): SearchResponse? {
