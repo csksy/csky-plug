@@ -450,7 +450,7 @@ class Animo : MainAPI() {
         val sources: List<MegaSource>? = null,
         val tracks: List<MegaTrack>? = null,
         val encrypted: Boolean? = null,
-        val server: Int? = null
+        val server: String? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
