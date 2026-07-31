@@ -195,6 +195,7 @@ class Animo : MainAPI() {
         }
 
         var found = false
+        var subtitlesAdded = false
 
         for ((labelKey, embedUrl) in embedFormats) {
             Log.i("Animo", "[$labelKey] Trying: $embedUrl")
@@ -272,7 +273,10 @@ class Animo : MainAPI() {
                     continue
                 }
 
-                // Step 4: Parse variant streams from master playlist
+                // Step 4: Pass master m3u8 URL directly as a single source.
+                // The master playlist contains quality variants — the player
+                // (ExoPlayer) will parse them and offer quality selection in UI.
+                // Do NOT split into separate sources.
                 val playHeaders = mapOf(
                     "User-Agent" to ua,
                     "Accept" to "*/*",
@@ -280,58 +284,32 @@ class Animo : MainAPI() {
                     "Origin" to cdnUrl
                 )
 
-                val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
-                val variants = variantPattern.findAll(masterContent).toList()
-                Log.i("Animo", "[$labelKey] Variants found: ${variants.size}")
-
-                if (variants.isEmpty()) {
-                    // Media playlist directly (no master) — pass through
-                    val label = "$name $labelKey ($type)"
-                    Log.i("Animo", "[$labelKey] No variants — media playlist, adding directly")
-                    callback.invoke(
-                        newExtractorLink(label, label, masterUrl, type = ExtractorLinkType.M3U8) {
-                            this.referer = embedUrl
-                            this.headers = playHeaders
-                        }
-                    )
-                    found = true
-                } else {
-                    variants.forEach { match ->
-                        val quality = if (match.groupValues[1].isNotEmpty()) {
-                            match.groupValues[1]
-                        } else {
-                            "${match.groupValues[2]}p"
-                        }
-                        val variantUrl = match.groupValues[4].trim().let {
-                            if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
-                        }
-                        val label = "$name $labelKey ($type) - $quality"
-                        Log.i("Animo", "[$labelKey] Adding variant: $quality")
-                        callback.invoke(
-                            newExtractorLink(label, label, variantUrl, type = ExtractorLinkType.M3U8) {
-                                this.referer = embedUrl
-                                this.headers = playHeaders
-                            }
-                        )
-                    }
-                    found = true
-                }
-
-                // Step 5: Add subtitle tracks
-                sources.tracks?.forEach { t ->
-                    val subFile = t.file ?: return@forEach
-                    val subUrl = if (subFile.startsWith("http")) subFile else "$cdnUrl/${subFile.removePrefix("/")}"
-                    val subLabel = t.label ?: "Subtitles"
-                    Log.i("Animo", "[$labelKey] Subtitle: $subLabel")
-                    subtitleCallback.invoke(newSubtitleFile(subLabel, subUrl) {
+                val label = "$name $labelKey ($type)"
+                Log.i("Animo", "[$labelKey] Adding source: $label")
+                callback.invoke(
+                    newExtractorLink(label, label, masterUrl, type = ExtractorLinkType.M3U8) {
+                        this.referer = embedUrl
                         this.headers = playHeaders
-                    })
+                    }
+                )
+                found = true
+
+                // Step 5: Add subtitle tracks (only from first successful source
+                // to avoid duplicates)
+                if (!subtitlesAdded && sources.tracks?.isNotEmpty() == true) {
+                    sources.tracks.forEach { t ->
+                        val subFile = t.file ?: return@forEach
+                        val subUrl = if (subFile.startsWith("http")) subFile else "$cdnUrl/${subFile.removePrefix("/")}"
+                        val subLabel = t.label ?: "Subtitles"
+                        Log.i("Animo", "[$labelKey] Subtitle: $subLabel")
+                        subtitleCallback.invoke(newSubtitleFile(subLabel, subUrl) {
+                            this.headers = playHeaders
+                        })
+                    }
+                    subtitlesAdded = true
                 }
 
-                if (found) {
-                    Log.i("Animo", "[$labelKey] Success! Breaking.")
-                    break
-                }
+                // Do NOT break — continue trying all 4 sources
             } catch (e: Exception) {
                 Log.e("Animo", "[$labelKey] Exception: ${e.message}")
             }
