@@ -1,5 +1,4 @@
-package com.laddu100.raghavanime
-import com.lagradost.api.Log
+package com.laddu100.raghavanimesubdl
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -103,7 +102,7 @@ class RaghavAniNami : MainAPI() {
                     val id = ep.id ?: return@forEach
                     dubIdsByNumber.getOrPut(num) { mutableListOf() }.add(id)
                 }
-            } catch (e: Throwable) { Log.e("RaghavAnime", "AniNami: ${e.message}") }
+            } catch (_: Throwable) { }
         }
 
 

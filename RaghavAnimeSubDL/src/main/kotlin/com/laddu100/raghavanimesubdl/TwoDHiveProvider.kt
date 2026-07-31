@@ -1,5 +1,4 @@
-package com.laddu100.raghavanime
-import com.lagradost.api.Log
+package com.laddu100.raghavanimesubdl
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.JsonNode
@@ -156,7 +155,7 @@ class RaghavTwoDHive : MainAPI() {
                 val apiResp = quickGet("$mainUrl/api/anime/summary?malId=$malId")
                 val apiJson = mapper.readTree(apiResp)
                 plot = apiJson.get("anime")?.get("synopsis")?.asText() ?: ""
-            } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+            } catch (_: Exception) {}
         }
 
         val genres = mutableListOf<String>()
@@ -170,7 +169,7 @@ class RaghavTwoDHive : MainAPI() {
                     genresNode.forEach { g -> genres.add(g.asText()) }
                 }
                 year = apiJson.get("anime")?.get("year")?.asInt()
-            } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+            } catch (_: Exception) {}
         }
         if (year == null) {
             soup.select("div, span, p, small").forEach { el ->
@@ -206,7 +205,7 @@ class RaghavTwoDHive : MainAPI() {
                             }
                         }
                     }
-                } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+                } catch (_: Exception) {}
             }
         }
 
@@ -261,7 +260,7 @@ class RaghavTwoDHive : MainAPI() {
             if (!m3u8.isNullOrEmpty() && m3u8.contains("/m3u8-proxy")) {
                 return m3u8.substringBefore("/m3u8-proxy") + "/m3u8-proxy"
             }
-        } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+        } catch (_: Exception) {}
         return "https://anicloud-hls-proxy.n3779118.workers.dev/m3u8-proxy"
     }
 

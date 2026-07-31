@@ -1,5 +1,4 @@
-package com.laddu100.raghavanime
-import com.lagradost.api.Log
+package com.laddu100.raghavanimesubdl
 
 import android.content.Context
 import android.os.Handler
@@ -112,12 +111,12 @@ fun decodePipeResponseAuto(responseBody: String): String {
 
     try {
         return decompress(decoded)
-    } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+    } catch (_: Exception) {}
 
     try {
         val xored = xorDecrypt(decoded)
         return decompress(xored)
-    } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+    } catch (_: Exception) {}
 
     throw Exception("Cannot decode pipe response (tried JSON, decompress, XOR+decompress)")
 }
@@ -189,8 +188,8 @@ object MiruroCloudflare {
                             if (cookies.isNotEmpty()) {
                                 setCookies(domain, cookies)
                             }
-                        } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
-                        try { webView?.destroy() } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+                        } catch (_: Exception) {}
+                        try { webView?.destroy() } catch (_: Exception) {}
                         cont.resume(result)
                     }
                 }
@@ -363,7 +362,7 @@ private suspend fun miruroPipeRequestForDomain(
                 try {
                     return decodePipeResponseWithHeader(body, obfHeader)
                 } catch (_: Exception) {
-                    try { return decodePipeResponseAuto(body) } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+                    try { return decodePipeResponseAuto(body) } catch (_: Exception) {}
                 }
             }
         }

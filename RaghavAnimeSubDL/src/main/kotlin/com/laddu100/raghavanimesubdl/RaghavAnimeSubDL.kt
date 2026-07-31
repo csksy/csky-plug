@@ -1,4 +1,4 @@
-package com.laddu100.raghavanime
+package com.laddu100.raghavanimesubdl
 
 import com.lagradost.cloudstream3.CommonActivity.activity
 import android.content.Context
@@ -17,9 +17,9 @@ import com.lagradost.nicehttp.RequestBodyTypes
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 
-class RaghavAnime : MainAPI() {
+class RaghavAnimeSubDL : MainAPI() {
     override var mainUrl = "https://graphql.anilist.co"
-    override var name = "RaghavAnime"
+    override var name = "RaghavAnimeSubDL"
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
@@ -231,6 +231,26 @@ class RaghavAnime : MainAPI() {
 
 
         runAllAsync(
+            {
+                try {
+                    val tvType = if (linkData.year != null) {
+                        val infoText = anilistQuery(INFO_QUERY, mapOf("id" to aniId))
+                        val infoResponse = parseJson<AniListResponse>(infoText)
+                        infoResponse.data?.Media?.format == "MOVIE"
+                    } else false
+                    SubDLHelper.fetchSubtitles(
+                        activity?.applicationContext,
+                        title,
+                        jpTitle,
+                        episode,
+                        season = 1,
+                        isMovie = tvType,
+                        subtitleCallback = subtitleCallback
+                    )
+                } catch (e: Throwable) {
+                    Log.e("RaghavAnime", "[SubDL] FAILED: ${e.message}")
+                }
+            },
             {
                 try {
                     val miruro = Miruro()
