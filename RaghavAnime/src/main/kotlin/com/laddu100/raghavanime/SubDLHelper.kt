@@ -127,16 +127,26 @@ object SubDLHelper {
             val resp = app.get(pageUrl, headers = mapOf("User-Agent" to ua), timeout = 15_000L)
             if (resp.code != 200) return emptyList()
             val html = resp.text
-            val blocks = html.split(Regex("(?=<a[^>]*href=\"/s/info/\")"))
-            for (block in blocks) {
-                val releaseMatch = Regex("<a[^>]*href=\"/s/info/[^\"]+\"[^>]*>(.*?)</a>")
-                    .find(block)
-                val dlMatch = Regex("https://dl\\.subdl\\.com/[^\"'<>\\s]+").find(block)
-                if (releaseMatch != null && dlMatch != null) {
-                    val release = releaseMatch.groupValues[1]
+
+            val infoPattern = Regex(
+                """<a[^>]*href="(/s/info/[^"]+)"[^>]*>(.*?)</a>""",
+                RegexOption.DOT_MATCHES_ALL
+            )
+            val dlPattern = Regex("""https://dl\.subdl\.com/[^"'<>\s]+""")
+
+            val infoMatches = infoPattern.findAll(html).toList()
+            val dlMatches = dlPattern.findAll(html).toList()
+
+            Log.d(TAG, "page parse: ${infoMatches.size} info links, ${dlMatches.size} dl urls")
+
+            for (info in infoMatches) {
+                val nextDl = dlMatches.firstOrNull { it.range.first > info.range.first }
+                if (nextDl != null) {
+                    val release = info.groupValues[2]
                         .replace(Regex("<[^>]+>"), " ")
+                        .replace(Regex("&[#a-zA-Z0-9]+;"), "")
                         .replace(Regex("\\s+"), " ").trim()
-                    entries.add(SubDLSubEntry(release, dlMatch.value))
+                    entries.add(SubDLSubEntry(release, nextDl.value))
                 }
             }
         } catch (e: Exception) {
@@ -148,6 +158,7 @@ object SubDLHelper {
     private fun matchEpisode(subs: List<SubDLSubEntry>, episode: Int): List<SubDLSubEntry> {
         val exact = mutableListOf<SubDLSubEntry>()
         val range = mutableListOf<SubDLSubEntry>()
+        val epStr = episode.toString()
         for (sub in subs) {
             val r = sub.release
             Regex("[SE]\\d{1,2}E(\\d{1,4})(?!\\d)", RegexOption.IGNORE_CASE).find(r)?.let { m ->
@@ -173,10 +184,7 @@ object SubDLHelper {
         return exact.ifEmpty { range }
     }
 
-    private fun extractSrtFromZip(
-        zipBytes: ByteArray,
-        episode: Int?
-    ): String? {
+    private fun extractSrtFromZip(zipBytes: ByteArray, episode: Int?): String? {
         try {
             val zis = ZipInputStream(zipBytes.inputStream())
             var entry = zis.nextEntry
@@ -189,11 +197,6 @@ object SubDLHelper {
                         val epMatch = Regex("[SE]\\d{1,2}E(\\d{1,4})", RegexOption.IGNORE_CASE)
                             .find(entry.name)
                         if (epMatch != null && epMatch.groupValues[1].toIntOrNull() == episode) {
-                            return content
-                        }
-                        val loneEp = Regex("(?:^|[^0-9])E(\\d{1,4})(?:[^0-9]|$)", RegexOption.IGNORE_CASE)
-                            .find(entry.name)
-                        if (loneEp != null && loneEp.groupValues[1].toIntOrNull() == episode) {
                             return content
                         }
                     }
@@ -317,9 +320,7 @@ object SubDLHelper {
             val localPath = downloadAndCacheSubtitle(context, sub.dlUrl, episode, cacheKey)
             if (localPath != null) {
                 val label = "SubDL English ${index + 1}"
-                subtitleCallback.invoke(newSubtitleFile(label, localPath) {
-                    this.headers = mapOf("User-Agent" to ua)
-                })
+                subtitleCallback.invoke(newSubtitleFile(label, localPath))
                 Log.d(TAG, "added subtitle: $label")
             }
         }
