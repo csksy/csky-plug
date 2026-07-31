@@ -182,8 +182,6 @@ class RaghavAnimo : MainAPI() {
         return found
     }
 
-    // The stream token is bound to the keep-alive connection, so all three
-    // requests must go through the same OkHttp connection pool.
     private suspend fun resolveSource(
         embedUrl: String,
         key: String,

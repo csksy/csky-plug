@@ -409,8 +409,6 @@ class RaghavEnma : MainAPI() {
         return found
     }
 
-    // 4animo uses session-tied tokens: embed page → getSources API → m3u8 path.
-    // JW Player doesn't auto-play in headless WebView, so we fetch all 3 directly.
     private suspend fun resolve4Animo(
         iframeUrl: String,
         serverName: String,
@@ -520,8 +518,6 @@ class RaghavEnma : MainAPI() {
         }
     }
 
-    // tryembed m3u8 returns a redirect to a proxy URL, so we follow it
-    // and pass the final URL directly to ExoPlayer
     private suspend fun resolveTryEmbed(
         iframeUrl: String,
         serverName: String,

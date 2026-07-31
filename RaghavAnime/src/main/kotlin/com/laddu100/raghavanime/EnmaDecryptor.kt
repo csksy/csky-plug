@@ -29,8 +29,6 @@ object EnmaDecryptor {
     @Volatile private var initStarted = false
     @Volatile private var readySignal: CompletableDeferred<Unit>? = null
 
-    // SupervisorJob survives coroutine cancellation so the WebView keeps
-    // loading even if getMainPage is cancelled mid-init
     private val initScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     fun setContext(context: Context) {
@@ -58,8 +56,6 @@ object EnmaDecryptor {
 
     private val bridge = DecryptBridge()
 
-    // Loads ada.wasm + ada.manifest, derives the export name via XOR, and
-    // exposes _doDecrypt for Kotlin to call via evaluateJavascript polling
     private val injectScript = """
         (function() {
             if (window._enmaDecryptLoaded) return;
@@ -148,8 +144,6 @@ object EnmaDecryptor {
         withTimeoutOrNull(30_000L) { signal.await() }
     }
 
-    // Polling avoids the coroutine/callback deadlock that suspendCancellableCoroutine
-    // had when multiple decrypt calls shared a single pendingResultCont field
     suspend fun decrypt(encrypted: String): String {
         if (!initialized) { startInit(); awaitReady() }
         val wv = webView ?: return ""
