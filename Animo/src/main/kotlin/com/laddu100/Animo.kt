@@ -290,11 +290,10 @@ class Animo : MainAPI() {
 
         Log.i("Animo", "WebView: loading $embedUrl")
 
-        val result = withTimeoutOrNull(45_000L) {
+        val result = withTimeoutOrNull(60_000L) {
             suspendCancellableCoroutine<ExtractResult?> { cont ->
                 val webView = WebView(context)
-                var pageLoaded = false
-                var processed = false
+                var jsCalled = false
 
                 try {
                     CookieManager.getInstance().setAcceptCookie(true)
@@ -313,14 +312,13 @@ class Animo : MainAPI() {
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
                             Log.i("Animo", "WebView onPageFinished: $url")
-                            if (!pageLoaded && url != null && url.contains("/embed/")) {
-                                pageLoaded = true
-                                // Give the page a moment to execute its JS and set sourcesUrl
-                                view?.postDelayed({
-                                    if (!processed && cont.isActive) {
-                                        processEmbedPage(view, embedUrl, cont) { processed = it }
-                                    }
-                                }, 1500L)
+                            // Don't process immediately — CF challenge may still be running.
+                            // Use evaluateJavascript to check if sourcesUrl exists yet.
+                            // Poll every 2 seconds up to 10 times.
+                            if (!jsCalled && url != null && url.contains("/embed/")) {
+                                jsCalled = true
+                                Log.i("Animo", "WebView: starting JS polling for sourcesUrl")
+                                pollForSourcesUrl(view, embedUrl, cont, attempt = 0)
                             }
                         }
                     }
@@ -336,31 +334,67 @@ class Animo : MainAPI() {
         }
 
         if (result == null) {
-            Log.e("Animo", "WebView: timed out after 45s")
+            Log.e("Animo", "WebView: timed out after 60s")
         }
         result
     }
 
     /**
-     * Called after the embed page loads. Extracts sourcesUrl, calls getSources,
-     * fetches master m3u8 — all via evaluateJavascript + fetch() in WebView context.
+     * Polls the WebView page for sourcesUrl. CF challenge takes ~5s to solve,
+     * so we retry every 2 seconds.
      */
-    private fun processEmbedPage(
-        webView: WebView,
+    private fun pollForSourcesUrl(
+        webView: WebView?,
         embedUrl: String,
         cont: kotlinx.coroutines.CancellableContinuation<ExtractResult?>,
-        setProcessed: (Boolean) -> Unit
+        attempt: Int
     ) {
-        Log.i("Animo", "processEmbedPage: extracting sourcesUrl via JS...")
+        if (webView == null || !cont.isActive) {
+            Log.e("Animo", "pollForSourcesUrl: webView null or cont inactive")
+            return
+        }
+        if (attempt >= 15) {
+            Log.e("Animo", "pollForSourcesUrl: max attempts (15) reached")
+            if (cont.isActive) cont.resume(null)
+            return
+        }
 
-        // Step 1: Extract sourcesUrl and call getSources via fetch() in WebView context
-        // The fetch runs in the WebView's JS context, so it uses the WebView's cookies (cf_clearance)
+        Log.i("Animo", "pollForSourcesUrl: attempt ${attempt + 1}/15")
+
+        // Check if sourcesUrl exists yet
+        webView.evaluateJavascript("(function(){ return typeof window.sourcesUrl !== 'undefined' ? window.sourcesUrl : null; })();") { result ->
+            Log.i("Animo", "pollForSourcesUrl: sourcesUrl check = ${(result ?: "null").take(80)}")
+
+            if (result != null && result != "null" && result.contains("getSources")) {
+                // sourcesUrl exists! Now do the full extraction
+                Log.i("Animo", "pollForSourcesUrl: sourcesUrl found! Running full extraction...")
+                runFullExtraction(webView, embedUrl, cont)
+            } else {
+                // sourcesUrl not ready yet (CF challenge still running). Retry in 2s.
+                Log.i("Animo", "pollForSourcesUrl: not ready, retrying in 2s...")
+                webView.postDelayed({
+                    pollForSourcesUrl(webView, embedUrl, cont, attempt + 1)
+                }, 2000L)
+            }
+        }
+    }
+
+    /**
+     * Runs the full extraction: fetch getSources, fetch master m3u8, all via
+     * synchronous XHR in the WebView's JS context.
+     */
+    private fun runFullExtraction(
+        webView: WebView,
+        embedUrl: String,
+        cont: kotlinx.coroutines.CancellableContinuation<ExtractResult?>
+    ) {
+        Log.i("Animo", "runFullExtraction: injecting JS...")
+
         val js = """
             (function() {
                 try {
                     var sourcesUrl = window.sourcesUrl;
                     if (!sourcesUrl) {
-                        // Try to extract from script tags
                         var scripts = document.querySelectorAll('script');
                         for (var i = 0; i < scripts.length; i++) {
                             var m = scripts[i].textContent.match(/sourcesUrl\s*=\s*['"]([^'"]+)['"]/);
@@ -371,21 +405,19 @@ class Animo : MainAPI() {
 
                     var fullUrl = sourcesUrl.startsWith('http') ? sourcesUrl : (window.location.origin + sourcesUrl);
 
-                    // Use synchronous XHR to get the getSources JSON
                     var xhr = new XMLHttpRequest();
                     xhr.open('GET', fullUrl, false);
                     xhr.setRequestHeader('Accept', 'application/json');
                     try { xhr.send(); } catch(e) { return JSON.stringify({error: 'xhr send failed: ' + e.message}); }
 
-                    if (xhr.status !== 200) return JSON.stringify({error: 'getSources status ' + xhr.status});
+                    if (xhr.status !== 200) return JSON.stringify({error: 'getSources status ' + xhr.status, body: xhr.responseText.substring(0, 200)});
 
                     var data = JSON.parse(xhr.responseText);
                     var m3u8File = data.sources && data.sources[0] ? data.sources[0].file : null;
-                    if (!m3u8File) return JSON.stringify({error: 'no source file'});
+                    if (!m3u8File) return JSON.stringify({error: 'no source file in response'});
 
                     var m3u8Url = m3u8File.startsWith('http') ? m3u8File : (window.location.origin + m3u8File);
 
-                    // Now fetch the master m3u8
                     var xhr2 = new XMLHttpRequest();
                     xhr2.open('GET', m3u8Url, false);
                     xhr2.setRequestHeader('Accept', '*/*');
@@ -410,30 +442,26 @@ class Animo : MainAPI() {
                         tracks: tracks
                     });
                 } catch(e) {
-                    return JSON.stringify({error: e.message});
+                    return JSON.stringify({error: e.message, stack: e.stack ? e.stack.substring(0, 300) : ''});
                 }
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(js) { resultStr ->
-            Log.i("Animo", "JS result (first 200): ${(resultStr ?: "null").take(200)}")
+            Log.i("Animo", "runFullExtraction: JS result (first 200): ${(resultStr ?: "null").take(200)}")
 
             if (resultStr == null || resultStr == "null") {
-                Log.e("Animo", "JS returned null")
-                setProcessed(true)
+                Log.e("Animo", "runFullExtraction: JS returned null")
                 if (cont.isActive) cont.resume(null)
                 return@evaluateJavascript
             }
 
             try {
-                // evaluateJavascript returns the value as a JSON-encoded string
-                // So we need to parse it twice: once to get the string, once to parse the JSON
                 val jsonString = parseJson<String>(resultStr)
                 val data = parseJson<JsonObject>(jsonString)
 
                 if (data.has("error")) {
-                    Log.e("Animo", "JS error: ${data.get("error").asString}")
-                    setProcessed(true)
+                    Log.e("Animo", "runFullExtraction: JS error: ${data.get("error").asString}")
                     if (cont.isActive) cont.resume(null)
                     return@evaluateJavascript
                 }
@@ -441,9 +469,10 @@ class Animo : MainAPI() {
                 val masterUrl = data.get("masterUrl").asString
                 val masterContent = data.get("masterContent").asString
                 val masterStatus = data.get("masterStatus").asInt
-                Log.i("Animo", "JS: masterUrl=${masterUrl.take(80)}...")
-                Log.i("Animo", "JS: masterStatus=$masterStatus")
-                Log.i("Animo", "JS: masterContent starts with #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
+                Log.i("Animo", "runFullExtraction: masterUrl=${masterUrl.take(80)}...")
+                Log.i("Animo", "runFullExtraction: masterStatus=$masterStatus")
+                Log.i("Animo", "runFullExtraction: masterContent starts #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
+                Log.i("Animo", "runFullExtraction: masterContent (first 200): ${masterContent.take(200)}")
 
                 val tracks = mutableListOf<SubtitleTrack>()
                 if (data.has("tracks") && data.get("tracks").isJsonArray) {
@@ -455,13 +484,12 @@ class Animo : MainAPI() {
                         ))
                     }
                 }
+                Log.i("Animo", "runFullExtraction: tracks count=${tracks.size}")
 
-                setProcessed(true)
                 if (cont.isActive) cont.resume(ExtractResult(masterUrl, masterContent, tracks))
             } catch (e: Exception) {
-                Log.e("Animo", "JS parse exception: ${e.message}")
-                Log.e("Animo", "Raw result: ${resultStr.take(500)}")
-                setProcessed(true)
+                Log.e("Animo", "runFullExtraction: parse exception: ${e.message}")
+                Log.e("Animo", "runFullExtraction: raw result: ${resultStr.take(500)}")
                 if (cont.isActive) cont.resume(null)
             }
         }
