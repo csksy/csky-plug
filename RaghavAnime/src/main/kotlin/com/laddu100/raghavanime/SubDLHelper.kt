@@ -5,13 +5,13 @@ import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
+import java.io.BufferedReader
 import java.io.File
-import java.net.InetSocketAddress
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.ServerSocket
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipInputStream
 
 object SubDLHelper {
@@ -221,46 +221,79 @@ object SubDLHelper {
         return null
     }
 
-    private val subtitleCache = ConcurrentHashMap<String, String>()
-    private var server: HttpServer? = null
-    private val serverPort = AtomicInteger(0)
+    private val subtitleStore = ConcurrentHashMap<String, ByteArray>()
+    private var serverSocket: ServerSocket? = null
+    private var serverPort = 0
+    @Volatile private var serverRunning = false
 
     @Synchronized
     private fun ensureServerRunning(): Int {
-        if (server != null && serverPort.get() > 0) return serverPort.get()
+        if (serverRunning && serverPort > 0) return serverPort
         try {
-            val port = 8964
-            val srv = HttpServer.create(InetSocketAddress(port), 0)
-            srv.createContext("/subdl/") { exchange: HttpExchange ->
-                val id = exchange.requestURI.path.removePrefix("/subdl/")
-                val content = subtitleCache[id]
-                if (content != null) {
-                    val bytes = content.toByteArray(Charsets.UTF_8)
-                    exchange.responseHeaders.add("Content-Type", "application/x-subrip")
-                    exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
-                    exchange.sendResponseHeaders(200, bytes.size.toLong())
-                    exchange.responseBody.use { it.write(bytes) }
-                } else {
-                    exchange.sendResponseHeaders(404, -1)
+            val socket = ServerSocket(0)
+            serverSocket = socket
+            serverPort = socket.localPort
+            serverRunning = true
+            Log.d(TAG, "subtitle server started on port $serverPort")
+
+            Thread {
+                while (serverRunning) {
+                    try {
+                        val client = socket.accept()
+                        handleRequest(client)
+                    } catch (e: Exception) {
+                        if (serverRunning) {
+                            Log.d(TAG, "server accept error: ${e.message}")
+                        }
+                    }
                 }
-                exchange.close()
-            }
-            srv.start()
-            server = srv
-            serverPort.set(port)
-            Log.d(TAG, "subtitle server started on port $port")
+            }.start()
         } catch (e: Exception) {
             Log.d(TAG, "server start error: ${e.message}")
         }
-        return serverPort.get()
+        return serverPort
     }
 
-    private fun cacheSubtitleContent(content: String): String {
+    private fun handleRequest(client: java.net.Socket) {
+        try {
+            val reader = BufferedReader(InputStreamReader(client.getInputStream()))
+            val headerLine = reader.readLine() ?: return
+            val path = headerLine.split(" ").getOrNull(1) ?: return
+
+            val subId = path.removePrefix("/subdl/")
+            val content = subtitleStore[subId]
+
+            val writer = OutputStreamWriter(client.getOutputStream())
+            if (content != null) {
+                writer.write("HTTP/1.1 200 OK\r\n")
+                writer.write("Content-Type: application/x-subrip\r\n")
+                writer.write("Content-Length: ${content.size}\r\n")
+                writer.write("Access-Control-Allow-Origin: *\r\n")
+                writer.write("Connection: close\r\n")
+                writer.write("\r\n")
+                writer.flush()
+                client.getOutputStream().write(content)
+                client.getOutputStream().flush()
+            } else {
+                writer.write("HTTP/1.1 404 Not Found\r\n")
+                writer.write("Content-Length: 0\r\n")
+                writer.write("Connection: close\r\n")
+                writer.write("\r\n")
+                writer.flush()
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "handleRequest error: ${e.message}")
+        } finally {
+            try { client.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun cacheSubtitle(content: String): String {
         val id = MessageDigest.getInstance("MD5")
             .digest(content.toByteArray())
             .joinToString("") { "%02x".format(it) }
             .take(16)
-        subtitleCache[id] = content
+        subtitleStore[id] = content.toByteArray(Charsets.UTF_8)
         return id
     }
 
@@ -275,8 +308,9 @@ object SubDLHelper {
                 return null
             }
             val bytes = resp.body.bytes()
-            Log.d(TAG, "downloaded ${dlUrl.take(60)} -> ${bytes.size} bytes, isZip=${bytes.size >= 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4b.toByte()}")
-            val srtContent = if (bytes.size >= 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4b.toByte()) {
+            val isZip = bytes.size >= 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4b.toByte()
+            Log.d(TAG, "downloaded ${dlUrl.take(60)} -> ${bytes.size} bytes, isZip=$isZip")
+            val srtContent = if (isZip) {
                 extractSrtFromZip(bytes, episode)
             } else {
                 bytes.toString(Charsets.UTF_8)
@@ -291,8 +325,7 @@ object SubDLHelper {
             }
 
             val preview = srtContent.take(100).replace("\n", "\\n").replace("\r", "\\r")
-            Log.d(TAG, "SRT content (${srtContent.length} chars) preview: $preview")
-
+            Log.d(TAG, "SRT (${srtContent.length} chars) preview: $preview")
             return srtContent
         } catch (e: Exception) {
             Log.d(TAG, "downloadAndExtract error: ${e.message}")
@@ -351,7 +384,6 @@ object SubDLHelper {
         }
 
         Log.d(TAG, "found ${subs.size} English subtitle entries")
-
         if (subs.isEmpty()) return
 
         val matched = if (isMovie) {
@@ -376,7 +408,7 @@ object SubDLHelper {
         for ((index, sub) in matched.withIndex()) {
             val srtContent = downloadAndExtractSrt(sub.dlUrl, episode)
             if (srtContent != null) {
-                val cacheId = cacheSubtitleContent(srtContent)
+                val cacheId = cacheSubtitle(srtContent)
                 val subtitleUrl = "http://127.0.0.1:$port/subdl/$cacheId"
                 val label = "SubDL English ${index + 1}"
                 subtitleCallback.invoke(newSubtitleFile(label, subtitleUrl))
