@@ -233,6 +233,26 @@ class RaghavAnime : MainAPI() {
         runAllAsync(
             {
                 try {
+                    val tvType = if (linkData.year != null) {
+                        val infoText = anilistQuery(INFO_QUERY, mapOf("id" to aniId))
+                        val infoResponse = parseJson<AniListResponse>(infoText)
+                        infoResponse.data?.Media?.format == "MOVIE"
+                    } else false
+                    SubDLHelper.fetchSubtitles(
+                        activity?.applicationContext,
+                        title,
+                        jpTitle,
+                        episode,
+                        season = 1,
+                        isMovie = tvType,
+                        subtitleCallback = subtitleCallback
+                    )
+                } catch (e: Throwable) {
+                    Log.e("RaghavAnime", "[SubDL] FAILED: ${e.message}")
+                }
+            },
+            {
+                try {
                     val miruro = Miruro()
                     val loadResult = miruro.load("${miruro.mainUrl}/info/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
                     if (loadResult == null) {
