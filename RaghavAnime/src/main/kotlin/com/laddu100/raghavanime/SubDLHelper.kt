@@ -150,22 +150,19 @@ object SubDLHelper {
         val range = mutableListOf<SubDLSubEntry>()
         for (sub in subs) {
             val r = sub.release
-            val epPattern = Regex("[SE]\\d{1,2}E(\\d{1,4})", RegexOption.IGNORE_CASE)
-            epPattern.find(r)?.let { m ->
+            Regex("[SE]\\d{1,2}E(\\d{1,4})(?!\\d)", RegexOption.IGNORE_CASE).find(r)?.let { m ->
                 if (m.groupValues[1].toIntOrNull() == episode) {
                     exact.add(sub)
                     return@let
                 }
             }
-            val loneEp = Regex("(?:^|[^0-9])E(\\d{1,4})(?:[^0-9]|$)", RegexOption.IGNORE_CASE)
-            loneEp.find(r)?.let { m ->
+            Regex("(?:^|[^0-9])E(\\d{1,4})(?:[^0-9]|$)", RegexOption.IGNORE_CASE).find(r)?.let { m ->
                 if (m.groupValues[1].toIntOrNull() == episode) {
                     exact.add(sub)
                     return@let
                 }
             }
-            val rangePattern = Regex("[SE]\\d{1,2}E(\\d{1,4})-(\\d{1,4})", RegexOption.IGNORE_CASE)
-            rangePattern.find(r)?.let { m ->
+            Regex("[SE]\\d{1,2}E(\\d{1,4})-(\\d{1,4})", RegexOption.IGNORE_CASE).find(r)?.let { m ->
                 val start = m.groupValues[1].toIntOrNull() ?: return@let
                 val end = m.groupValues[2].toIntOrNull() ?: return@let
                 if (episode in start..end) {
@@ -319,7 +316,7 @@ object SubDLHelper {
             val cacheKey = "${titleFound.sdId}_${episode}_$index"
             val localPath = downloadAndCacheSubtitle(context, sub.dlUrl, episode, cacheKey)
             if (localPath != null) {
-                val label = "English ${index + 1}"
+                val label = "SubDL English ${index + 1}"
                 subtitleCallback.invoke(newSubtitleFile(label, localPath) {
                     this.headers = mapOf("User-Agent" to ua)
                 })
