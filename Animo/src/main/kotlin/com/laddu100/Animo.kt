@@ -1,15 +1,6 @@
 package com.laddu100
 
-import android.annotation.SuppressLint
-import android.os.Handler
-import android.os.Looper
-import android.webkit.CookieManager
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.google.gson.JsonObject
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
@@ -20,12 +11,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URLEncoder
-import kotlin.coroutines.resume
 
 class Animo : MainAPI() {
     override var mainUrl = "https://4animo.xyz"
@@ -38,7 +24,8 @@ class Animo : MainAPI() {
     private val apiUrl = "https://api.kryzox.xyz"
     private val cdnUrl = "https://cdn.4animo.xyz"
 
-    private val ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+    // Use desktop UA — the site works better with it (confirmed via HAR + curl testing)
+    private val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
     private val apiHeaders = mapOf(
         "User-Agent" to ua,
         "Accept" to "application/json, text/plain, */*",
@@ -122,15 +109,17 @@ class Animo : MainAPI() {
             val num = ep.number ?: return@forEach
             val epId = ep.id ?: return@forEach
             val epName = ep.titles?.en ?: ep.titles?.romaji ?: "Episode $num"
+            // ani field format: "154587/1" (anilistId/episodeNum) — used for hd-1/hd-2 embeds
+            val ani = ep.ani ?: ""
             if (ep.sub == true) {
-                subEps.add(newEpisode(EpisodeData(animeId, epId, ep.embed_id, num, anime.slug ?: "", "sub").toJson()) {
+                subEps.add(newEpisode(EpisodeData(animeId, epId, ep.embed_id, num, ani, "sub").toJson()) {
                     this.episode = num
                     this.name = epName
                     this.posterUrl = ep.thumbnail
                 })
             }
             if (ep.dub == true) {
-                dubEps.add(newEpisode(EpisodeData(animeId, epId, ep.embed_id, num, anime.slug ?: "", "dub").toJson()) {
+                dubEps.add(newEpisode(EpisodeData(animeId, epId, ep.embed_id, num, ani, "dub").toJson()) {
                     this.episode = num
                     this.name = epName
                     this.posterUrl = ep.thumbnail
@@ -157,6 +146,25 @@ class Animo : MainAPI() {
         }
     }
 
+    /**
+     * DIRECT HTTP APPROACH — no WebView needed!
+     *
+     * Confirmed via curl + Python requests testing:
+     * 1. Embed page is NOT behind CF challenge — accessible via direct HTTP
+     * 2. getSources API token is embedded in the embed page HTML (var sourcesUrl)
+     * 3. The /p?t= m3u8 endpoint requires HTTP keep-alive (same TCP connection)
+     *    as the getSources call — CloudStream's app.get uses OkHttp which
+     *    maintains connection pools, so keep-alive works automatically
+     * 4. No cf_clearance cookie needed for any endpoint
+     *
+     * Embed URL formats (confirmed working via testing):
+     * - a-1/{episodeNumber}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
+     * - s-1/{embedId}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
+     * - hd-1/ani/{aniField}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
+     * - hd-2/ani/{aniField}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
+     *
+     * The ani field from API is like "154587/1" (anilistId/episodeNum)
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -171,31 +179,100 @@ class Animo : MainAPI() {
         }
 
         Log.i("Animo", "========== loadLinks START ==========")
-        Log.i("Animo", "episodeId=${epData.episodeId} embedId=${epData.embedId} animeId=${epData.animeId} epNum=${epData.episodeNum} streamType=${epData.streamType}")
+        Log.i("Animo", "episodeId=${epData.episodeId} embedId=${epData.embedId} animeId=${epData.animeId} epNum=${epData.episodeNum} ani='${epData.ani}' streamType=${epData.streamType}")
 
         val type = epData.streamType
-        Log.i("Animo", "Requested stream type: $type")
+        val queryParams = "?k=1&autoPlay=1&skipIntro=1&skipOutro=1"
 
-        val embedFormats = listOf<Pair<String, () -> String>>(
-            Pair("a-1") { "$cdnUrl/embed/a-1/${epData.episodeId}/$type" },
-            Pair("s-1") { "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$type" },
-            Pair("hd-1") { "$cdnUrl/embed/hd-1/ani/${epData.animeId}/${epData.episodeNum}/$type" },
-            Pair("hd-2") { "$cdnUrl/embed/hd-2/ani/${epData.animeId}/${epData.episodeNum}/$type" }
-        )
+        // Build embed URL candidates — episode NUMBER not ID for a-1
+        val embedFormats = mutableListOf<Pair<String, String>>()
+        embedFormats.add(Pair("a-1", "$cdnUrl/embed/a-1/${epData.episodeNum}/$type$queryParams"))
+        embedFormats.add(Pair("s-1", "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$type$queryParams"))
+        // hd-1/hd-2 use the ani field (format: "anilistId/episodeNum")
+        if (epData.ani.isNotEmpty()) {
+            embedFormats.add(Pair("hd-1", "$cdnUrl/embed/hd-1/ani/${epData.ani}/$type$queryParams"))
+            embedFormats.add(Pair("hd-2", "$cdnUrl/embed/hd-2/ani/${epData.ani}/$type$queryParams"))
+        }
 
         var found = false
 
-        for ((labelKey, urlFn) in embedFormats) {
-            val embedUrl = urlFn()
-            Log.i("Animo", "[$labelKey] Trying WebView for: $embedUrl")
+        for ((labelKey, embedUrl) in embedFormats) {
+            Log.i("Animo", "[$labelKey] Trying: $embedUrl")
             try {
-                val result = extractViaWebView(embedUrl) ?: continue
-                val (masterUrl, masterContent, subtitles) = result
+                // Step 1: Fetch embed page to get the sourcesUrl token
+                val embedResp = app.get(embedUrl, headers = mapOf(
+                    "User-Agent" to ua,
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language" to "en-US,en;q=0.7"
+                ), timeout = 15_000L)
+                Log.i("Animo", "[$labelKey] Embed HTTP ${embedResp.code}")
+                if (embedResp.code != 200) continue
 
-                Log.i("Animo", "[$labelKey] Master URL: ${masterUrl.take(80)}...")
-                Log.i("Animo", "[$labelKey] Master starts #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
-                Log.i("Animo", "[$labelKey] Subtitles: ${subtitles.size}")
+                val embedHtml = embedResp.text
+                // Extract token from: var sourcesUrl = '/stream/getSources?t=TOKEN';
+                val tokenMatch = Regex("getSources\\?t=([A-Za-z0-9_.-]+)").find(embedHtml)
+                if (tokenMatch == null) {
+                    Log.e("Animo", "[$labelKey] No sourcesUrl token in embed HTML")
+                    continue
+                }
+                val token = tokenMatch.groupValues[1]
+                Log.i("Animo", "[$labelKey] Token: ${token.take(30)}...")
 
+                // Step 2: Call getSources API — MUST use same app.get (OkHttp keep-alive)
+                val sourcesUrl = "$cdnUrl/stream/getSources?t=$token"
+                val sourcesResp = app.get(sourcesUrl, headers = mapOf(
+                    "User-Agent" to ua,
+                    "Accept" to "*/*",
+                    "Referer" to embedUrl,
+                    "Sec-Fetch-Site" to "same-origin",
+                    "Sec-Fetch-Mode" to "cors",
+                    "Sec-Fetch-Dest" to "empty"
+                ), timeout = 15_000L)
+                Log.i("Animo", "[$labelKey] getSources HTTP ${sourcesResp.code}")
+                if (sourcesResp.code != 200) {
+                    Log.e("Animo", "[$labelKey] getSources failed: ${sourcesResp.code}")
+                    continue
+                }
+
+                val sourcesText = sourcesResp.text
+                if (sourcesText.contains("invalid token") || sourcesText.contains("error")) {
+                    Log.e("Animo", "[$labelKey] getSources error: ${sourcesText.take(100)}")
+                    continue
+                }
+
+                val sources = parseJson<GetSourcesResponse>(sourcesText)
+                Log.i("Animo", "[$labelKey] Sources: ${sources.sources?.size ?: 0}, Tracks: ${sources.tracks?.size ?: 0}")
+
+                // Step 3: Fetch master m3u8 — MUST use same app.get (OkHttp keep-alive)
+                val masterFile = sources.sources?.firstOrNull()?.file
+                if (masterFile == null) {
+                    Log.e("Animo", "[$labelKey] No source file in getSources response")
+                    continue
+                }
+                val masterUrl = if (masterFile.startsWith("http")) masterFile else "$cdnUrl/${masterFile.removePrefix("/")}"
+                Log.i("Animo", "[$labelKey] Fetching master m3u8: ${masterUrl.take(80)}...")
+
+                val masterResp = app.get(masterUrl, headers = mapOf(
+                    "User-Agent" to ua,
+                    "Accept" to "*/*",
+                    "Referer" to embedUrl,
+                    "Sec-Fetch-Site" to "same-origin",
+                    "Sec-Fetch-Mode" to "cors",
+                    "Sec-Fetch-Dest" to "empty"
+                ), timeout = 15_000L)
+                Log.i("Animo", "[$labelKey] Master m3u8 HTTP ${masterResp.code} (${masterResp.text.length} bytes)")
+                if (masterResp.code != 200) {
+                    Log.e("Animo", "[$labelKey] Master fetch failed: ${masterResp.code}")
+                    continue
+                }
+
+                val masterContent = masterResp.text
+                if (!masterContent.trim().startsWith("#EXTM3U")) {
+                    Log.e("Animo", "[$labelKey] Master not M3U8: ${masterContent.take(100)}")
+                    continue
+                }
+
+                // Step 4: Parse variant streams from master playlist
                 val playHeaders = mapOf(
                     "User-Agent" to ua,
                     "Accept" to "*/*",
@@ -203,49 +280,50 @@ class Animo : MainAPI() {
                     "Origin" to cdnUrl
                 )
 
-                if (masterContent.trim().startsWith("#EXTM3U")) {
-                    val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
-                    val variants = variantPattern.findAll(masterContent).toList()
-                    Log.i("Animo", "[$labelKey] Variants: ${variants.size}")
+                val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
+                val variants = variantPattern.findAll(masterContent).toList()
+                Log.i("Animo", "[$labelKey] Variants found: ${variants.size}")
 
-                    if (variants.isEmpty()) {
-                        val label = "$name $labelKey ($type)"
-                        Log.i("Animo", "[$labelKey] No variants — media playlist, adding directly")
+                if (variants.isEmpty()) {
+                    // Media playlist directly (no master) — pass through
+                    val label = "$name $labelKey ($type)"
+                    Log.i("Animo", "[$labelKey] No variants — media playlist, adding directly")
+                    callback.invoke(
+                        newExtractorLink(label, label, masterUrl, type = ExtractorLinkType.M3U8) {
+                            this.referer = embedUrl
+                            this.headers = playHeaders
+                        }
+                    )
+                    found = true
+                } else {
+                    variants.forEach { match ->
+                        val quality = if (match.groupValues[1].isNotEmpty()) {
+                            match.groupValues[1]
+                        } else {
+                            "${match.groupValues[2]}p"
+                        }
+                        val variantUrl = match.groupValues[4].trim().let {
+                            if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
+                        }
+                        val label = "$name $labelKey ($type) - $quality"
+                        Log.i("Animo", "[$labelKey] Adding variant: $quality")
                         callback.invoke(
-                            newExtractorLink(label, label, masterUrl, type = ExtractorLinkType.M3U8) {
+                            newExtractorLink(label, label, variantUrl, type = ExtractorLinkType.M3U8) {
                                 this.referer = embedUrl
                                 this.headers = playHeaders
                             }
                         )
-                        found = true
-                    } else {
-                        variants.forEach { match ->
-                            val quality = if (match.groupValues[1].isNotEmpty()) {
-                                match.groupValues[1]
-                            } else {
-                                "${match.groupValues[2]}p"
-                            }
-                            val variantUrl = match.groupValues[4].trim().let {
-                                if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
-                            }
-                            val label = "$name $labelKey ($type) - $quality"
-                            Log.i("Animo", "[$labelKey] Adding: $quality")
-                            callback.invoke(
-                                newExtractorLink(label, label, variantUrl, type = ExtractorLinkType.M3U8) {
-                                    this.referer = embedUrl
-                                    this.headers = playHeaders
-                                }
-                            )
-                        }
-                        found = true
                     }
-                } else {
-                    Log.e("Animo", "[$labelKey] Master not M3U8: ${masterContent.take(100)}")
+                    found = true
                 }
 
-                subtitles.forEach { (label, subUrl) ->
-                    Log.i("Animo", "[$labelKey] Subtitle: $label")
-                    subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
+                // Step 5: Add subtitle tracks
+                sources.tracks?.forEach { t ->
+                    val subFile = t.file ?: return@forEach
+                    val subUrl = if (subFile.startsWith("http")) subFile else "$cdnUrl/${subFile.removePrefix("/")}"
+                    val subLabel = t.label ?: "Subtitles"
+                    Log.i("Animo", "[$labelKey] Subtitle: $subLabel")
+                    subtitleCallback.invoke(newSubtitleFile(subLabel, subUrl) {
                         this.headers = playHeaders
                     })
                 }
@@ -263,243 +341,6 @@ class Animo : MainAPI() {
         return found
     }
 
-    data class SubtitleTrack(val label: String, val url: String)
-    data class ExtractResult(val masterUrl: String, val masterContent: String, val subtitles: List<SubtitleTrack>)
-
-    /**
-     * Loads embed page in WebView. After CF challenge solves, injects async fetch()
-     * to call getSources API + fetch master m3u8 — all in WebView's JS context
-     * (uses WebView's cf_clearance cookies). Uses async fetch + polling pattern
-     * (like Miruro) instead of synchronous XHR (which can deadlock).
-     *
-     * Returns ExtractResult(masterUrl, masterContent, subtitles) or null.
-     */
-    @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun extractViaWebView(embedUrl: String): ExtractResult? = withContext(Dispatchers.Main) {
-        val context = com.lagradost.cloudstream3.CommonActivity.activity ?: run {
-            Log.e("Animo", "WebView: no activity context")
-            return@withContext null
-        }
-
-        Log.i("Animo", "WebView: loading $embedUrl")
-
-        withTimeoutOrNull(60_000L) {
-            suspendCancellableCoroutine<ExtractResult?> { cont ->
-                val done = java.util.concurrent.atomic.AtomicBoolean(false)
-                val fetchInjected = java.util.concurrent.atomic.AtomicBoolean(false)
-                var webView: WebView? = null
-
-                fun finish(result: ExtractResult?) {
-                    if (done.compareAndSet(false, true)) {
-                        try { webView?.destroy() } catch (_: Exception) {}
-                        if (cont.isActive) cont.resume(result)
-                    }
-                }
-
-                fun injectFetch(view: WebView?) {
-                    if (done.get() || !fetchInjected.compareAndSet(false, true)) return
-                    Log.i("Animo", "injectFetch: injecting async fetch JS")
-
-                    // Inject async fetch() — stores OBJECT (not stringified) in window.__animo_result
-                    // evaluateJavascript will auto-serialize objects to JSON, avoiding double-encoding
-                    val js = """
-                        (function() {
-                            window.__animo_result = null;
-                            window.__animo_error = null;
-                            try {
-                                var sourcesUrl = window.sourcesUrl;
-                                if (!sourcesUrl) {
-                                    var scripts = document.querySelectorAll('script');
-                                    for (var i = 0; i < scripts.length; i++) {
-                                        var m = scripts[i].textContent.match(/sourcesUrl\s*=\s*['"]([^'"]+)['"]/);
-                                        if (m) { sourcesUrl = m[1]; break; }
-                                    }
-                                }
-                                if (!sourcesUrl) {
-                                    window.__animo_error = 'no sourcesUrl';
-                                    return;
-                                }
-                                var fullSourcesUrl = sourcesUrl.startsWith('http') ? sourcesUrl : (window.location.origin + sourcesUrl);
-
-                                fetch(fullSourcesUrl, {
-                                    method: 'GET',
-                                    credentials: 'include',
-                                    headers: { 'Accept': 'application/json' }
-                                }).then(function(r) {
-                                    return r.json();
-                                }).then(function(data) {
-                                    var m3u8File = data.sources && data.sources[0] ? data.sources[0].file : null;
-                                    if (!m3u8File) {
-                                        window.__animo_error = 'no source file in getSources';
-                                        return;
-                                    }
-                                    var m3u8Url = m3u8File.startsWith('http') ? m3u8File : (window.location.origin + m3u8File);
-
-                                    return fetch(m3u8Url, {
-                                        method: 'GET',
-                                        credentials: 'include',
-                                        headers: { 'Accept': '*/*' }
-                                    }).then(function(r) {
-                                        return r.text().then(function(text) {
-                                            var tracks = [];
-                                            if (data.tracks) {
-                                                for (var i = 0; i < data.tracks.length; i++) {
-                                                    var t = data.tracks[i];
-                                                    if (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind) {
-                                                        var tFile = t.file.startsWith('http') ? t.file : (window.location.origin + t.file);
-                                                        tracks.push({label: t.label || ('Sub ' + (i+1)), file: tFile});
-                                                    }
-                                                }
-                                            }
-                                            // Store OBJECT directly (NOT JSON.stringify)
-                                            // evaluateJavascript will auto-serialize to JSON
-                                            window.__animo_result = {
-                                                masterUrl: m3u8Url,
-                                                masterContent: text,
-                                                tracks: tracks
-                                            };
-                                        });
-                                    });
-                                }).catch(function(e) {
-                                    window.__animo_error = e.message;
-                                });
-                            } catch(e) {
-                                window.__animo_error = e.message;
-                            }
-                        })();
-                    """.trimIndent()
-
-                    view?.evaluateJavascript(js) {}
-
-                    // Poll for result every 500ms (up to 20s = 40 attempts)
-                    for (i in 1..40) {
-                        val delay = (i * 500).toLong()
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            if (done.get()) return@postDelayed
-                            // Return the object directly — evaluateJavascript auto-serializes objects to JSON
-                            view?.evaluateJavascript(
-                                "(function(){ if(window.__animo_result) return window.__animo_result; if(window.__animo_error) return 'ERROR:'+window.__animo_error; return null; })()"
-                            ) { result ->
-                                if (done.get()) return@evaluateJavascript
-                                if (result == null || result == "null") return@evaluateJavascript
-
-                                when {
-                                    // JSON object (from window.__animo_result being an object)
-                                    result.startsWith("{") -> {
-                                        try {
-                                            val data = parseJson<JsonObject>(result)
-                                            val masterUrl = data.get("masterUrl")?.asString ?: run {
-                                                Log.e("Animo", "No masterUrl in result")
-                                                finish(null)
-                                                return@evaluateJavascript
-                                            }
-                                            val masterContent = data.get("masterContent")?.asString ?: ""
-                                            val tracksList = mutableListOf<SubtitleTrack>()
-                                            if (data.has("tracks") && data.get("tracks")?.isJsonArray == true) {
-                                                data.get("tracks")?.asJsonArray?.forEach { trackElem ->
-                                                    val track = trackElem.asJsonObject
-                                                    val tLabel = track.get("label")?.asString ?: "Sub"
-                                                    val tFile = track.get("file")?.asString ?: return@forEach
-                                                    tracksList.add(SubtitleTrack(tLabel, tFile))
-                                                }
-                                            }
-                                            Log.i("Animo", "Got masterUrl=${masterUrl.take(60)}...")
-                                            Log.i("Animo", "Got masterContent starts #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
-                                            Log.i("Animo", "Got ${tracksList.size} subtitles")
-                                            finish(ExtractResult(masterUrl, masterContent, tracksList))
-                                        } catch (e: Exception) {
-                                            Log.e("Animo", "Parse exception: ${e.message}")
-                                            Log.e("Animo", "Raw (first 300): ${result.take(300)}")
-                                            finish(null)
-                                        }
-                                    }
-                                    // Error string (from window.__animo_error)
-                                    result.startsWith("\"") -> {
-                                        try {
-                                            val errorStr = parseJson<String>(result)
-                                            if (errorStr.startsWith("ERROR:")) {
-                                                Log.e("Animo", "JS error: $errorStr")
-                                                finish(null)
-                                            }
-                                        } catch (_: Exception) {}
-                                    }
-                                }
-                            }
-                        }, delay)
-                    }
-                }
-
-                fun checkAndInject(view: WebView?) {
-                    if (done.get() || fetchInjected.get()) return
-                    // Check if CF challenge is solved by looking at document title
-                    view?.evaluateJavascript("document.title") { titleResult ->
-                        if (done.get() || fetchInjected.get()) return@evaluateJavascript
-                        val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
-                        Log.i("Animo", "checkAndInject: title='$title'")
-
-                        val isChallenge = title.lowercase().contains("just a moment") ||
-                                          title.lowercase().contains("attention required") ||
-                                          title.lowercase().contains("cloudflare") ||
-                                          title.lowercase().contains("blocked") ||
-                                          title.isBlank()
-
-                        if (!isChallenge) {
-                            Log.i("Animo", "CF challenge solved! Injecting fetch...")
-                            injectFetch(view)
-                        }
-                    }
-                }
-
-                try {
-                    CookieManager.getInstance().setAcceptCookie(true)
-                    webView = WebView(context).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.databaseEnabled = true
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                        settings.userAgentString = ua
-                        settings.blockNetworkImage = true
-
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
-
-                            override fun onPageFinished(view: WebView?, url: String?) {
-                                super.onPageFinished(view, url)
-                                Log.i("Animo", "onPageFinished: $url")
-                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    checkAndInject(view)
-                                }, 500)
-                            }
-                        }
-                    }
-
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-                    webView?.loadUrl(embedUrl)
-
-                    // Periodic CF-solved check every 1s (CF can take 5-10s)
-                    for (i in 1..20) {
-                        val delay = (i * 1000).toLong()
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            checkAndInject(webView)
-                        }, delay)
-                    }
-
-                    // Overall timeout: 60s
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        finish(null)
-                    }, 60000)
-                } catch (e: Exception) {
-                    Log.e("Animo", "WebView exception: ${e.message}")
-                    finish(null)
-                }
-                cont.invokeOnCancellation {
-                    finish(null)
-                }
-            }
-        }
-    }
-
     private fun AnimeSearchItem.toSearchResponse(): SearchResponse? {
         val id = id ?: return null
         val title = titles?.english ?: titles?.romaji ?: return null
@@ -514,7 +355,7 @@ class Animo : MainAPI() {
         val episodeId: Int,
         val embedId: String?,
         val episodeNum: Int,
-        val slug: String,
+        val ani: String,  // e.g. "154587/1" — used for hd-1/hd-2 embeds
         val streamType: String
     )
 
@@ -592,7 +433,9 @@ class Animo : MainAPI() {
         val thumbnail: String? = null,
         val sub: Boolean? = null,
         val dub: Boolean? = null,
-        @JsonProperty("embed_id") val embed_id: String? = null
+        @JsonProperty("embed_id") val embed_id: String? = null,
+        val ani: String? = null,  // e.g. "154587/1" — anilistId/episodeNum
+        val mal: String? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
