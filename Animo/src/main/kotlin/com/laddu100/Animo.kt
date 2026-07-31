@@ -1,9 +1,10 @@
 package com.laddu100
 
 import android.annotation.SuppressLint
+import android.os.Handler
+import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -23,8 +24,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.ByteArrayInputStream
-import java.util.concurrent.atomic.AtomicReference
 import java.net.URLEncoder
 import kotlin.coroutines.resume
 
@@ -188,14 +187,14 @@ class Animo : MainAPI() {
 
         for ((labelKey, urlFn) in embedFormats) {
             val embedUrl = urlFn()
-            Log.i("Animo", "[$labelKey] Trying WebView approach for: $embedUrl")
+            Log.i("Animo", "[$labelKey] Trying WebView for: $embedUrl")
             try {
                 val result = extractViaWebView(embedUrl) ?: continue
                 val (masterUrl, masterContent, subtitles) = result
 
                 Log.i("Animo", "[$labelKey] Master URL: ${masterUrl.take(80)}...")
-                Log.i("Animo", "[$labelKey] Master content starts with #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
-                Log.i("Animo", "[$labelKey] Subtitles found: ${subtitles.size}")
+                Log.i("Animo", "[$labelKey] Master starts #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
+                Log.i("Animo", "[$labelKey] Subtitles: ${subtitles.size}")
 
                 val playHeaders = mapOf(
                     "User-Agent" to ua,
@@ -205,13 +204,11 @@ class Animo : MainAPI() {
                 )
 
                 if (masterContent.trim().startsWith("#EXTM3U")) {
-                    // Parse variant streams from master playlist
                     val variantPattern = Regex("""#EXT-X-STREAM-INF:[^\n]*?(?:NAME="(\d+p)"|RESOLUTION=(\d+)x(\d+))[^\n]*\n([^\n#][^\n]*)""")
                     val variants = variantPattern.findAll(masterContent).toList()
-                    Log.i("Animo", "[$labelKey] Parsed ${variants.size} variants from master playlist")
+                    Log.i("Animo", "[$labelKey] Variants: ${variants.size}")
 
                     if (variants.isEmpty()) {
-                        // Media playlist directly (no master)
                         val label = "$name $labelKey ($type)"
                         Log.i("Animo", "[$labelKey] No variants — media playlist, adding directly")
                         callback.invoke(
@@ -232,7 +229,7 @@ class Animo : MainAPI() {
                                 if (it.startsWith("http")) it else "$cdnUrl/${it.removePrefix("/")}"
                             }
                             val label = "$name $labelKey ($type) - $quality"
-                            Log.i("Animo", "[$labelKey] Adding variant: $quality -> ${variantUrl.take(80)}...")
+                            Log.i("Animo", "[$labelKey] Adding: $quality")
                             callback.invoke(
                                 newExtractorLink(label, label, variantUrl, type = ExtractorLinkType.M3U8) {
                                     this.referer = embedUrl
@@ -243,12 +240,11 @@ class Animo : MainAPI() {
                         found = true
                     }
                 } else {
-                    Log.e("Animo", "[$labelKey] Master content is not M3U8: ${masterContent.take(100)}")
+                    Log.e("Animo", "[$labelKey] Master not M3U8: ${masterContent.take(100)}")
                 }
 
-                // Add subtitle tracks
                 subtitles.forEach { (label, subUrl) ->
-                    Log.i("Animo", "[$labelKey] Adding subtitle: $label -> ${subUrl.take(80)}...")
+                    Log.i("Animo", "[$labelKey] Subtitle: $label")
                     subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
                         this.headers = playHeaders
                     })
@@ -271,13 +267,10 @@ class Animo : MainAPI() {
     data class ExtractResult(val masterUrl: String, val masterContent: String, val subtitles: List<SubtitleTrack>)
 
     /**
-     * Loads the embed page in a WebView. After page loads, uses evaluateJavascript
-     * to:
-     * 1. Extract the sourcesUrl token from the page's JavaScript
-     * 2. Call the getSources API via fetch() (runs in WebView context, uses
-     *    WebView's cf_clearance cookies automatically)
-     * 3. Parse JSON to get master m3u8 URL + subtitle tracks
-     * 4. Fetch the master m3u8 content via fetch() (in WebView context)
+     * Loads embed page in WebView. After CF challenge solves, injects async fetch()
+     * to call getSources API + fetch master m3u8 — all in WebView's JS context
+     * (uses WebView's cf_clearance cookies). Uses async fetch + polling pattern
+     * (like Miruro) instead of synchronous XHR (which can deadlock).
      *
      * Returns ExtractResult(masterUrl, masterContent, subtitles) or null.
      */
@@ -290,207 +283,216 @@ class Animo : MainAPI() {
 
         Log.i("Animo", "WebView: loading $embedUrl")
 
-        val result = withTimeoutOrNull(60_000L) {
+        withTimeoutOrNull(60_000L) {
             suspendCancellableCoroutine<ExtractResult?> { cont ->
-                val webView = WebView(context)
-                var jsCalled = false
+                val done = java.util.concurrent.atomic.AtomicBoolean(false)
+                val fetchInjected = java.util.concurrent.atomic.AtomicBoolean(false)
+                var webView: WebView? = null
+
+                fun finish(result: ExtractResult?) {
+                    if (done.compareAndSet(false, true)) {
+                        try { webView?.destroy() } catch (_: Exception) {}
+                        if (cont.isActive) cont.resume(result)
+                    }
+                }
+
+                fun injectFetch(view: WebView?) {
+                    if (done.get() || !fetchInjected.compareAndSet(false, true)) return
+                    Log.i("Animo", "injectFetch: injecting async fetch JS")
+
+                    // Inject async fetch() — stores result in window.__animo_result
+                    val js = """
+                        (function() {
+                            window.__animo_result = null;
+                            window.__animo_error = null;
+                            try {
+                                var sourcesUrl = window.sourcesUrl;
+                                if (!sourcesUrl) {
+                                    var scripts = document.querySelectorAll('script');
+                                    for (var i = 0; i < scripts.length; i++) {
+                                        var m = scripts[i].textContent.match(/sourcesUrl\s*=\s*['"]([^'"]+)['"]/);
+                                        if (m) { sourcesUrl = m[1]; break; }
+                                    }
+                                }
+                                if (!sourcesUrl) {
+                                    window.__animo_error = 'no sourcesUrl';
+                                    return;
+                                }
+                                var fullSourcesUrl = sourcesUrl.startsWith('http') ? sourcesUrl : (window.location.origin + sourcesUrl);
+
+                                fetch(fullSourcesUrl, {
+                                    method: 'GET',
+                                    credentials: 'include',
+                                    headers: { 'Accept': 'application/json' }
+                                }).then(function(r) {
+                                    return r.json();
+                                }).then(function(data) {
+                                    var m3u8File = data.sources && data.sources[0] ? data.sources[0].file : null;
+                                    if (!m3u8File) {
+                                        window.__animo_error = 'no source file in getSources';
+                                        return;
+                                    }
+                                    var m3u8Url = m3u8File.startsWith('http') ? m3u8File : (window.location.origin + m3u8File);
+
+                                    // Now fetch the master m3u8
+                                    return fetch(m3u8Url, {
+                                        method: 'GET',
+                                        credentials: 'include',
+                                        headers: { 'Accept': '*/*' }
+                                    }).then(function(r) {
+                                        return r.text().then(function(text) {
+                                            var tracks = [];
+                                            if (data.tracks) {
+                                                for (var i = 0; i < data.tracks.length; i++) {
+                                                    var t = data.tracks[i];
+                                                    if (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind) {
+                                                        var tFile = t.file.startsWith('http') ? t.file : (window.location.origin + t.file);
+                                                        tracks.push({label: t.label || ('Sub ' + (i+1)), file: tFile});
+                                                    }
+                                                }
+                                            }
+                                            window.__animo_result = JSON.stringify({
+                                                masterUrl: m3u8Url,
+                                                masterContent: text,
+                                                tracks: tracks
+                                            });
+                                        });
+                                    });
+                                }).catch(function(e) {
+                                    window.__animo_error = e.message;
+                                });
+                            } catch(e) {
+                                window.__animo_error = e.message;
+                            }
+                        })();
+                    """.trimIndent()
+
+                    view?.evaluateJavascript(js) {}
+
+                    // Poll for result every 500ms (up to 20s = 40 attempts)
+                    for (i in 1..40) {
+                        val delay = (i * 500).toLong()
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            if (done.get()) return@postDelayed
+                            view?.evaluateJavascript(
+                                "(function(){ if(window.__animo_result !== null) return window.__animo_result; if(window.__animo_error) return 'ERROR:' + window.__animo_error; return null; })()"
+                            ) { result ->
+                                if (done.get()) return@evaluateJavascript
+                                if (result != null && result != "null") {
+                                    // evaluateJavascript returns string values as JSON-encoded (with quotes)
+                                    // evaluateJavascript returns string values as JSON-encoded (with quotes)
+                                    // So we need to unescape: remove surrounding quotes, replace escaped chars
+                                    val text = result.trim().removeSurrounding("\"")
+                                        .replace("\\n", "\n")
+                                        .replace("\\\"", "\"")
+                                        .replace("\\\\", "\\")
+                                        .replace("\\/", "/")
+                                    Log.i("Animo", "poll result (first 150): ${text.take(150)}")
+
+                                    if (text.startsWith("ERROR:")) {
+                                        Log.e("Animo", "JS error: $text")
+                                        finish(null)
+                                    } else if (text.startsWith("{") && text.contains("masterUrl")) {
+                                        try {
+                                            val data = parseJson<com.google.gson.JsonObject>(text)
+                                            val masterUrl = data.get("masterUrl")?.asString ?: run {
+                                                Log.e("Animo", "No masterUrl in result")
+                                                finish(null)
+                                                return@evaluateJavascript
+                                            }
+                                            val masterContent = data.get("masterContent")?.asString ?: ""
+                                            val tracksList = mutableListOf<SubtitleTrack>()
+                                            if (data.has("tracks") && data.get("tracks").isJsonArray) {
+                                                data.get("tracks").asJsonArray.forEach { trackElem ->
+                                                    val track = trackElem.asJsonObject
+                                                    val tLabel = track.get("label")?.asString ?: "Sub"
+                                                    val tFile = track.get("file")?.asString ?: return@forEach
+                                                    tracksList.add(SubtitleTrack(tLabel, tFile))
+                                                }
+                                            }
+                                            Log.i("Animo", "Got masterUrl=${masterUrl.take(60)}...")
+                                            Log.i("Animo", "Got masterContent starts #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
+                                            Log.i("Animo", "Got ${tracksList.size} subtitles")
+                                            finish(ExtractResult(masterUrl, masterContent, tracksList))
+                                        } catch (e: Exception) {
+                                            Log.e("Animo", "Parse exception: ${e.message}")
+                                            Log.e("Animo", "Raw: ${text.take(300)}")
+                                            finish(null)
+                                        }
+                                    }
+                                }
+                            }
+                        }, delay)
+                    }
+                }
+
+                fun checkAndInject(view: WebView?) {
+                    if (done.get() || fetchInjected.get()) return
+                    // Check if CF challenge is solved by looking at document title
+                    view?.evaluateJavascript("document.title") { titleResult ->
+                        if (done.get() || fetchInjected.get()) return@evaluateJavascript
+                        val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
+                        Log.i("Animo", "checkAndInject: title='$title'")
+
+                        val isChallenge = title.lowercase().contains("just a moment") ||
+                                          title.lowercase().contains("attention required") ||
+                                          title.lowercase().contains("cloudflare") ||
+                                          title.lowercase().contains("blocked") ||
+                                          title.isBlank()
+
+                        if (!isChallenge) {
+                            Log.i("Animo", "CF challenge solved! Injecting fetch...")
+                            injectFetch(view)
+                        }
+                    }
+                }
 
                 try {
                     CookieManager.getInstance().setAcceptCookie(true)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-                    webView.settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        mediaPlaybackRequiresUserGesture = false
-                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                        userAgentString = ua
-                        blockNetworkImage = true
-                    }
-                    webView.webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
+                    webView = WebView(context).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.databaseEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        settings.userAgentString = ua
+                        settings.blockNetworkImage = true
 
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            super.onPageFinished(view, url)
-                            Log.i("Animo", "WebView onPageFinished: $url")
-                            // Don't process immediately — CF challenge may still be running.
-                            // Use evaluateJavascript to check if sourcesUrl exists yet.
-                            // Poll every 2 seconds up to 10 times.
-                            if (!jsCalled && url != null && url.contains("/embed/")) {
-                                jsCalled = true
-                                Log.i("Animo", "WebView: starting JS polling for sourcesUrl")
-                                pollForSourcesUrl(view, embedUrl, cont, attempt = 0)
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
+
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                super.onPageFinished(view, url)
+                                Log.i("Animo", "onPageFinished: $url")
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    checkAndInject(view)
+                                }, 500)
                             }
                         }
                     }
-                    webView.loadUrl(embedUrl)
+
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+                    webView?.loadUrl(embedUrl)
+
+                    // Periodic CF-solved check every 1s (CF can take 5-10s)
+                    for (i in 1..20) {
+                        val delay = (i * 1000).toLong()
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            checkAndInject(webView)
+                        }, delay)
+                    }
+
+                    // Overall timeout: 60s
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        finish(null)
+                    }, 60000)
                 } catch (e: Exception) {
                     Log.e("Animo", "WebView exception: ${e.message}")
-                    if (cont.isActive) cont.resume(null)
+                    finish(null)
                 }
                 cont.invokeOnCancellation {
-                    try { webView.destroy() } catch (_: Exception) {}
+                    finish(null)
                 }
-            }
-        }
-
-        if (result == null) {
-            Log.e("Animo", "WebView: timed out after 60s")
-        }
-        result
-    }
-
-    /**
-     * Polls the WebView page for sourcesUrl. CF challenge takes ~5s to solve,
-     * so we retry every 2 seconds.
-     */
-    private fun pollForSourcesUrl(
-        webView: WebView?,
-        embedUrl: String,
-        cont: kotlinx.coroutines.CancellableContinuation<ExtractResult?>,
-        attempt: Int
-    ) {
-        if (webView == null || !cont.isActive) {
-            Log.e("Animo", "pollForSourcesUrl: webView null or cont inactive")
-            return
-        }
-        if (attempt >= 15) {
-            Log.e("Animo", "pollForSourcesUrl: max attempts (15) reached")
-            if (cont.isActive) cont.resume(null)
-            return
-        }
-
-        Log.i("Animo", "pollForSourcesUrl: attempt ${attempt + 1}/15")
-
-        // Check if sourcesUrl exists yet
-        webView.evaluateJavascript("(function(){ return typeof window.sourcesUrl !== 'undefined' ? window.sourcesUrl : null; })();") { result ->
-            Log.i("Animo", "pollForSourcesUrl: sourcesUrl check = ${(result ?: "null").take(80)}")
-
-            if (result != null && result != "null" && result.contains("getSources")) {
-                // sourcesUrl exists! Now do the full extraction
-                Log.i("Animo", "pollForSourcesUrl: sourcesUrl found! Running full extraction...")
-                runFullExtraction(webView, embedUrl, cont)
-            } else {
-                // sourcesUrl not ready yet (CF challenge still running). Retry in 2s.
-                Log.i("Animo", "pollForSourcesUrl: not ready, retrying in 2s...")
-                webView.postDelayed({
-                    pollForSourcesUrl(webView, embedUrl, cont, attempt + 1)
-                }, 2000L)
-            }
-        }
-    }
-
-    /**
-     * Runs the full extraction: fetch getSources, fetch master m3u8, all via
-     * synchronous XHR in the WebView's JS context.
-     */
-    private fun runFullExtraction(
-        webView: WebView,
-        embedUrl: String,
-        cont: kotlinx.coroutines.CancellableContinuation<ExtractResult?>
-    ) {
-        Log.i("Animo", "runFullExtraction: injecting JS...")
-
-        val js = """
-            (function() {
-                try {
-                    var sourcesUrl = window.sourcesUrl;
-                    if (!sourcesUrl) {
-                        var scripts = document.querySelectorAll('script');
-                        for (var i = 0; i < scripts.length; i++) {
-                            var m = scripts[i].textContent.match(/sourcesUrl\s*=\s*['"]([^'"]+)['"]/);
-                            if (m) { sourcesUrl = m[1]; break; }
-                        }
-                    }
-                    if (!sourcesUrl) return JSON.stringify({error: 'no sourcesUrl found'});
-
-                    var fullUrl = sourcesUrl.startsWith('http') ? sourcesUrl : (window.location.origin + sourcesUrl);
-
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('GET', fullUrl, false);
-                    xhr.setRequestHeader('Accept', 'application/json');
-                    try { xhr.send(); } catch(e) { return JSON.stringify({error: 'xhr send failed: ' + e.message}); }
-
-                    if (xhr.status !== 200) return JSON.stringify({error: 'getSources status ' + xhr.status, body: xhr.responseText.substring(0, 200)});
-
-                    var data = JSON.parse(xhr.responseText);
-                    var m3u8File = data.sources && data.sources[0] ? data.sources[0].file : null;
-                    if (!m3u8File) return JSON.stringify({error: 'no source file in response'});
-
-                    var m3u8Url = m3u8File.startsWith('http') ? m3u8File : (window.location.origin + m3u8File);
-
-                    var xhr2 = new XMLHttpRequest();
-                    xhr2.open('GET', m3u8Url, false);
-                    xhr2.setRequestHeader('Accept', '*/*');
-                    try { xhr2.send(); } catch(e) { return JSON.stringify({error: 'm3u8 fetch failed: ' + e.message}); }
-
-                    var masterContent = xhr2.responseText;
-                    var tracks = [];
-                    if (data.tracks) {
-                        for (var i = 0; i < data.tracks.length; i++) {
-                            var t = data.tracks[i];
-                            if (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind) {
-                                var tFile = t.file.startsWith('http') ? t.file : (window.location.origin + t.file);
-                                tracks.push({label: t.label || ('Sub ' + (i+1)), file: tFile});
-                            }
-                        }
-                    }
-
-                    return JSON.stringify({
-                        masterUrl: m3u8Url,
-                        masterContent: masterContent,
-                        masterStatus: xhr2.status,
-                        tracks: tracks
-                    });
-                } catch(e) {
-                    return JSON.stringify({error: e.message, stack: e.stack ? e.stack.substring(0, 300) : ''});
-                }
-            })();
-        """.trimIndent()
-
-        webView.evaluateJavascript(js) { resultStr ->
-            Log.i("Animo", "runFullExtraction: JS result (first 200): ${(resultStr ?: "null").take(200)}")
-
-            if (resultStr == null || resultStr == "null") {
-                Log.e("Animo", "runFullExtraction: JS returned null")
-                if (cont.isActive) cont.resume(null)
-                return@evaluateJavascript
-            }
-
-            try {
-                val jsonString = parseJson<String>(resultStr)
-                val data = parseJson<JsonObject>(jsonString)
-
-                if (data.has("error")) {
-                    Log.e("Animo", "runFullExtraction: JS error: ${data.get("error").asString}")
-                    if (cont.isActive) cont.resume(null)
-                    return@evaluateJavascript
-                }
-
-                val masterUrl = data.get("masterUrl").asString
-                val masterContent = data.get("masterContent").asString
-                val masterStatus = data.get("masterStatus").asInt
-                Log.i("Animo", "runFullExtraction: masterUrl=${masterUrl.take(80)}...")
-                Log.i("Animo", "runFullExtraction: masterStatus=$masterStatus")
-                Log.i("Animo", "runFullExtraction: masterContent starts #EXTM3U: ${masterContent.trim().startsWith("#EXTM3U")}")
-                Log.i("Animo", "runFullExtraction: masterContent (first 200): ${masterContent.take(200)}")
-
-                val tracks = mutableListOf<SubtitleTrack>()
-                if (data.has("tracks") && data.get("tracks").isJsonArray) {
-                    data.get("tracks").asJsonArray.forEach { trackElem ->
-                        val track = trackElem.asJsonObject
-                        tracks.add(SubtitleTrack(
-                            track.get("label").asString,
-                            track.get("file").asString
-                        ))
-                    }
-                }
-                Log.i("Animo", "runFullExtraction: tracks count=${tracks.size}")
-
-                if (cont.isActive) cont.resume(ExtractResult(masterUrl, masterContent, tracks))
-            } catch (e: Exception) {
-                Log.e("Animo", "runFullExtraction: parse exception: ${e.message}")
-                Log.e("Animo", "runFullExtraction: raw result: ${resultStr.take(500)}")
-                if (cont.isActive) cont.resume(null)
             }
         }
     }
