@@ -158,7 +158,7 @@ class Animo : MainAPI() {
      * 4. No cf_clearance cookie needed for any endpoint
      *
      * Embed URL formats (confirmed working via testing):
-     * - a-1/{episodeNumber}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
+     * - a-1/{episodeId}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
      * - s-1/{embedId}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
      * - hd-1/ani/{aniField}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
      * - hd-2/ani/{aniField}/{type}?k=1&autoPlay=1&skipIntro=1&skipOutro=1
@@ -186,7 +186,7 @@ class Animo : MainAPI() {
 
         // Build embed URL candidates — episode NUMBER not ID for a-1
         val embedFormats = mutableListOf<Pair<String, String>>()
-        embedFormats.add(Pair("a-1", "$cdnUrl/embed/a-1/${epData.episodeNum}/$type$queryParams"))
+        embedFormats.add(Pair("a-1", "$cdnUrl/embed/a-1/${epData.episodeId}/$type$queryParams"))
         embedFormats.add(Pair("s-1", "$cdnUrl/embed/s-1/${epData.embedId ?: epData.episodeId}/$type$queryParams"))
         // hd-1/hd-2 use the ani field (format: "anilistId/episodeNum")
         if (epData.ani.isNotEmpty()) {
