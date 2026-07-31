@@ -300,7 +300,8 @@ class Animo : MainAPI() {
                     if (done.get() || !fetchInjected.compareAndSet(false, true)) return
                     Log.i("Animo", "injectFetch: injecting async fetch JS")
 
-                    // Inject async fetch() — stores result in window.__animo_result
+                    // Inject async fetch() — stores OBJECT (not stringified) in window.__animo_result
+                    // evaluateJavascript will auto-serialize objects to JSON, avoiding double-encoding
                     val js = """
                         (function() {
                             window.__animo_result = null;
@@ -334,7 +335,6 @@ class Animo : MainAPI() {
                                     }
                                     var m3u8Url = m3u8File.startsWith('http') ? m3u8File : (window.location.origin + m3u8File);
 
-                                    // Now fetch the master m3u8
                                     return fetch(m3u8Url, {
                                         method: 'GET',
                                         credentials: 'include',
@@ -351,11 +351,13 @@ class Animo : MainAPI() {
                                                     }
                                                 }
                                             }
-                                            window.__animo_result = JSON.stringify({
+                                            // Store OBJECT directly (NOT JSON.stringify)
+                                            // evaluateJavascript will auto-serialize to JSON
+                                            window.__animo_result = {
                                                 masterUrl: m3u8Url,
                                                 masterContent: text,
                                                 tracks: tracks
-                                            });
+                                            };
                                         });
                                     });
                                 }).catch(function(e) {
@@ -372,29 +374,20 @@ class Animo : MainAPI() {
                     // Poll for result every 500ms (up to 20s = 40 attempts)
                     for (i in 1..40) {
                         val delay = (i * 500).toLong()
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        Handler(Looper.getMainLooper()).postDelayed({
                             if (done.get()) return@postDelayed
+                            // Return the object directly — evaluateJavascript auto-serializes objects to JSON
                             view?.evaluateJavascript(
-                                "(function(){ if(window.__animo_result !== null) return window.__animo_result; if(window.__animo_error) return 'ERROR:' + window.__animo_error; return null; })()"
+                                "(function(){ if(window.__animo_result) return window.__animo_result; if(window.__animo_error) return 'ERROR:'+window.__animo_error; return null; })()"
                             ) { result ->
                                 if (done.get()) return@evaluateJavascript
-                                if (result != null && result != "null") {
-                                    // evaluateJavascript returns string values as JSON-encoded (with quotes)
-                                    // evaluateJavascript returns string values as JSON-encoded (with quotes)
-                                    // So we need to unescape: remove surrounding quotes, replace escaped chars
-                                    val text = result.trim().removeSurrounding("\"")
-                                        .replace("\\n", "\n")
-                                        .replace("\\\"", "\"")
-                                        .replace("\\\\", "\\")
-                                        .replace("\\/", "/")
-                                    Log.i("Animo", "poll result (first 150): ${text.take(150)}")
+                                if (result == null || result == "null") return@evaluateJavascript
 
-                                    if (text.startsWith("ERROR:")) {
-                                        Log.e("Animo", "JS error: $text")
-                                        finish(null)
-                                    } else if (text.startsWith("{") && text.contains("masterUrl")) {
+                                when {
+                                    // JSON object (from window.__animo_result being an object)
+                                    result.startsWith("{") -> {
                                         try {
-                                            val data = parseJson<com.google.gson.JsonObject>(text)
+                                            val data = parseJson<JsonObject>(result)
                                             val masterUrl = data.get("masterUrl")?.asString ?: run {
                                                 Log.e("Animo", "No masterUrl in result")
                                                 finish(null)
@@ -402,8 +395,8 @@ class Animo : MainAPI() {
                                             }
                                             val masterContent = data.get("masterContent")?.asString ?: ""
                                             val tracksList = mutableListOf<SubtitleTrack>()
-                                            if (data.has("tracks") && data.get("tracks").isJsonArray) {
-                                                data.get("tracks").asJsonArray.forEach { trackElem ->
+                                            if (data.has("tracks") && data.get("tracks")?.isJsonArray == true) {
+                                                data.get("tracks")?.asJsonArray?.forEach { trackElem ->
                                                     val track = trackElem.asJsonObject
                                                     val tLabel = track.get("label")?.asString ?: "Sub"
                                                     val tFile = track.get("file")?.asString ?: return@forEach
@@ -416,9 +409,19 @@ class Animo : MainAPI() {
                                             finish(ExtractResult(masterUrl, masterContent, tracksList))
                                         } catch (e: Exception) {
                                             Log.e("Animo", "Parse exception: ${e.message}")
-                                            Log.e("Animo", "Raw: ${text.take(300)}")
+                                            Log.e("Animo", "Raw (first 300): ${result.take(300)}")
                                             finish(null)
                                         }
+                                    }
+                                    // Error string (from window.__animo_error)
+                                    result.startsWith("\"") -> {
+                                        try {
+                                            val errorStr = parseJson<String>(result)
+                                            if (errorStr.startsWith("ERROR:")) {
+                                                Log.e("Animo", "JS error: $errorStr")
+                                                finish(null)
+                                            }
+                                        } catch (_: Exception) {}
                                     }
                                 }
                             }
