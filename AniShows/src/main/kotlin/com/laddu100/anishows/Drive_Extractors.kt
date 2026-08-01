@@ -1,0 +1,247 @@
+package com.laddu100.anishows
+
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
+import java.net.URI
+import com.lagradost.api.Log
+
+open class HubCloud : ExtractorApi() {
+    override val name: String = "Hub-Cloud"
+    override val mainUrl: String = "https://hubcloud.*"
+    override val requiresReferer = false
+
+    fun extractPxlUrl(html: String): String? {
+        val regex = Regex("""var\s+pxl\s*=\s*["']([^"']+)["']""")
+        return regex.find(html)?.groupValues?.get(1)
+    }
+
+    fun extractDoubleAtob(html: String): String? {
+        val regex = Regex("""var\s+url\s*=\s*atob\s*\(\s*atob\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\)""")
+        return regex.find(html)?.groupValues?.get(1)?.let { base64Decode(base64Decode(it)) }
+    }
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        var baseUrl = getBaseUrl(url)
+
+        val latestBaseUrl = if(url.contains("hubcloud")) {
+            getLatestBaseUrl(baseUrl, "hubcloud")
+        } else {
+            getLatestBaseUrl(baseUrl, "vcloud")
+        }
+
+        var newUrl = url
+
+        if(baseUrl != latestBaseUrl) {
+            newUrl = url.replace(baseUrl, latestBaseUrl)
+            baseUrl = latestBaseUrl
+        }
+
+        val doc = app.get(newUrl).document
+
+        var link = if(newUrl.contains("/video/")) {
+            doc.selectFirst("div.vd > center > a") ?. attr("href") ?: ""
+        }
+        else {
+            val scriptTag = doc.selectFirst("script:containsData(url)")?.toString() ?: ""
+
+            if(newUrl.contains("vcloud")) {
+                extractDoubleAtob(scriptTag) ?: ""
+            } else {
+                Regex("var url = '([^']*)'").find(scriptTag) ?. groupValues ?. get(1) ?: ""
+            }
+        }
+
+        if(!link.startsWith("https://")) link = baseUrl + link
+
+        val document = app.get(link).document
+        val header = document.select("div.card-header").text()
+        val size = document.select("i#size").text()
+        val quality = getIndexQuality(header)
+
+        suspend fun myCallback( link: String, server: String = "") {
+            callback.invoke(
+                newExtractorLink(
+                    "${name}${server}",
+                    "${name}${server} ${header}[${size}]",
+                    link,
+                    ExtractorLinkType.VIDEO
+                ) {
+                    this.quality = quality
+                }
+            )
+        }
+
+        document.select("h2 a.btn").amap {
+            val link = it.attr("href")
+            val text = it.text()
+
+            if (text.contains("FSL Server")) myCallback(link, "[FSL Server]")
+            else if (text.contains("FSLv2")) myCallback(link, "[FSLv2 Server]")
+            else if (text.contains("Mega Server")) myCallback(link, "[Mega Server]")
+            else if (text.contains("Download File")) myCallback(link)
+            else if (text.contains("BuzzServer")) {
+                val dlink = app.get("$link/download", referer = link, allowRedirects = false).headers["hx-redirect"] ?: ""
+                val baseUrl = getBaseUrl(link)
+                if(dlink != "") myCallback( baseUrl + dlink, "[BuzzServer]")
+            }
+            else if (link.contains("pixeldra")) {
+                val pixelLink = extractPxlUrl(document.toString()) ?: return@amap
+                val baseUrlLink = getBaseUrl(pixelLink)
+                val finalURL = if (pixelLink.contains("download", true)) pixelLink
+                else "$baseUrlLink/api/file/${pixelLink.substringAfterLast("/")}?download"
+                myCallback(finalURL, "[Pixeldrain]")
+            }
+            else if (text.contains("Server : 10Gbps")) {
+                var redirectUrl = resolveFinalUrl(link) ?: return@amap
+                if(redirectUrl.contains("link=")) redirectUrl = redirectUrl.substringAfter("link=")
+                myCallback(redirectUrl, "[Download]")
+            }
+            else if (text.contains("Gofile")) loadExtractor(link, "", subtitleCallback, callback)
+            else { Log.d("Error", "No Server matched") }
+        }
+    }
+}
+
+class GDLink : GDFlix() {
+    override var mainUrl = "https://gdlink.*"
+}
+
+class GDFlixApp: GDFlix() {
+    override var mainUrl = "https://new.gdflix.*"
+}
+
+class GdFlix1: GDFlix() {
+    override var mainUrl = "https://new1.gdflix.*"
+}
+
+class GdFlix2: GDFlix() {
+    override var mainUrl = "https://*.gdflix.*"
+}
+
+class GDFlixNet : GDFlix() {
+    override var mainUrl = "https://new15.gdflix.*"
+}
+
+open class GDFlix : ExtractorApi() {
+    override val name = "GDFlix"
+    override val mainUrl = "https://gdflix.*"
+    override val requiresReferer = false
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        var baseUrl = getBaseUrl(url)
+        val latestBaseUrl = getLatestBaseUrl(baseUrl, "gdflix")
+
+        var newUrl = url
+
+        if(baseUrl != latestBaseUrl) {
+            newUrl = url.replace(baseUrl, latestBaseUrl)
+            baseUrl = latestBaseUrl
+        }
+
+        val document = app.get(newUrl).document
+        val fileName = document.select("ul > li.list-group-item:contains(Name)").text()
+            .substringAfter("Name : ").orEmpty()
+        val fileSize = document.select("ul > li.list-group-item:contains(Size)").text()
+            .substringAfter("Size : ").orEmpty()
+        val quality = getIndexQuality(fileName)
+
+        suspend fun myCallback(link: String, server: String = "") {
+            callback.invoke(
+                newExtractorLink(
+                    "${name}${server}",
+                    "${name}${server} ${fileName}[${fileSize}]",
+                    link,
+                    ExtractorLinkType.VIDEO
+                ) {
+                    this.quality = quality
+                }
+            )
+        }
+
+        document.select("div.text-center a").amap { anchor ->
+            val text = anchor.select("a").text()
+            val link = anchor.attr("href")
+
+            when {
+                text.contains("FSL V2") -> { myCallback(link, "[FSL V2]") }
+
+                text.contains("DIRECT DL") -> { myCallback(link, "[Direct]") }
+
+                text.contains("DIRECT SERVER") -> { myCallback(link, "[Direct]") }
+
+                text.contains("CLOUD DOWNLOAD [R2]") -> { myCallback(link, "[Cloud]") }
+
+                text.contains("GD Index") -> {
+                    val cfLink = baseUrl + link
+                    val cfTypes = listOf(1, 2)
+
+                    cfTypes.amap { cfType ->
+                        app.get(cfLink + "?type=$cfType")
+                        .document
+                        .select("a.btn-success")
+                        .amap {
+                            val source = it.attr("href")
+                            myCallback(source, "[CF]")
+                        }
+                    }
+                }
+
+                text.contains("FAST CLOUD") -> {
+
+                    val dlink = app.get(baseUrl + link)
+                        .document
+                        .select("div.card-body a")
+                        .attr("href")
+                    if(dlink == "") return@amap
+                    myCallback(dlink, "[FAST CLOUD]")
+                }
+
+                link.contains("pixeldra") -> {
+                    val baseUrlLink = getBaseUrl(link)
+                    val finalURL = if (link.contains("download", true)) link
+                    else "$baseUrlLink/api/file/${link.substringAfterLast("/")}?download"
+                    myCallback(finalURL, "[Pixeldrain]")
+                }
+
+                text.contains("Instant DL") -> {
+                    try {
+                        val instantLink = app.get(link, allowRedirects = false)
+                            .headers["location"]?.substringAfter("url=").orEmpty()
+                        myCallback(instantLink, "[Instant Download]")
+
+                    } catch (e: Exception) {
+                        Log.d("Instant DL", e.toString())
+                    }
+                }
+
+                text.contains("GoFile") -> {
+                    try {
+                        app.get(link).document
+                            .select(".row .row a").amap { gofileAnchor ->
+                                val link = gofileAnchor.attr("href")
+                                if (link.contains("gofile")) {
+                                    loadExtractor(link, "", subtitleCallback, callback)
+                                }
+                            }
+                    } catch (e: Exception) {
+                        Log.d("Gofile", e.toString())
+                    }
+                }
+
+                else -> {
+                    Log.d("Error", "No Server matched")
+                }
+            }
+        }
+    }
+}
