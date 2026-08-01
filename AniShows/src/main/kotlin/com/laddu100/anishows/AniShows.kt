@@ -388,8 +388,8 @@ class AniShows : MainAPI() {
 
             try {
                 val vega = VegaMoviesProvider()
-                val vegaResults = vega.search(title)
-                val vegaMatch = vegaResults?.firstOrNull()
+                val vegaResults = vega.search(title, 1)
+                val vegaMatch = vegaResults?.items?.firstOrNull()
                 if (vegaMatch != null) {
                     val vegaLoad = vega.load(vegaMatch.url) as? AnimeLoadResponse
                     if (vegaLoad != null) {
@@ -415,8 +415,8 @@ class AniShows : MainAPI() {
 
             try {
                 val mod = MoviesmodProvider()
-                val modResults = mod.search(title)
-                val modMatch = modResults?.firstOrNull()
+                val modResults = mod.search(title, 1)
+                val modMatch = modResults?.items?.firstOrNull()
                 if (modMatch != null) {
                     val modLoad = mod.load(modMatch.url) as? AnimeLoadResponse
                     if (modLoad != null) {
@@ -442,8 +442,8 @@ class AniShows : MainAPI() {
 
             try {
                 val top = TopmoviesProvider()
-                val topResults = top.search(title)
-                val topMatch = topResults?.firstOrNull()
+                val topResults = top.search(title, 1)
+                val topMatch = topResults?.items?.firstOrNull()
                 if (topMatch != null) {
                     val topLoad = top.load(topMatch.url) as? AnimeLoadResponse
                     if (topLoad != null) {
@@ -469,8 +469,8 @@ class AniShows : MainAPI() {
 
             try {
                 val drive = MoviesDriveProvider()
-                val driveResults = drive.search(title)
-                val driveMatch = driveResults?.firstOrNull()
+                val driveResults = drive.search(title, 1)
+                val driveMatch = driveResults?.items?.firstOrNull()
                 if (driveMatch != null) {
                     val driveLoad = drive.load(driveMatch.url) as? AnimeLoadResponse
                     if (driveLoad != null) {
