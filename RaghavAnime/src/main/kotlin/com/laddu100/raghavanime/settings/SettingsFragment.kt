@@ -265,7 +265,8 @@ class SettingsFragment : DialogFragment() {
         fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
         val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
-        layout.addView(TextView(ctx).apply { text = "Discover New Anime"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 12.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Discover New Anime"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 2.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Experimental feature (may not work)"; textSize = 11f; setTextColor(Color.parseColor("#FFD54F")); setPadding(0, 0, 0, 12.dp()) })
         layout.addView(TextView(ctx).apply { text = "Search"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 2.dp()) })
         val searchInput = EditText(ctx).apply { hint = "Type anime name for suggestions"; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()) }
         layout.addView(searchInput)
@@ -445,16 +446,13 @@ class SettingsFragment : DialogFragment() {
                     setPadding(0, 16.dp(), 0, 16.dp())
                     setOnClickListener {
                         dialog.dismiss()
-                        // Navigate to the anime in RaghavAnime
+                        try { this@SettingsFragment.dialog?.dismiss() } catch (_: Exception) {}
+                        try { this@SettingsFragment.dismiss() } catch (_: Exception) {}
                         try {
-                            val intent = android.content.Intent(ctx, com.lagradost.cloudstream3.MainActivity::class.java).apply {
-                                action = android.content.Intent.ACTION_VIEW
-                                data = android.net.Uri.parse("https://graphql.anilist.co/info/${detail.id}")
-                                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                            }
-                            ctx.startActivity(intent)
+                            MainActivity.nextSearchQuery = detail.title
+                            MainActivity.reloadHomeEvent.invoke(true)
                         } catch (_: Exception) {
-                            Toast.makeText(ctx, "Open RaghavAnime and search for: ${detail.title}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(ctx, "Search for: ${detail.title}", Toast.LENGTH_LONG).show()
                         }
                     }
                 })
