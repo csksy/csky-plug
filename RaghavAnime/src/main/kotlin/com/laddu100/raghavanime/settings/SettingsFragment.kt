@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -19,9 +21,12 @@ import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
 import com.laddu100.raghavanime.RaghavAnimeFeatures
 import com.laddu100.raghavanime.RaghavAnimeFeatures.CustomProfile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class SettingsFragment : DialogFragment() {
-
 
     private val cBg = Color.parseColor("#0A0A0A")
     private val cCard = Color.parseColor("#1A1A1A")
@@ -34,7 +39,6 @@ class SettingsFragment : DialogFragment() {
 
     companion object {
         private const val PREFIX = "raghavanime_"
-
         val providers = listOf(
             "miruro" to "Miruro", "anisuge" to "AniSuge", "aniwaves" to "AniWaves",
             "anikai" to "AniKai", "anidb" to "AniDB", "anikage" to "AniKage",
@@ -43,7 +47,6 @@ class SettingsFragment : DialogFragment() {
             "senshi" to "Senshi", "aninami" to "AniNami", "anidao" to "AniDao",
             "anichan" to "AniChan"
         )
-
         fun isEnabled(key: String): Boolean = getKey<Boolean>(PREFIX + key) ?: true
         fun setEnabled(key: String, enabled: Boolean) { setKey(PREFIX + key, enabled) }
         fun isSubDLEnabled(): Boolean = getKey<Boolean>(PREFIX + "subdl") ?: false
@@ -65,510 +68,296 @@ class SettingsFragment : DialogFragment() {
         val ctx = requireContext()
         val d = resources.displayMetrics.density
         fun Int.dp() = (this * d).toInt()
-
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20.dp(), 24.dp(), 20.dp(), 24.dp()); setBackgroundColor(cBg)
         }
         scroll.addView(root)
-
-        root.addView(TextView(ctx).apply {
-            text = "RAGHAVANIME"; textSize = 24f; setTextColor(cAccent); gravity = Gravity.CENTER
-            setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.05f
-        })
-        root.addView(TextView(ctx).apply {
-            text = "Tap a section to configure"; textSize = 12f; setTextColor(cTextDim)
-            gravity = Gravity.CENTER; setPadding(0, 2.dp(), 0, 16.dp())
-        })
-
+        root.addView(TextView(ctx).apply { text = "RAGHAVANIME"; textSize = 24f; setTextColor(cAccent); gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.05f })
+        root.addView(TextView(ctx).apply { text = "Tap a section to configure"; textSize = 12f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 2.dp(), 0, 16.dp()) })
         root.addView(sectionBtn(ctx, "SOURCES", "Enable or disable anime providers", d) { showSourcesDialog(ctx, d) })
         root.addView(sectionBtn(ctx, "CUSTOM PROFILES", "Create up to 3 source profiles", d) { showProfilesDialog(ctx, d) })
         root.addView(sectionBtn(ctx, "EXPERIMENTAL", "SubDL, recommendations, watch time", d) { showExperimentalDialog(ctx, d) })
         root.addView(sectionBtn(ctx, "WATCH TIME STATS", "View your watching statistics", d) { showWatchTimeDialog(ctx, d) })
         root.addView(sectionBtn(ctx, "DISCOVER ANIME", "Find new anime by genre & sort", d) { showDiscoverDialog(ctx, d) })
-
-        root.addView(Button(ctx).apply {
-            text = "SAVE & RESTART"; setTextColor(cAccent); textSize = 14f
-            setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, 16.dp(), 0, 0); setOnClickListener { showRestartDialog(ctx) }
-        })
+        root.addView(Button(ctx).apply { text = "SAVE & RESTART"; setTextColor(cAccent); textSize = 14f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 16.dp(), 0, 0); setOnClickListener { showRestartDialog(ctx) } })
         return scroll
     }
 
     private fun sectionBtn(ctx: Context, title: String, subtitle: String, d: Float, onClick: () -> Unit): LinearLayout {
         fun Int.dp() = (this * d).toInt()
         return LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
             background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 14 * d; setColor(cCard) }
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 10.dp() }
             isClickable = true; isFocusable = true
-            val col = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            col.addView(TextView(ctx).apply { text = title; textSize = 16f; setTextColor(cText); setTypeface(typeface, Typeface.BOLD) })
-            col.addView(TextView(ctx).apply { text = subtitle; textSize = 12f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0) })
-            addView(col); addView(TextView(ctx).apply { text = ">"; textSize = 20f; setTextColor(cAccent) })
+            addView(LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(ctx).apply { text = title; textSize = 16f; setTextColor(cText); setTypeface(typeface, Typeface.BOLD) })
+                addView(TextView(ctx).apply { text = subtitle; textSize = 12f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0) }) })
+            addView(TextView(ctx).apply { text = ">"; textSize = 20f; setTextColor(cAccent) })
             setOnClickListener { onClick() }
         }
     }
 
     // =================== SOURCES ===================
-
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun showSourcesDialog(ctx: Context, d: Float) {
         fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
-        }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Sources"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
-
-        layout.addView(Button(ctx).apply {
-            text = "ENABLE ALL"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT)
-            setTypeface(typeface, Typeface.BOLD); setPadding(0, 4.dp(), 0, 8.dp())
-            setOnClickListener {
-                for ((key, _) in providers) setEnabled(key, true)
-                Toast.makeText(ctx, "All sources enabled", Toast.LENGTH_SHORT).show()
-                dialog?.dismiss()
-                showSourcesDialog(ctx, d)
-            }
-        })
-
-        for ((key, name) in providers) {
-            layout.addView(toggleRow(ctx, name, isEnabled(key), d) { setEnabled(key, it) })
-        }
+        layout.addView(Button(ctx).apply { text = "ENABLE ALL"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 4.dp(), 0, 8.dp())
+            setOnClickListener { for ((key, _) in providers) setEnabled(key, true); Toast.makeText(ctx, "All sources enabled", Toast.LENGTH_SHORT).show() } })
+        for ((key, name) in providers) layout.addView(toggleRow(ctx, name, isEnabled(key), d) { setEnabled(key, it) })
         scroll.addView(layout)
-        AlertDialog.Builder(ctx).setView(scroll)
-            .setPositiveButton("Save") { _, _ -> }
-            .setNegativeButton("Cancel", null)
-            .create().apply { show(); styleButtons() }
+        AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ -> }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
     // =================== CUSTOM PROFILES ===================
-
     private fun showProfilesDialog(ctx: Context, d: Float) {
         fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
-        }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Custom Source Profiles"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
-        layout.addView(TextView(ctx).apply {
-            text = "Create up to 3 profiles. When active, a profile overrides sources selected above."
-            textSize = 11f; setTextColor(cTextDim); setPadding(0, 0, 0, 12.dp())
-        })
+        layout.addView(TextView(ctx).apply { text = "When active, a profile overrides sources selected above."; textSize = 11f; setTextColor(cTextDim); setPadding(0, 0, 0, 12.dp()) })
 
         val profiles = RaghavAnimeFeatures.getCustomProfiles()
-        for (profile in profiles) {
-            layout.addView(profileRow(ctx, profile, d))
-        }
-
+        for (profile in profiles) layout.addView(profileRow(ctx, profile, d, layout, scroll))
         if (profiles.size < 3) {
-            layout.addView(Button(ctx).apply {
-                text = "+ CREATE NEW PROFILE"; setTextColor(cAccent); textSize = 13f
-                setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD)
-                setPadding(0, 8.dp(), 0, 8.dp())
-                setOnClickListener { showCreateProfileDialog(ctx, d) }
-            })
+            layout.addView(Button(ctx).apply { text = "+ CREATE NEW PROFILE"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 8.dp(), 0, 8.dp())
+                setOnClickListener { showCreateProfileDialog(ctx, d, layout, scroll) } })
         }
-
         scroll.addView(layout)
-        AlertDialog.Builder(ctx).setView(scroll)
-            .setPositiveButton("Done") { _, _ -> }
-            .setNegativeButton("Cancel", null)
-            .create().apply { show(); styleButtons() }
+        AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Done") { _, _ -> }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
-    private fun profileRow(ctx: Context, profile: CustomProfile, d: Float): LinearLayout {
+    private fun profileRow(ctx: Context, profile: CustomProfile, d: Float, layout: LinearLayout, scroll: ScrollView): LinearLayout {
         fun Int.dp() = (this * d).toInt()
         return LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(12.dp(), 10.dp(), 8.dp(), 10.dp())
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 10.dp(), 8.dp(), 10.dp())
             background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 10 * d; setColor(cCard) }
-            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            params.bottomMargin = 6.dp(); layoutParams = params
-
-            val info = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            info.addView(TextView(ctx).apply {
-                text = if (profile.enabled) "${profile.name} (ACTIVE)" else profile.name
-                textSize = 14f; setTextColor(if (profile.enabled) cAccent else cText)
-                setTypeface(typeface, Typeface.BOLD)
-            })
-            info.addView(TextView(ctx).apply {
-                text = "${profile.sources.size} sources"
-                textSize = 11f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0)
-            })
-            addView(info)
-
-            addView(SwitchCompat(ctx).apply {
-                isChecked = profile.enabled
-                trackTintList = android.content.res.ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(cAccent, Color.parseColor("#333333")))
-                thumbTintList = android.content.res.ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(Color.WHITE, Color.parseColor("#666666")))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 6.dp() }
+            addView(LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(ctx).apply { text = if (profile.enabled) "${profile.name} (ACTIVE)" else profile.name; textSize = 14f; setTextColor(if (profile.enabled) cAccent else cText); setTypeface(typeface, Typeface.BOLD) })
+                addView(TextView(ctx).apply { text = "${profile.sources.size} sources"; textSize = 11f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0) }) })
+            addView(SwitchCompat(ctx).apply { isChecked = profile.enabled
+                trackTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(cAccent, Color.parseColor("#333333")))
+                thumbTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(Color.WHITE, Color.parseColor("#666666")))
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) {
-                        val activeCount = RaghavAnimeFeatures.getCustomProfiles().count { it.enabled }
-                        if (activeCount >= 1) {
-                            showSingleProfileWarning(ctx)
-                        }
-                        RaghavAnimeFeatures.setActiveProfile(profile.name)
-                    } else {
-                        RaghavAnimeFeatures.setActiveProfile(null)
-                    }
-                    dialog?.dismiss()
-                    showProfilesDialog(ctx, d)
-                }
-            })
-
-            addView(ImageButton(ctx).apply {
-                setImageResource(android.R.drawable.ic_menu_delete)
-                setBackgroundColor(Color.TRANSPARENT); setColorFilter(cWarning)
+                        if (RaghavAnimeFeatures.getCustomProfiles().count { it.enabled } >= 1) {
+                            AlertDialog.Builder(ctx).setTitle("WARNING").setMessage("Select only one profile.\n\nOther profiles have been turned off.").setPositiveButton("OK") { _, _ ->
+                                RaghavAnimeFeatures.getCustomProfiles().forEach { p -> if (p.enabled) RaghavAnimeFeatures.setActiveProfile(null) }
+                                RaghavAnimeFeatures.setActiveProfile(profile.name)
+                                refreshProfiles(layout, scroll, ctx, d)
+                            }.show()
+                        } else { RaghavAnimeFeatures.setActiveProfile(profile.name); refreshProfiles(layout, scroll, ctx, d) }
+                    } else { RaghavAnimeFeatures.setActiveProfile(null); refreshProfiles(layout, scroll, ctx, d) }
+                } })
+            addView(Button(ctx).apply { text = "Delete"; setTextColor(cTextSub); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setPadding(8.dp(), 0, 8.dp(), 0)
                 setOnClickListener {
                     val updated = RaghavAnimeFeatures.getCustomProfiles().filter { it.name != profile.name }
-                    RaghavAnimeFeatures.saveCustomProfiles(updated)
-                    Toast.makeText(ctx, "Profile deleted", Toast.LENGTH_SHORT).show()
-                    dialog?.dismiss()
-                    showProfilesDialog(ctx, d)
-                }
-            })
+                    RaghavAnimeFeatures.saveCustomProfiles(updated); Toast.makeText(ctx, "Profile deleted", Toast.LENGTH_SHORT).show(); refreshProfiles(layout, scroll, ctx, d) } })
         }
     }
 
-    private fun showSingleProfileWarning(ctx: Context) {
-        AlertDialog.Builder(ctx)
-            .setTitle("WARNING")
-            .setMessage("Select only one profile.\n\nOther profiles have been turned off.")
-            .setPositiveButton("OK") { _, _ ->
-                RaghavAnimeFeatures.getCustomProfiles().forEach { p ->
-                    if (p.enabled) RaghavAnimeFeatures.setActiveProfile(null)
-                }
-            }
-            .show()
-    }
-
-    private fun showCreateProfileDialog(ctx: Context, d: Float) {
+    private fun refreshProfiles(layout: LinearLayout, scroll: ScrollView, ctx: Context, d: Float) {
+        layout.removeAllViews()
         fun Int.dp() = (this * d).toInt()
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
-        }
-        layout.addView(TextView(ctx).apply { text = "Profile Name"; textSize = 14f; setTextColor(cAccent); setPadding(0, 0, 0, 4.dp()) })
-        val nameInput = EditText(ctx).apply {
-            hint = "Enter profile name"; setHintTextColor(cTextDim); setTextColor(cText)
-            setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
-        }
-        layout.addView(nameInput)
-        layout.addView(TextView(ctx).apply { text = "Select Sources"; textSize = 14f; setTextColor(cAccent); setPadding(0, 12.dp(), 0, 4.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Custom Source Profiles"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
+        layout.addView(TextView(ctx).apply { text = "When active, a profile overrides sources selected above."; textSize = 11f; setTextColor(cTextDim); setPadding(0, 0, 0, 12.dp()) })
+        val profiles = RaghavAnimeFeatures.getCustomProfiles()
+        for (profile in profiles) layout.addView(profileRow(ctx, profile, d, layout, scroll))
+        if (profiles.size < 3) layout.addView(Button(ctx).apply { text = "+ CREATE NEW PROFILE"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 8.dp(), 0, 8.dp())
+            setOnClickListener { showCreateProfileDialog(ctx, d, layout, scroll) } })
+    }
 
+    private fun showCreateProfileDialog(ctx: Context, d: Float, layout: LinearLayout, scroll: ScrollView) {
+        fun Int.dp() = (this * d).toInt()
+        val createLayout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        createLayout.addView(TextView(ctx).apply { text = "Profile Name"; textSize = 14f; setTextColor(cAccent); setPadding(0, 0, 0, 4.dp()) })
+        val nameInput = EditText(ctx).apply { hint = "Enter profile name"; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()) }
+        createLayout.addView(nameInput)
+        createLayout.addView(TextView(ctx).apply { text = "Select Sources"; textSize = 14f; setTextColor(cAccent); setPadding(0, 12.dp(), 0, 4.dp()) })
         val checksContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         val checks = mutableMapOf<String, CheckBox>()
-        for ((key, name) in providers) {
-            val cb = CheckBox(ctx).apply {
-                text = name; setTextColor(cText); textSize = 13f
-                setOnCheckedChangeListener { _, _ -> }
-            }
-            checks[key] = cb
-            checksContainer.addView(cb)
-        }
-        val checksScroll = ScrollView(ctx).apply {
-            addView(checksContainer)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 300.dp())
-        }
-        layout.addView(checksScroll)
-
-        AlertDialog.Builder(ctx).setView(layout)
-            .setTitle("Create Profile")
+        for ((key, name) in providers) { val cb = CheckBox(ctx).apply { text = name; setTextColor(cText); textSize = 13f }; checks[key] = cb; checksContainer.addView(cb) }
+        val checksScroll = ScrollView(ctx).apply { addView(checksContainer); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 300.dp()) }
+        createLayout.addView(checksScroll)
+        AlertDialog.Builder(ctx).setView(createLayout).setTitle("Create Profile")
             .setPositiveButton("Create") { _, _ ->
                 val name = nameInput.text?.toString()?.trim() ?: ""
                 if (name.isBlank()) { Toast.makeText(ctx, "Name required", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
                 val selectedSources = checks.filter { it.value.isChecked }.keys.toList()
                 if (selectedSources.isEmpty()) { Toast.makeText(ctx, "Select at least 1 source", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
-
-                AlertDialog.Builder(ctx)
-                    .setTitle("WARNING")
-                    .setMessage("This profile overwrites the sources selected in the Sources tab.\nWhen this profile is active, only the sources selected here will run.\n\nDo you want to continue?")
+                AlertDialog.Builder(ctx).setTitle("WARNING").setMessage("This profile overwrites the sources selected in the Sources tab.\nWhen this profile is active, only the sources selected here will run.\n\nDo you want to continue?")
                     .setPositiveButton("Yes, Save") { _, _ ->
                         val profiles = RaghavAnimeFeatures.getCustomProfiles().toMutableList()
-                        profiles.add(CustomProfile(name, selectedSources, false))
-                        RaghavAnimeFeatures.saveCustomProfiles(profiles)
-                        Toast.makeText(ctx, "Profile '$name' created", Toast.LENGTH_SHORT).show()
-                        dialog?.dismiss()
-                        showProfilesDialog(ctx, d)
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
-            .setNegativeButton("Cancel", null)
-            .create().apply { show(); styleButtons() }
+                        profiles.add(CustomProfile(name, selectedSources, false)); RaghavAnimeFeatures.saveCustomProfiles(profiles)
+                        Toast.makeText(ctx, "Profile '$name' created", Toast.LENGTH_SHORT).show(); refreshProfiles(layout, scroll, ctx, d) }
+                    .setNegativeButton("Cancel", null).show() }
+            .setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
     // =================== EXPERIMENTAL ===================
-
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun showExperimentalDialog(ctx: Context, d: Float) {
         fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
-        }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Experimental Features"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
         layout.addView(TextView(ctx).apply { text = "May not work properly"; textSize = 11f; setTextColor(cWarning); setPadding(0, 0, 0, 12.dp()) })
-
         layout.addView(sectionLabel(ctx, "SUBTITLES", d))
         layout.addView(toggleRow(ctx, "SubDL English Subtitles", isSubDLEnabled(), d) { setSubDLEnabled(it) })
         layout.addView(descText(ctx, "Fetches English subtitles from SubDL", d))
-
         layout.addView(sectionLabel(ctx, "WATCH TRACKING", d))
         layout.addView(toggleRow(ctx, "Watch Time Tracker", RaghavAnimeFeatures.isEnabled("watch_time"), d) { RaghavAnimeFeatures.setEnabled("watch_time", it) })
         layout.addView(descText(ctx, "Tracks watch time per anime, view in Watch Time Stats", d))
-
         layout.addView(sectionLabel(ctx, "DISCOVERY", d))
         layout.addView(toggleRow(ctx, "Anime Recommendations", RaghavAnimeFeatures.isEnabled("recommendations"), d) { RaghavAnimeFeatures.setEnabled("recommendations", it) })
         layout.addView(descText(ctx, "Shows recommended anime based on watch history", d))
-
-        layout.addView(Button(ctx).apply {
-            text = "RESET RECOMMENDATIONS"; setTextColor(cWarning); textSize = 12f
-            setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, 8.dp(), 0, 8.dp())
-            setOnClickListener {
-                RaghavAnimeFeatures.resetRecommendations()
-                Toast.makeText(ctx, "Recommendations reset", Toast.LENGTH_SHORT).show()
-            }
-        })
-
+        layout.addView(Button(ctx).apply { text = "RESET RECOMMENDATIONS"; setTextColor(cWarning); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 8.dp(), 0, 8.dp())
+            setOnClickListener { RaghavAnimeFeatures.resetRecommendations(); Toast.makeText(ctx, "Recommendations reset. New ones will load next time.", Toast.LENGTH_SHORT).show() } })
         scroll.addView(layout)
-        AlertDialog.Builder(ctx).setView(scroll)
-            .setPositiveButton("Save") { _, _ -> }
-            .setNegativeButton("Cancel", null)
-            .create().apply { show(); styleButtons() }
+        AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ -> }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
     // =================== WATCH TIME STATS ===================
-
     private fun showWatchTimeDialog(ctx: Context, d: Float) {
         fun Int.dp() = (this * d).toInt()
         val history = RaghavAnimeFeatures.getWatchHistory().sortedByDescending { it.watchTimeMs }
         val totalTime = RaghavAnimeFeatures.getTotalWatchTime()
         val totalEps = RaghavAnimeFeatures.getTotalEpisodesWatched()
         val animeCount = RaghavAnimeFeatures.getAnimeWatchedCount()
-
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
-        }
-
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Watch Time Statistics"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 12.dp()) })
-
-        // Summary card
-        val summary = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(16.dp(), 12.dp(), 16.dp(), 12.dp())
-            background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 12 * d; setColor(cCard) }
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 12.dp() }
-        }
+        val summary = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(16.dp(), 12.dp(), 16.dp(), 12.dp()); background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 12 * d; setColor(cCard) }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 12.dp() } }
         summary.addView(TextView(ctx).apply { text = "Total Watch Time: ${RaghavAnimeFeatures.formatWatchTime(totalTime)}"; textSize = 16f; setTextColor(cText); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
         summary.addView(TextView(ctx).apply { text = "Episodes Watched: $totalEps"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 2.dp(), 0, 0) })
         summary.addView(TextView(ctx).apply { text = "Anime Started: $animeCount"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 2.dp(), 0, 0) })
         layout.addView(summary)
-
+        layout.addView(Button(ctx).apply { text = "RESET WATCH HISTORY"; setTextColor(cWarning); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 4.dp(), 0, 12.dp())
+            setOnClickListener { AlertDialog.Builder(ctx).setTitle("Reset Watch History").setMessage("This will delete all watch time data. Are you sure?").setPositiveButton("Yes, Reset") { _, _ -> RaghavAnimeFeatures.resetWatchHistory(); Toast.makeText(ctx, "Watch history reset", Toast.LENGTH_SHORT).show(); dialog?.dismiss(); showWatchTimeDialog(ctx, d) }.setNegativeButton("Cancel", null).show() } })
         if (history.isEmpty()) {
-            layout.addView(TextView(ctx).apply {
-                text = "No watch history yet.\nStart watching anime to see stats here."; textSize = 14f; setTextColor(cTextDim)
-                gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp())
-            })
+            layout.addView(TextView(ctx).apply { text = "No watch history yet.\nStart watching anime to see stats here."; textSize = 14f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp()) })
         } else {
             layout.addView(sectionLabel(ctx, "TOP ANIME BY WATCH TIME", d))
             for ((index, entry) in history.take(20).withIndex()) {
-                val row = LinearLayout(ctx).apply {
-                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                    setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
-                    background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 8 * d; setColor(cCard) }
-                    val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    params.bottomMargin = 4.dp(); layoutParams = params
-                }
-                row.addView(TextView(ctx).apply { text = "${index + 1}."; textSize = 14f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 8.dp(), 0) })
-                val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-                col.addView(TextView(ctx).apply { text = entry.title; textSize = 14f; setTextColor(cText); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
-                col.addView(TextView(ctx).apply {
-                    text = "${entry.episodesWatched} eps - ${RaghavAnimeFeatures.formatWatchTime(entry.watchTimeMs)}"
-                    textSize = 11f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0)
-                })
-                row.addView(col)
-                layout.addView(row)
+                layout.addView(LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp()); background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 8 * d; setColor(cCard) }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 4.dp() }
+                    addView(TextView(ctx).apply { text = "${index + 1}."; textSize = 14f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 8.dp(), 0) })
+                    addView(LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        addView(TextView(ctx).apply { text = entry.title; textSize = 14f; setTextColor(cText); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                        addView(TextView(ctx).apply { text = "${entry.episodesWatched} eps - ${RaghavAnimeFeatures.formatWatchTime(entry.watchTimeMs)}"; textSize = 11f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0) }) }) })
             }
         }
-
         scroll.addView(layout)
-        AlertDialog.Builder(ctx).setView(scroll)
-            .setPositiveButton("Close") { _, _ -> }
-            .create().apply { show(); styleButtons() }
+        AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Close") { _, _ -> }.create().apply { show(); styleButtons() }
     }
 
     // =================== DISCOVER ANIME ===================
-
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun showDiscoverDialog(ctx: Context, d: Float) {
         fun Int.dp() = (this * d).toInt()
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
-        }
-        layout.addView(TextView(ctx).apply { text = "Discover New Anime"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 12.dp()) })
-
-        // Genre spinner
-        layout.addView(TextView(ctx).apply { text = "Genre"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 2.dp()) })
-        val genreSpinner = Spinner(ctx).apply {
-            adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableGenres)
-        }
-        layout.addView(genreSpinner)
-
-        // Sort spinner
-        layout.addView(TextView(ctx).apply { text = "Sort By"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
-        val sortSpinner = Spinner(ctx).apply {
-            adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableSorts.map { it.second })
-        }
-        layout.addView(sortSpinner)
-
-        // Search input
-        layout.addView(TextView(ctx).apply { text = "Search (optional)"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
-        val searchInput = EditText(ctx).apply {
-            hint = "Anime name for similar results"; setHintTextColor(cTextDim); setTextColor(cText)
-            setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
-        }
-        layout.addView(searchInput)
-
-        AlertDialog.Builder(ctx).setView(layout)
-            .setPositiveButton("Search") { _, _ ->
-                val genre = RaghavAnimeFeatures.availableGenres[genreSpinner.selectedItemPosition]
-                val sortBy = RaghavAnimeFeatures.availableSorts[sortSpinner.selectedItemPosition].first
-                val query = searchInput.text?.toString()?.trim()?.takeIf { it.isNotBlank() }
-
-                showDiscoverResults(ctx, d, query, genre, sortBy)
-            }
-            .setNegativeButton("Cancel", null)
-            .create().apply { show(); styleButtons() }
-    }
-
-    private fun showDiscoverResults(ctx: Context, d: Float, query: String?, genre: String, sortBy: String) {
-        fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
-        }
-        layout.addView(TextView(ctx).apply { text = "Searching..."; textSize = 14f; setTextColor(cTextDim); setPadding(0, 8.dp(), 0, 8.dp()) })
-        scroll.addView(layout)
-
-        val dialog = AlertDialog.Builder(ctx).setView(scroll)
-            .setPositiveButton("Close") { _, _ -> }
-            .create()
-        dialog.show()
-
-        Thread {
-            try {
-                val results = kotlinx.coroutines.runBlocking {
-                    RaghavAnimeFeatures.discoverAnime(query, genre, sortBy)
-                }
-                requireActivity().runOnUiThread {
-                    layout.removeAllViews()
-                    layout.addView(TextView(ctx).apply {
-                        text = if (results.isEmpty()) "No results found" else "Found ${results.size} anime"
-                        textSize = 14f; setTextColor(cText); setPadding(0, 0, 0, 8.dp())
-                    })
-                    for (anime in results) {
-                        layout.addView(LinearLayout(ctx).apply {
-                            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
-                            background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 8 * d; setColor(cCard) }
-                            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                            params.bottomMargin = 4.dp(); layoutParams = params
-                            addView(TextView(ctx).apply {
-                                text = anime.title; textSize = 14f; setTextColor(cText); maxLines = 1
-                                ellipsize = android.text.TextUtils.TruncateAt.END
-                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                            })
-                            addView(TextView(ctx).apply { text = ">"; textSize = 16f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) })
-                        })
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "Discover New Anime"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 12.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Search"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 2.dp()) })
+        val searchInput = EditText(ctx).apply { hint = "Type anime name for suggestions"; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()) }
+        layout.addView(searchInput)
+        val suggestionsContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 8.dp(), 0, 0) }
+        layout.addView(suggestionsContainer)
+        var searchJob: kotlinx.coroutines.Job? = null
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                searchJob?.cancel()
+                val query = s?.toString()?.trim() ?: ""
+                if (query.length < 3) { suggestionsContainer.removeAllViews(); return }
+                searchJob = CoroutineScope(Dispatchers.Main).launch {
+                    val suggestions = withContext(Dispatchers.IO) { RaghavAnimeFeatures.searchSuggestions(query) }
+                    suggestionsContainer.removeAllViews()
+                    for (anime in suggestions.take(5)) {
+                        suggestionsContainer.addView(TextView(ctx).apply { text = anime.title; textSize = 13f; setTextColor(cTextSub); setPadding(8.dp(), 6.dp(), 8.dp(), 6.dp()); isClickable = true
+                            setOnClickListener { searchInput.setText(anime.title); suggestionsContainer.removeAllViews() } })
                     }
                 }
-            } catch (e: Exception) {
-                requireActivity().runOnUiThread {
-                    layout.removeAllViews()
-                    layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
-                }
             }
-        }.start()
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        })
+        layout.addView(TextView(ctx).apply { text = "Genre"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val genreSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableGenres) }
+        layout.addView(genreSpinner)
+        layout.addView(TextView(ctx).apply { text = "Sort By"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val sortSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableSorts.map { it.second }) }
+        layout.addView(sortSpinner)
+        scroll.addView(layout)
+        AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Search") { _, _ ->
+            val genre = RaghavAnimeFeatures.availableGenres[genreSpinner.selectedItemPosition]
+            val sortBy = RaghavAnimeFeatures.availableSorts[sortSpinner.selectedItemPosition].first
+            val query = searchInput.text?.toString()?.trim()?.takeIf { it.isNotBlank() }
+            showDiscoverResults(ctx, d, query, genre, sortBy, 1) }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
+    }
+
+    private fun showDiscoverResults(ctx: Context, d: Float, query: String?, genre: String, sortBy: String, page: Int) {
+        fun Int.dp() = (this * d).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "Searching..."; textSize = 14f; setTextColor(cTextDim); setPadding(0, 8.dp(), 0, 8.dp()) })
+        scroll.addView(layout)
+        val dialog = AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Close") { _, _ -> }.create()
+        dialog.show()
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                val results = withContext(Dispatchers.IO) { RaghavAnimeFeatures.discoverAnime(query, genre, sortBy, page) }
+                layout.removeAllViews()
+                layout.addView(TextView(ctx).apply { text = if (results.isEmpty()) "No results found" else "Found ${results.size} anime (Page $page)"; textSize = 14f; setTextColor(cText); setPadding(0, 0, 0, 8.dp()) })
+                for (anime in results) {
+                    layout.addView(LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp()); background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 8 * d; setColor(cCard) }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 4.dp() }
+                        addView(TextView(ctx).apply { text = anime.title; textSize = 14f; setTextColor(cText); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                        addView(TextView(ctx).apply { text = ">"; textSize = 16f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) }) })
+                }
+                if (results.size >= 10) {
+                    layout.addView(Button(ctx).apply { text = "NEXT PAGE >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 8.dp(), 0, 8.dp())
+                        setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page + 1) } })
+                }
+                if (page > 1) {
+                    layout.addView(Button(ctx).apply { text = "< PREVIOUS PAGE"; setTextColor(cTextSub); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setPadding(0, 4.dp(), 0, 8.dp())
+                        setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page - 1) } })
+                }
+            } catch (e: Exception) {
+                layout.removeAllViews()
+                layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
+            }
+        }
     }
 
     // =================== HELPERS ===================
-
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun toggleRow(ctx: Context, label: String, checked: Boolean, d: Float, onChange: (Boolean) -> Unit): LinearLayout {
         fun Int.dp() = (this * d).toInt()
-        return LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 10.dp(), 0, 10.dp())
+        return LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 10.dp(), 0, 10.dp())
             addView(TextView(ctx).apply { text = label; textSize = 15f; setTextColor(cText); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
-            addView(SwitchCompat(ctx).apply {
-                isChecked = checked
+            addView(SwitchCompat(ctx).apply { isChecked = checked
                 trackTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(cAccent, Color.parseColor("#333333")))
                 thumbTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(Color.WHITE, Color.parseColor("#666666")))
-                setOnCheckedChangeListener { _, isChecked -> onChange(isChecked) }
-            })
-        }
+                setOnCheckedChangeListener { _, isChecked -> onChange(isChecked) } }) }
     }
-
     private fun sectionLabel(ctx: Context, text: String, d: Float): TextView {
         fun Int.dp() = (this * d).toInt()
         return TextView(ctx).apply { this.text = text; textSize = 12f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 12.dp(), 0, 4.dp()) }
     }
-
     private fun descText(ctx: Context, text: String, d: Float): TextView {
         fun Int.dp() = (this * d).toInt()
         return TextView(ctx).apply { this.text = "  $text"; textSize = 11f; setTextColor(cTextDim); setPadding(0, 0, 0, 8.dp()) }
     }
-
     private fun darkAdapter(ctx: Context, items: List<String>): ArrayAdapter<String> {
         return object : ArrayAdapter<String>(ctx, android.R.layout.simple_spinner_dropdown_item, items) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup) = (super.getView(position, convertView, parent) as TextView).apply { setTextColor(cText); textSize = 14f }
-            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup) = (super.getDropDownView(position, convertView, parent) as TextView).apply { setTextColor(cText); setBackgroundColor(cCard); setPadding(24, 20, 24, 20) }
-        }
-    }
-
-    private fun AlertDialog.styleButtons() {
-        getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(cAccent)
-        getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(cTextDim)
-    }
-
+            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup) = (super.getDropDownView(position, convertView, parent) as TextView).apply { setTextColor(cText); setBackgroundColor(cCard); setPadding(24, 20, 24, 20) } } }
+    private fun AlertDialog.styleButtons() { getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(cAccent); getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(cTextDim) }
     private fun showRestartDialog(ctx: Context) {
-        AlertDialog.Builder(ctx).setTitle("Restart Required").setMessage("Restart the app to apply changes?")
-            .setPositiveButton("Yes") { _, _ -> restartApp() }
-            .setNegativeButton("No") { _, _ -> try { MainActivity.reloadHomeEvent.invoke(true) } catch (_: Throwable) {} }
-            .show()
-    }
-
-    private fun restartApp() {
-        try {
-            val context = requireContext().applicationContext
-            val pm = context.packageManager
-            val intent = pm.getLaunchIntentForPackage(context.packageName)
-            val componentName = intent?.component
-            if (componentName != null) {
-                val restartIntent = android.content.Intent.makeRestartActivityTask(componentName)
-                context.startActivity(restartIntent)
-                Runtime.getRuntime().exit(0)
-            }
-        } catch (_: Throwable) { try { MainActivity.reloadHomeEvent.invoke(true) } catch (_: Throwable) {} }
-    }
+        AlertDialog.Builder(ctx).setTitle("Restart Required").setMessage("Restart the app to apply changes?").setPositiveButton("Yes") { _, _ -> restartApp() }.setNegativeButton("No") { _, _ -> try { MainActivity.reloadHomeEvent.invoke(true) } catch (_: Throwable) {} }.show() }
+    private fun restartApp() { try { val context = requireContext().applicationContext; val pm = context.packageManager; val intent = pm.getLaunchIntentForPackage(context.packageName); val componentName = intent?.component; if (componentName != null) { val restartIntent = android.content.Intent.makeRestartActivityTask(componentName); context.startActivity(restartIntent); Runtime.getRuntime().exit(0) } } catch (_: Throwable) { try { MainActivity.reloadHomeEvent.invoke(true) } catch (_: Throwable) {} } }
 }

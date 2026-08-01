@@ -86,6 +86,10 @@ object RaghavAnimeFeatures {
         return getWatchHistory().size
     }
 
+    fun resetWatchHistory() {
+        try { setKey(PREFIX + "watch_history", emptyList<WatchEntry>().toJson()) } catch (_: Exception) {}
+    }
+
     fun getMostWatchedAnime(): WatchEntry? {
         return getWatchHistory().maxByOrNull { it.watchTimeMs }
     }
@@ -211,13 +215,43 @@ object RaghavAnimeFeatures {
 
     fun resetRecommendations() {
         cachedRecommendations = null
+        try { setKey(PREFIX + "rec_cache", null as Any?) } catch (_: Exception) {}
+    }
+
+    // ============================================================
+    // FEATURE: Search Suggestions for Discover
+    // ============================================================
+
+    suspend fun searchSuggestions(query: String): List<SimpleAnime> {
+        return try {
+            val gqlQuery = """
+                query (${'$'}search: String, ${'$'}page: Int, ${'$'}perPage: Int) {
+                    Page(page: ${'$'}page, perPage: ${'$'}perPage) {
+                        media(type: ANIME, search: ${'$'}search, sort: SEARCH_MATCH) {
+                            id
+                            title { english romaji }
+                            coverImage { extraLarge large }
+                        }
+                    }
+                }
+            """.trimIndent()
+            val variables = mapOf("search" to query, "page" to 1, "perPage" to 10)
+            val responseText = anilistQuery(gqlQuery, variables)
+            val response = parseJson<AniListResponse>(responseText)
+            val mediaList = response.data?.Page?.media ?: emptyList()
+            mediaList.mapNotNull { media ->
+                val id = media.id ?: return@mapNotNull null
+                val title = media.title?.english ?: media.title?.romaji ?: return@mapNotNull null
+                SimpleAnime(title, "https://graphql.anilist.co/info/$id", media.coverImage?.extraLarge ?: media.coverImage?.large)
+            }
+        } catch (_: Exception) { emptyList() }
     }
 
     // ============================================================
     // FEATURE: Discover New Anime
     // ============================================================
 
-    suspend fun discoverAnime(query: String? = null, genre: String? = null, sortBy: String = "POPULARITY_DESC"): List<SimpleAnime> {
+    suspend fun discoverAnime(query: String? = null, genre: String? = null, sortBy: String = "POPULARITY_DESC", page: Int = 1): List<SimpleAnime> {
         return try {
             val gqlQuery = """
                 query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: String, ${'$'}sort: [MediaSort]) {
@@ -237,13 +271,13 @@ object RaghavAnimeFeatures {
             """.trimIndent()
 
             val variables = mutableMapOf<String, Any?>(
-                "page" to 1,
+                "page" to page,
                 "perPage" to 20,
                 "sort" to listOf(sortBy)
             )
             if (query != null && query.isNotBlank()) variables["search"] = query
             if (genre != null && genre != "Any") {
-                variables["genre"] = genre
+                variables["genre"] = listOf(genre)
             }
 
             val responseText = anilistQuery(gqlQuery, variables)
