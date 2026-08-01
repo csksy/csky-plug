@@ -586,7 +586,17 @@ data class AniListData(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class AniListPage(@JsonProperty("media") val media: List<AniListMedia>? = null)
+data class AniListPage(
+    @JsonProperty("media") val media: List<AniListMedia>? = null,
+    @JsonProperty("pageInfo") val pageInfo: AniListPageInfo? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniListPageInfo(
+    @JsonProperty("currentPage") val currentPage: Int? = null,
+    @JsonProperty("hasNextPage") val hasNextPage: Boolean? = null,
+    @JsonProperty("lastPage") val lastPage: Int? = null
+)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniListMedia(

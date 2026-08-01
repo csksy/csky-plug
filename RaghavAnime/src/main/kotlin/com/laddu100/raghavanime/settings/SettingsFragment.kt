@@ -21,6 +21,9 @@ import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
 import com.laddu100.raghavanime.RaghavAnimeFeatures
 import com.laddu100.raghavanime.RaghavAnimeFeatures.CustomProfile
+import com.laddu100.raghavanime.RaghavAnimeFeatures.DiscoverResult
+import com.laddu100.raghavanime.RaghavAnimeFeatures.DiscoverPage
+import com.laddu100.raghavanime.RaghavAnimeFeatures.AnimeDetail
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -310,22 +313,152 @@ class SettingsFragment : DialogFragment() {
         dialog.show()
         CoroutineScope(Dispatchers.Main).launch {
             try {
-                val results = withContext(Dispatchers.IO) { RaghavAnimeFeatures.discoverAnime(query, genre, sortBy, page) }
+                val pageData = withContext(Dispatchers.IO) { RaghavAnimeFeatures.discoverAnime(query, genre, sortBy, page) }
                 layout.removeAllViews()
-                layout.addView(TextView(ctx).apply { text = if (results.isEmpty()) "No results found" else "Found ${results.size} anime (Page $page)"; textSize = 14f; setTextColor(cText); setPadding(0, 0, 0, 8.dp()) })
-                for (anime in results) {
-                    layout.addView(LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp()); background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 8 * d; setColor(cCard) }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 4.dp() }
-                        addView(TextView(ctx).apply { text = anime.title; textSize = 14f; setTextColor(cText); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
-                        addView(TextView(ctx).apply { text = ">"; textSize = 16f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) }) })
+                if (pageData.results.isEmpty()) {
+                    layout.addView(TextView(ctx).apply { text = "No results found"; textSize = 14f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp()) })
+                    return@launch
                 }
-                if (results.size >= 10) {
-                    layout.addView(Button(ctx).apply { text = "NEXT PAGE >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 8.dp(), 0, 8.dp())
-                        setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page + 1) } })
-                }
+                // Page info bar with page navigation
+                val pageBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 8.dp()) }
                 if (page > 1) {
-                    layout.addView(Button(ctx).apply { text = "< PREVIOUS PAGE"; setTextColor(cTextSub); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setPadding(0, 4.dp(), 0, 8.dp())
-                        setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page - 1) } })
+                    pageBar.addView(Button(ctx).apply { text = "< Prev"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page - 1) } })
                 }
+                pageBar.addView(TextView(ctx).apply { text = "  Page ${pageData.currentPage} / ${pageData.lastPage}  "; textSize = 13f; setTextColor(cTextSub); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                if (pageData.hasNextPage) {
+                    pageBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page + 1) } })
+                }
+                layout.addView(pageBar)
+                layout.addView(TextView(ctx).apply { text = "${pageData.results.size} results"; textSize = 12f; setTextColor(cTextDim); setPadding(0, 0, 0, 8.dp()) })
+
+                for (anime in pageData.results) {
+                    layout.addView(resultCard(ctx, anime, d, dialog))
+                }
+
+                // Bottom navigation
+                if (pageData.hasNextPage || page > 1) {
+                    val bottomBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, 12.dp(), 0, 8.dp()) }
+                    if (page > 1) bottomBar.addView(Button(ctx).apply { text = "< Previous"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page - 1) } })
+                    if (pageData.hasNextPage) bottomBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page + 1) } })
+                    layout.addView(bottomBar)
+                }
+            } catch (e: Exception) {
+                layout.removeAllViews()
+                layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
+            }
+        }
+    }
+
+    private fun resultCard(ctx: Context, anime: RaghavAnimeFeatures.DiscoverResult, d: Float, parentDialog: AlertDialog): LinearLayout {
+        fun Int.dp() = (this * d).toInt()
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
+            background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 10 * d; setColor(cCard) }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 6.dp() }
+            isClickable = true; isFocusable = true
+            setOnClickListener { parentDialog.dismiss(); showAnimeDetailDialog(ctx, d, anime) }
+
+            // Poster thumbnail
+            addView(ImageView(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams(48.dp(), 64.dp())
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                CoroutineScope(Dispatchers.Main).launch {
+                    try {
+                        val bitmap = withContext(Dispatchers.IO) {
+                            android.graphics.BitmapFactory.decodeStream(java.net.URL(anime.posterUrl).openStream())
+                        }
+                        setImageBitmap(bitmap)
+                    } catch (_: Exception) {}
+                }
+            })
+
+            // Info column
+            val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); setPadding(8.dp(), 0, 0, 0) }
+            col.addView(TextView(ctx).apply { text = anime.title; textSize = 14f; setTextColor(cText); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END; setTypeface(typeface, Typeface.BOLD) })
+            val infoParts = mutableListOf<String>()
+            anime.year?.let { infoParts.add(it.toString()) }
+            anime.format?.let { infoParts.add(it) }
+            anime.episodes?.let { infoParts.add("${it} eps") }
+            anime.score?.let { infoParts.add("%.1fu2605".format(it / 10)) }
+            val infoText = infoParts.joinToString(" - ")
+            if (infoText.isNotEmpty()) col.addView(TextView(ctx).apply { text = infoText; textSize = 11f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0) })
+            anime.genres?.take(3)?.joinToString(", ")?.let { col.addView(TextView(ctx).apply { text = it; textSize = 10f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0) }) }
+            addView(col)
+            addView(TextView(ctx).apply { text = ">"; textSize = 16f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) })
+        }
+    }
+
+    private fun showAnimeDetailDialog(ctx: Context, d: Float, anime: RaghavAnimeFeatures.DiscoverResult) {
+        fun Int.dp() = (this * d).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "Loading..."; textSize = 14f; setTextColor(cTextDim); setPadding(0, 8.dp(), 0, 8.dp()) })
+        scroll.addView(layout)
+        val dialog = AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Close") { _, _ -> }.create()
+        dialog.show()
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                val detail = withContext(Dispatchers.IO) { RaghavAnimeFeatures.fetchAnimeDetail(anime.id) }
+                layout.removeAllViews()
+                if (detail == null) {
+                    layout.addView(TextView(ctx).apply { text = "Failed to load details"; textSize = 14f; setTextColor(cWarning) })
+                    return@launch
+                }
+                // Poster + title
+                val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 12.dp()) }
+                header.addView(ImageView(ctx).apply {
+                    layoutParams = LinearLayout.LayoutParams(80.dp(), 112.dp())
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    CoroutineScope(Dispatchers.Main).launch {
+                        try { val bmp = withContext(Dispatchers.IO) { android.graphics.BitmapFactory.decodeStream(java.net.URL(detail.posterUrl).openStream()) }; setImageBitmap(bmp) } catch (_: Exception) {}
+                    }
+                })
+                val titleCol = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(12.dp(), 0, 0, 0); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+                titleCol.addView(TextView(ctx).apply { text = detail.title; textSize = 16f; setTextColor(cText); setTypeface(typeface, Typeface.BOLD); maxLines = 3 })
+                detail.romajiTitle?.let { titleCol.addView(TextView(ctx).apply { text = it; textSize = 12f; setTextColor(cTextDim); setPadding(0, 2.dp(), 0, 0); maxLines = 1 }) }
+                val metaParts = mutableListOf<String>()
+                detail.year?.let { metaParts.add(it.toString()) }
+                detail.format?.let { metaParts.add(it) }
+                detail.status?.let { metaParts.add(it.replace("_", " ").lowercase()) }
+                detail.episodes?.let { metaParts.add("${it} eps") }
+                detail.score?.let { metaParts.add("%.1f/10".format(it / 10)) }
+                val metaText = metaParts.joinToString(" - ")
+                if (metaText.isNotEmpty()) titleCol.addView(TextView(ctx).apply { text = metaText; textSize = 12f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 0) })
+                header.addView(titleCol)
+                layout.addView(header)
+
+                // Genres
+                detail.genres?.let {
+                    layout.addView(TextView(ctx).apply { text = "Genres: ${it.joinToString(", ")}"; textSize = 12f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 8.dp()) })
+                }
+
+                // Synopsis
+                detail.synopsis?.let {
+                    layout.addView(TextView(ctx).apply { text = "Synopsis"; textSize = 13f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 8.dp(), 0, 4.dp()) })
+                    layout.addView(TextView(ctx).apply { text = it.take(500) + if (it.length > 500) "..." else ""; textSize = 12f; setTextColor(cTextSub); setPadding(0, 0, 0, 12.dp()) })
+                }
+
+                // Watch Now button
+                layout.addView(Button(ctx).apply {
+                    text = "WATCH NOW"; setTextColor(Color.WHITE); textSize = 14f; setTypeface(typeface, Typeface.BOLD)
+                    background = GradientDrawable().apply { cornerRadius = 12 * d; setColor(cAccent) }
+                    setPadding(0, 16.dp(), 0, 16.dp())
+                    setOnClickListener {
+                        dialog.dismiss()
+                        // Navigate to the anime in RaghavAnime
+                        try {
+                            val intent = android.content.Intent(ctx, com.lagradost.cloudstream3.MainActivity::class.java).apply {
+                                action = android.content.Intent.ACTION_VIEW
+                                data = android.net.Uri.parse("https://graphql.anilist.co/info/${detail.id}")
+                                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            ctx.startActivity(intent)
+                        } catch (_: Exception) {
+                            Toast.makeText(ctx, "Open RaghavAnime and search for: ${detail.title}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                })
+
             } catch (e: Exception) {
                 layout.removeAllViews()
                 layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
