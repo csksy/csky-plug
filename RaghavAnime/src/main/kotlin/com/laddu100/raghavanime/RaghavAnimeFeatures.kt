@@ -94,11 +94,11 @@ object RaghavAnimeFeatures {
         } catch (_: Exception) { emptyList() }
     }
 
-    suspend fun discoverAnime(query: String? = null, genre: String? = null, sortBy: String = "POPULARITY_DESC", page: Int = 1): DiscoverPage {
+    suspend fun discoverAnime(query: String? = null, genres: List<String> = emptyList(), sortBy: String = "POPULARITY_DESC", page: Int = 1): DiscoverPage {
         return try {
-            val gqlQuery = "query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: [String], ${'$'}sort: [MediaSort]) { Page(page: ${'$'}page, perPage: ${'$'}perPage) { pageInfo { currentPage hasNextPage lastPage } media(type: ANIME, search: ${'$'}search, genre_in: ${'$'}genre, sort: ${'$'}sort) { id title { english romaji } coverImage { extraLarge large } averageScore genres seasonYear format episodes description(asHtml: false) } } }"
+            val gqlQuery = "query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: [String], ${'$'}sort: [MediaSort]) { Page(page: ${'$'}page, perPage: ${'$'}perPage) { pageInfo { currentPage hasNextPage lastPage } media(type: ANIME, search: ${'$'}search, genre_in: ${'$'}genre, sort: ${'$'}sort, isAdult: false) { id title { english romaji } coverImage { extraLarge large } averageScore genres seasonYear format episodes description(asHtml: false) } } }"
             val variables = mutableMapOf<String, Any?>("page" to page, "perPage" to 10, "sort" to listOf(sortBy))
-            variables["genre"] = if (genre != null && genre != "Any") listOf(genre) else null
+            if (genres.isNotEmpty()) variables["genre"] = genres
             if (query != null && query.isNotBlank()) variables["search"] = query
             val responseText = anilistQuery(gqlQuery, variables)
             val response = parseJson<AniListResponse>(responseText)
@@ -144,15 +144,15 @@ object RaghavAnimeFeatures {
     }
 
     suspend fun advancedSearch(
-        search: String? = null, genres: List<String> = emptyList(), tag: String? = null,
-        year: Int? = null, season: String? = null, format: String? = null,
+        search: String? = null, genres: List<String> = emptyList(), tags: List<String> = emptyList(),
+        year: Int? = null, season: String? = null, formats: List<String> = emptyList(),
         status: String? = null, sortBy: String = "POPULARITY_DESC", page: Int = 1
     ): DiscoverPage {
         return try {
-            val gqlQuery = """query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: [String], ${'$'}tag: String, ${'$'}sort: [MediaSort], ${'$'}year: Int, ${'$'}season: MediaSeason, ${'$'}format: MediaFormat, ${'$'}status: MediaStatus) {
+            val gqlQuery = """query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: [String], ${'$'}tag: [String], ${'$'}sort: [MediaSort], ${'$'}year: Int, ${'$'}season: MediaSeason, ${'$'}format: [MediaFormat], ${'$'}status: MediaStatus) {
                 Page(page: ${'$'}page, perPage: ${'$'}perPage) {
                     pageInfo { currentPage hasNextPage lastPage }
-                    media(type: ANIME, search: ${'$'}search, genre_in: ${'$'}genre, tag: ${'$'}tag, sort: ${'$'}sort, seasonYear: ${'$'}year, season: ${'$'}season, format: ${'$'}format, status: ${'$'}status, isAdult: false) {
+                    media(type: ANIME, search: ${'$'}search, genre_in: ${'$'}genre, tag_in: ${'$'}tag, sort: ${'$'}sort, seasonYear: ${'$'}year, season: ${'$'}season, format_in: ${'$'}format, status: ${'$'}status, isAdult: false) {
                         id title { english romaji } coverImage { extraLarge large } averageScore genres seasonYear format episodes description(asHtml: false)
                     }
                 }
@@ -160,10 +160,10 @@ object RaghavAnimeFeatures {
             val variables = mutableMapOf<String, Any?>("page" to page, "perPage" to 10, "sort" to listOf(sortBy))
             if (search?.isNotBlank() == true) variables["search"] = search
             if (genres.isNotEmpty()) variables["genre"] = genres
-            if (tag?.isNotBlank() == true && tag != "Any") variables["tag"] = tag
+            if (tags.isNotEmpty()) variables["tag"] = tags
             if (year != null) variables["year"] = year
             if (season != null && season != "Any") variables["season"] = season
-            if (format != null && format != "Any") variables["format"] = format
+            if (formats.isNotEmpty()) variables["format"] = formats
             if (status != null && status != "Any") variables["status"] = status
             val responseText = anilistQuery(gqlQuery, variables)
             val response = parseJson<AniListResponse>(responseText)

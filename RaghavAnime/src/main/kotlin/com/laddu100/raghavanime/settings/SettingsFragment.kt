@@ -19,6 +19,9 @@ import androidx.appcompat.widget.SwitchCompat
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.utils.AppContextUtils.loadSearchResult
+import com.laddu100.raghavanime.RaghavAnime
 import com.laddu100.raghavanime.RaghavAnimeFeatures
 import com.laddu100.raghavanime.RaghavAnimeFeatures.CustomProfile
 import com.laddu100.raghavanime.RaghavAnimeFeatures.DiscoverResult
@@ -319,9 +322,11 @@ class SettingsFragment : DialogFragment() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
-        layout.addView(TextView(ctx).apply { text = "Genre"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
-        val genreSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableGenres) }
-        layout.addView(genreSpinner)
+        // Genre (multi-select)
+        val selectedGenres = mutableSetOf<String>()
+        layout.addView(TextView(ctx).apply { text = "Genres"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val genreBtn = multiSelectButton(ctx, "Genres", RaghavAnimeFeatures.availableGenres.filter { it != "Any" }, selectedGenres, d)
+        layout.addView(genreBtn)
         layout.addView(TextView(ctx).apply { text = "Sort By"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
         val sortSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableSorts.map { it.second }) }
         layout.addView(sortSpinner)
@@ -330,13 +335,12 @@ class SettingsFragment : DialogFragment() {
             setOnClickListener { dialog?.dismiss(); showAdvancedSearchDialog(ctx, d) } })
         scroll.addView(layout)
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Search") { _, _ ->
-            val genre = RaghavAnimeFeatures.availableGenres[genreSpinner.selectedItemPosition]
             val sortBy = RaghavAnimeFeatures.availableSorts[sortSpinner.selectedItemPosition].first
             val query = searchInput.text?.toString()?.trim()?.takeIf { it.isNotBlank() }
-            showDiscoverResults(ctx, d, query, genre, sortBy, 1) }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
+            showDiscoverResults(ctx, d, query, selectedGenres.toList(), sortBy, 1) }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
-    private fun showDiscoverResults(ctx: Context, d: Float, query: String?, genre: String, sortBy: String, page: Int) {
+    private fun showDiscoverResults(ctx: Context, d: Float, query: String?, genres: List<String>, sortBy: String, page: Int) {
         fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
         val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
@@ -346,7 +350,7 @@ class SettingsFragment : DialogFragment() {
         dialog.show()
         CoroutineScope(Dispatchers.Main).launch {
             try {
-                val pageData = withContext(Dispatchers.IO) { RaghavAnimeFeatures.discoverAnime(query, genre, sortBy, page) }
+                val pageData = withContext(Dispatchers.IO) { RaghavAnimeFeatures.discoverAnime(query, genres, sortBy, page) }
                 layout.removeAllViews()
                 if (pageData.results.isEmpty()) {
                     layout.addView(TextView(ctx).apply { text = "No results found"; textSize = 14f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp()) })
@@ -355,24 +359,24 @@ class SettingsFragment : DialogFragment() {
                 // Page info bar with page navigation
                 val pageBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 8.dp()) }
                 if (page > 1) {
-                    pageBar.addView(Button(ctx).apply { text = "< Prev"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page - 1) } })
+                    pageBar.addView(Button(ctx).apply { text = "< Prev"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genres, sortBy, page - 1) } })
                 }
                 pageBar.addView(TextView(ctx).apply { text = "  Page ${pageData.currentPage} / ${pageData.lastPage}  "; textSize = 13f; setTextColor(cTextSub); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
                 if (pageData.hasNextPage) {
-                    pageBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page + 1) } })
+                    pageBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genres, sortBy, page + 1) } })
                 }
                 layout.addView(pageBar)
                 layout.addView(TextView(ctx).apply { text = "${pageData.results.size} results"; textSize = 12f; setTextColor(cTextDim); setPadding(0, 0, 0, 8.dp()) })
 
                 for (anime in pageData.results) {
-                    layout.addView(resultCard(ctx, anime, d, dialog, SearchContext.Discover(query, genre, sortBy, page)))
+                    layout.addView(resultCard(ctx, anime, d, dialog, SearchContext.Discover(query, genres, sortBy, page)))
                 }
 
                 // Bottom navigation
                 if (pageData.hasNextPage || page > 1) {
                     val bottomBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, 12.dp(), 0, 8.dp()) }
-                    if (page > 1) bottomBar.addView(Button(ctx).apply { text = "< Previous"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page - 1) } })
-                    if (pageData.hasNextPage) bottomBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genre, sortBy, page + 1) } })
+                    if (page > 1) bottomBar.addView(Button(ctx).apply { text = "< Previous"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genres, sortBy, page - 1) } })
+                    if (pageData.hasNextPage) bottomBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showDiscoverResults(ctx, d, query, genres, sortBy, page + 1) } })
                     layout.addView(bottomBar)
                 }
             } catch (e: Exception) {
@@ -423,8 +427,8 @@ class SettingsFragment : DialogFragment() {
 
     private sealed class SearchContext {
         abstract val page: Int
-        data class Discover(val query: String?, val genre: String, val sortBy: String, override val page: Int) : SearchContext()
-        data class Advanced(val search: String?, val genre: String?, val tag: String?, val year: Int?, val season: String, val format: String, val status: String, val sortBy: String, override val page: Int) : SearchContext()
+        data class Discover(val query: String?, val genres: List<String>, val sortBy: String, override val page: Int) : SearchContext()
+        data class Advanced(val search: String?, val genres: List<String>, val tags: List<String>, val year: Int?, val season: String, val formats: List<String>, val status: String, val sortBy: String, override val page: Int) : SearchContext()
     }
     private var lastSearchContext: SearchContext? = null
 
@@ -440,8 +444,8 @@ class SettingsFragment : DialogFragment() {
             .setNeutralButton("Back to Results") { _, _ ->
                 val sc = lastSearchContext
                 when (sc) {
-                    is SearchContext.Discover -> showDiscoverResults(ctx, d, sc.query, sc.genre, sc.sortBy, sc.page)
-                    is SearchContext.Advanced -> showAdvancedResults(ctx, d, sc.search, sc.genre, sc.tag, sc.year, sc.season, sc.format, sc.status, sc.sortBy, sc.page)
+                    is SearchContext.Discover -> showDiscoverResults(ctx, d, sc.query, sc.genres, sc.sortBy, sc.page)
+                    is SearchContext.Advanced -> showAdvancedResults(ctx, d, sc.search, sc.genres, sc.tags, sc.year, sc.season, sc.formats, sc.status, sc.sortBy, sc.page)
                     null -> {}
                 }
             }
@@ -489,9 +493,10 @@ class SettingsFragment : DialogFragment() {
                     layout.addView(TextView(ctx).apply { text = it.take(500) + if (it.length > 500) "..." else ""; textSize = 12f; setTextColor(cTextSub); setPadding(0, 0, 0, 12.dp()) })
                 }
 
-                // Watch Now button — searches ONLY in RaghavAnime plugin (not global search)
-                // Temporarily sets CloudStream's search_pref_providers to ["RaghavAnime"],
-                // launches the search intent, then restores the old selection after a delay.
+                // Watch Now button — searches WITHIN the RaghavAnime plugin directly.
+                // Calls RaghavAnime.search() in-process, shows results in a dialog, then
+                // loads the selected result via loadSearchResult(). No global search, no
+                // disabling other plugins.
                 layout.addView(Button(ctx).apply {
                     text = "WATCH NOW"; setTextColor(Color.WHITE); textSize = 14f; setTypeface(typeface, Typeface.BOLD)
                     background = GradientDrawable().apply { cornerRadius = 12 * d; setColor(cAccent) }
@@ -499,29 +504,7 @@ class SettingsFragment : DialogFragment() {
                     setOnClickListener {
                         try { dialog.dismiss() } catch (_: Exception) {}
                         try { this@SettingsFragment.dismiss() } catch (_: Exception) {}
-                        val title = detail.title
-                        try {
-                            // 1. Save the user's currently selected search providers
-                            val savedProviders = getSearchSelectedProviders()
-                            // 2. Restrict search to ONLY RaghavAnime
-                            setSearchSelectedProviders(listOf("RaghavAnime"))
-                            // 3. Launch the search intent (CloudStream reads nextSearchQuery + navigates to search tab)
-                            val encoded = java.net.URLEncoder.encode(title, "UTF-8")
-                            val intent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("cloudstreamsearch://$encoded")
-                            )
-                            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                            ctx.startActivity(intent)
-                            // 4. Restore the user's original selection after 15 seconds
-                            //    (gives the search enough time to load RaghavAnime results)
-                            Thread {
-                                try { Thread.sleep(15000) } catch (_: Exception) {}
-                                setSearchSelectedProviders(savedProviders)
-                            }.start()
-                        } catch (_: Exception) {
-                            Toast.makeText(ctx, "Search for: ${detail.title} in RaghavAnime", Toast.LENGTH_LONG).show()
-                        }
+                        showRaghavAnimeSearchResults(ctx, d, detail.title)
                     }
                 })
 
@@ -529,6 +512,66 @@ class SettingsFragment : DialogFragment() {
                 layout.removeAllViews()
                 layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
             }
+        }
+    }
+
+    // =================== WATCH NOW (in-plugin search) ===================
+    private fun showRaghavAnimeSearchResults(ctx: Context, d: Float, query: String) {
+        fun Int.dp() = (this * d).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "Searching in RaghavAnime..."; textSize = 14f; setTextColor(cTextDim); setPadding(0, 8.dp(), 0, 8.dp()) })
+        scroll.addView(layout)
+        val dialog = AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Close") { _, _ -> }.create()
+        dialog.show()
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                // Call RaghavAnime's search() directly — no global search, no other plugins affected
+                val results = withContext(Dispatchers.IO) { RaghavAnime().search(query) }
+                layout.removeAllViews()
+                if (results.isEmpty()) {
+                    layout.addView(TextView(ctx).apply { text = "No results found in RaghavAnime for \"$query\""; textSize = 14f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp()) })
+                    return@launch
+                }
+                layout.addView(TextView(ctx).apply { text = "Found ${results.size} results in RaghavAnime:"; textSize = 13f; setTextColor(cAccent); setPadding(0, 0, 0, 8.dp()) })
+                for (result in results) {
+                    layout.addView(searchResultCard(ctx, result, d, dialog))
+                }
+            } catch (e: Exception) {
+                layout.removeAllViews()
+                layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
+            }
+        }
+    }
+
+    private fun searchResultCard(ctx: Context, result: SearchResponse, d: Float, parentDialog: AlertDialog): LinearLayout {
+        fun Int.dp() = (this * d).toInt()
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
+            background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 10 * d; setColor(cCard) }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 6.dp() }
+            isClickable = true; isFocusable = true
+            setOnClickListener {
+                parentDialog.dismiss()
+                // Load the result directly — navigates to the result page within CloudStream
+                try { loadSearchResult(result) } catch (_: Exception) {}
+            }
+            // Poster thumbnail
+            addView(ImageView(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams(48.dp(), 64.dp())
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                result.posterUrl?.let { url ->
+                    CoroutineScope(Dispatchers.Main).launch {
+                        try {
+                            val bitmap = withContext(Dispatchers.IO) { android.graphics.BitmapFactory.decodeStream(java.net.URL(url).openStream()) }
+                            setImageBitmap(bitmap)
+                        } catch (_: Exception) {}
+                    }
+                }
+            })
+            // Title
+            addView(TextView(ctx).apply { text = result.name; textSize = 14f; setTextColor(cText); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); setPadding(8.dp(), 0, 0, 0); setTypeface(typeface, Typeface.BOLD) })
+            addView(TextView(ctx).apply { text = ">"; textSize = 16f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) })
         }
     }
 
@@ -540,19 +583,42 @@ class SettingsFragment : DialogFragment() {
         layout.addView(TextView(ctx).apply { text = "Advanced Search"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 2.dp()) })
         layout.addView(TextView(ctx).apply { text = "Experimental feature (may not work)"; textSize = 11f; setTextColor(Color.parseColor("#FFD54F")); setPadding(0, 0, 0, 12.dp()) })
 
-        // Search input
+        // Search input + suggestions (same as Discover search)
         layout.addView(TextView(ctx).apply { text = "Search (optional)"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 2.dp()) })
-        val searchInput = EditText(ctx).apply { hint = "Anime name"; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()) }
+        val searchInput = EditText(ctx).apply { hint = "Type anime name for suggestions"; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()) }
         layout.addView(searchInput)
+        val suggestionsContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 8.dp(), 0, 0) }
+        layout.addView(suggestionsContainer)
+        var searchJob: kotlinx.coroutines.Job? = null
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                searchJob?.cancel()
+                val query = s?.toString()?.trim() ?: ""
+                if (query.length < 3) { suggestionsContainer.removeAllViews(); return }
+                searchJob = CoroutineScope(Dispatchers.Main).launch {
+                    val suggestions = withContext(Dispatchers.IO) { RaghavAnimeFeatures.searchSuggestions(query) }
+                    suggestionsContainer.removeAllViews()
+                    for (anime in suggestions.take(5)) {
+                        suggestionsContainer.addView(TextView(ctx).apply { text = anime.title; textSize = 13f; setTextColor(cTextSub); setPadding(8.dp(), 6.dp(), 8.dp(), 6.dp()); isClickable = true
+                            setOnClickListener { searchInput.setText(anime.title); suggestionsContainer.removeAllViews() } })
+                    }
+                }
+            }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        })
 
-        // Genre spinner (single-select dropdown, like normal search)
-        layout.addView(TextView(ctx).apply { text = "Genre"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
-        val genreSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, listOf("Any")) }
-        layout.addView(genreSpinner)
+        // Genres (multi-select, loaded from AniList GenreCollection)
+        val selectedGenres = mutableSetOf<String>()
+        val allGenres = mutableListOf<String>()
+        layout.addView(TextView(ctx).apply { text = "Genres"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val genreBtn = multiSelectButton(ctx, "Genres", allGenres, selectedGenres, d)
+        layout.addView(genreBtn)
         CoroutineScope(Dispatchers.Main).launch {
             val genres = withContext(Dispatchers.IO) { RaghavAnimeFeatures.fetchGenres() }
             if (genres.isNotEmpty()) {
-                genreSpinner.adapter = darkAdapter(ctx, listOf("Any") + genres)
+                allGenres.clear(); allGenres.addAll(genres)
+                (genreBtn.getChildAt(0) as? TextView)?.text = formatMultiSelectLabel("Genres", selectedGenres)
             }
         }
 
@@ -568,19 +634,24 @@ class SettingsFragment : DialogFragment() {
         val seasonSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableSeasons) }
         layout.addView(seasonSpinner)
 
-        // Format
-        layout.addView(TextView(ctx).apply { text = "Format"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
-        val formatSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableFormats) }
-        layout.addView(formatSpinner)
+        // Formats (multi-select)
+        val selectedFormats = mutableSetOf<String>()
+        val formatOptions = RaghavAnimeFeatures.availableFormats.filter { it != "Any" }
+        layout.addView(TextView(ctx).apply { text = "Formats"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val formatBtn = multiSelectButton(ctx, "Formats", formatOptions, selectedFormats, d)
+        layout.addView(formatBtn)
 
-        // Tags spinner (loaded from AniList MediaTagCollection, same as anilist.co search)
-        layout.addView(TextView(ctx).apply { text = "Tag"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
-        val tagSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, listOf("Any")) }
-        layout.addView(tagSpinner)
+        // Tags (multi-select, loaded from AniList MediaTagCollection)
+        val selectedTags = mutableSetOf<String>()
+        val allTags = mutableListOf<String>()
+        layout.addView(TextView(ctx).apply { text = "Tags"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val tagBtn = multiSelectButton(ctx, "Tags", allTags, selectedTags, d)
+        layout.addView(tagBtn)
         CoroutineScope(Dispatchers.Main).launch {
             val tags = withContext(Dispatchers.IO) { RaghavAnimeFeatures.fetchTags() }
             if (tags.isNotEmpty()) {
-                tagSpinner.adapter = darkAdapter(ctx, listOf("Any") + tags.map { it.name })
+                allTags.clear(); allTags.addAll(tags.map { it.name })
+                (tagBtn.getChildAt(0) as? TextView)?.text = formatMultiSelectLabel("Tags", selectedTags)
             }
         }
 
@@ -597,18 +668,15 @@ class SettingsFragment : DialogFragment() {
         scroll.addView(layout)
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Search") { _, _ ->
             val search = searchInput.text?.toString()?.trim()?.takeIf { it.isNotBlank() }
-            val genre = if (genreSpinner.selectedItemPosition > 0) genreSpinner.selectedItem.toString() else null
-            val tag = if (tagSpinner.selectedItemPosition > 0) tagSpinner.selectedItem.toString() else null
             val year = if (yearSpinner.selectedItemPosition > 0) yearSpinner.selectedItem.toString().toIntOrNull() else null
             val season = RaghavAnimeFeatures.availableSeasons[seasonSpinner.selectedItemPosition]
-            val format = RaghavAnimeFeatures.availableFormats[formatSpinner.selectedItemPosition]
             val status = RaghavAnimeFeatures.availableStatus[statusSpinner.selectedItemPosition]
             val sortBy = RaghavAnimeFeatures.availableSorts[sortSpinner.selectedItemPosition].first
-            showAdvancedResults(ctx, d, search, genre, tag, year, season, format, status, sortBy, 1)
+            showAdvancedResults(ctx, d, search, selectedGenres.toList(), selectedTags.toList(), year, season, selectedFormats.toList(), status, sortBy, 1)
         }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
-    private fun showAdvancedResults(ctx: Context, d: Float, search: String?, genre: String?, tag: String?, year: Int?, season: String, format: String, status: String, sortBy: String, page: Int) {
+    private fun showAdvancedResults(ctx: Context, d: Float, search: String?, genres: List<String>, tags: List<String>, year: Int?, season: String, formats: List<String>, status: String, sortBy: String, page: Int) {
         fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
         val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
@@ -618,26 +686,25 @@ class SettingsFragment : DialogFragment() {
         dialog.show()
         CoroutineScope(Dispatchers.Main).launch {
             try {
-                val genreList = if (genre != null && genre != "Any") listOf(genre) else emptyList()
-                val pageData = withContext(Dispatchers.IO) { RaghavAnimeFeatures.advancedSearch(search, genreList, tag, year, season, format, status, sortBy, page) }
+                val pageData = withContext(Dispatchers.IO) { RaghavAnimeFeatures.advancedSearch(search, genres, tags, year, season, formats, status, sortBy, page) }
                 layout.removeAllViews()
                 if (pageData.results.isEmpty()) {
                     layout.addView(TextView(ctx).apply { text = "No results found"; textSize = 14f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp()) })
                     return@launch
                 }
                 val pageBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 8.dp()) }
-                if (page > 1) pageBar.addView(Button(ctx).apply { text = "< Prev"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genre, tag, year, season, format, status, sortBy, page - 1) } })
+                if (page > 1) pageBar.addView(Button(ctx).apply { text = "< Prev"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tags, year, season, formats, status, sortBy, page - 1) } })
                 pageBar.addView(TextView(ctx).apply { text = "  Page ${pageData.currentPage} / ${pageData.lastPage}  "; textSize = 13f; setTextColor(cTextSub); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
-                if (pageData.hasNextPage) pageBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genre, tag, year, season, format, status, sortBy, page + 1) } })
+                if (pageData.hasNextPage) pageBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tags, year, season, formats, status, sortBy, page + 1) } })
                 layout.addView(pageBar)
                 layout.addView(TextView(ctx).apply { text = "${pageData.results.size} results"; textSize = 12f; setTextColor(cTextDim); setPadding(0, 0, 0, 8.dp()) })
                 for (anime in pageData.results) {
-                    layout.addView(resultCard(ctx, anime, d, dialog, SearchContext.Advanced(search, genre, tag, year, season, format, status, sortBy, page)))
+                    layout.addView(resultCard(ctx, anime, d, dialog, SearchContext.Advanced(search, genres, tags, year, season, formats, status, sortBy, page)))
                 }
                 if (pageData.hasNextPage || page > 1) {
                     val bottomBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, 12.dp(), 0, 8.dp()) }
-                    if (page > 1) bottomBar.addView(Button(ctx).apply { text = "< Previous"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genre, tag, year, season, format, status, sortBy, page - 1) } })
-                    if (pageData.hasNextPage) bottomBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genre, tag, year, season, format, status, sortBy, page + 1) } })
+                    if (page > 1) bottomBar.addView(Button(ctx).apply { text = "< Previous"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tags, year, season, formats, status, sortBy, page - 1) } })
+                    if (pageData.hasNextPage) bottomBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tags, year, season, formats, status, sortBy, page + 1) } })
                     layout.addView(bottomBar)
                 }
             } catch (e: Exception) {
@@ -648,26 +715,39 @@ class SettingsFragment : DialogFragment() {
     }
 
     // =================== HELPERS ===================
-    /**
-     * Reads CloudStream's currently selected search providers (the list of API names
-     * that the search tab filters by). Mirrors DataStoreHelper.searchPreferenceProviders,
-     * which is stored at "${currentAccount}/search_pref_providers".
-     * currentAccount = DataStoreHelper.selectedKeyIndex.toString() (default "0"),
-     * and selectedKeyIndex is stored at "data_store_helper/account_key_index".
-     */
-    private fun getSearchSelectedProviders(): List<String> {
-        return try {
-            val accountIndex: Int = getKey<Int>("data_store_helper/account_key_index") ?: 0
-            val accountKey = accountIndex.toString()
-            getKey<List<String>>("$accountKey/search_pref_providers") ?: emptyList()
-        } catch (_: Exception) { emptyList() }
+    /** Creates a multi-select button that opens a checkbox dialog. Options list is read live
+     *  so it works even when options are loaded asynchronously (e.g. from AniList). */
+    private fun multiSelectButton(ctx: Context, label: String, options: List<String>, selected: MutableSet<String>, d: Float): LinearLayout {
+        fun Int.dp() = (this * d).toInt()
+        val titleView = TextView(ctx).apply { text = formatMultiSelectLabel(label, selected); textSize = 14f; setTextColor(cText); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
+            background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 8 * d; setColor(cCard) }
+            isClickable = true; isFocusable = true
+            addView(titleView)
+            addView(TextView(ctx).apply { text = if (selected.isEmpty()) "+" else "Edit"; textSize = 13f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) })
+            setOnClickListener {
+                val checksContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+                val checks = mutableMapOf<String, CheckBox>()
+                for (opt in options) {
+                    val cb = CheckBox(ctx).apply { text = opt; setTextColor(cText); textSize = 13f; isChecked = opt in selected }
+                    checks[opt] = cb
+                    checksContainer.addView(cb)
+                }
+                val checksScroll = ScrollView(ctx).apply { addView(checksContainer); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 300.dp()) }
+                AlertDialog.Builder(ctx).setTitle("Select $label").setView(checksScroll)
+                    .setPositiveButton("OK") { _, _ ->
+                        selected.clear()
+                        for ((opt, cb) in checks) if (cb.isChecked) selected.add(opt)
+                        titleView.text = formatMultiSelectLabel(label, selected)
+                    }
+                    .setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
+            }
+        }
     }
-    private fun setSearchSelectedProviders(providers: List<String>) {
-        try {
-            val accountIndex: Int = getKey<Int>("data_store_helper/account_key_index") ?: 0
-            val accountKey = accountIndex.toString()
-            setKey("$accountKey/search_pref_providers", providers)
-        } catch (_: Exception) {}
+
+    private fun formatMultiSelectLabel(label: String, selected: Set<String>): String {
+        return if (selected.isEmpty()) "$label: Any" else "$label: ${selected.joinToString(", ")}"
     }
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
