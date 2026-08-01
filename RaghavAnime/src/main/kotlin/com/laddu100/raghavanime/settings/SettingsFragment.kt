@@ -715,8 +715,9 @@ class SettingsFragment : DialogFragment() {
     }
 
     // =================== HELPERS ===================
-    /** Creates a multi-select button that opens a checkbox dialog. Options list is read live
-     *  so it works even when options are loaded asynchronously (e.g. from AniList). */
+    /** Creates a multi-select button that opens a checkbox dialog with a search filter.
+     *  Options list is read live so it works even when options are loaded asynchronously
+     *  (e.g. from AniList). The search box lets users filter among hundreds of tags/genres. */
     private fun multiSelectButton(ctx: Context, label: String, options: List<String>, selected: MutableSet<String>, d: Float): LinearLayout {
         fun Int.dp() = (this * d).toInt()
         val titleView = TextView(ctx).apply { text = formatMultiSelectLabel(label, selected); textSize = 14f; setTextColor(cText); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
@@ -727,18 +728,42 @@ class SettingsFragment : DialogFragment() {
             addView(titleView)
             addView(TextView(ctx).apply { text = if (selected.isEmpty()) "+" else "Edit"; textSize = 13f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) })
             setOnClickListener {
-                val checksContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+                // Dialog layout: search bar + scrollable checkbox list
+                val dialogLayout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+                // Search filter
+                val searchInput = EditText(ctx).apply { hint = "Search $label..."; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); textSize = 13f }
+                dialogLayout.addView(searchInput)
+                // Checkbox container
+                val checksContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 8.dp(), 0, 0) }
                 val checks = mutableMapOf<String, CheckBox>()
-                for (opt in options) {
-                    val cb = CheckBox(ctx).apply { text = opt; setTextColor(cText); textSize = 13f; isChecked = opt in selected }
-                    checks[opt] = cb
-                    checksContainer.addView(cb)
+                // Show only options matching the search query
+                fun rebuildList(filter: String) {
+                    checksContainer.removeAllViews()
+                    checks.clear()
+                    val filtered = if (filter.isBlank()) options else options.filter { it.contains(filter, ignoreCase = true) }
+                    for (opt in filtered) {
+                        val cb = CheckBox(ctx).apply { text = opt; setTextColor(cText); textSize = 13f; isChecked = opt in selected }
+                        checks[opt] = cb
+                        checksContainer.addView(cb)
+                    }
+                    if (filtered.isEmpty()) {
+                        checksContainer.addView(TextView(ctx).apply { text = "No matching $label"; textSize = 12f; setTextColor(cTextDim); setPadding(0, 8.dp(), 0, 8.dp()) })
+                    }
                 }
+                rebuildList("")
+                searchInput.addTextChangedListener(object : TextWatcher {
+                    override fun afterTextChanged(s: Editable?) { rebuildList(s?.toString()?.trim() ?: "") }
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                })
                 val checksScroll = ScrollView(ctx).apply { addView(checksContainer); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 300.dp()) }
-                AlertDialog.Builder(ctx).setTitle("Select $label").setView(checksScroll)
+                dialogLayout.addView(checksScroll)
+                AlertDialog.Builder(ctx).setTitle("Select $label").setView(dialogLayout)
                     .setPositiveButton("OK") { _, _ ->
-                        selected.clear()
-                        for ((opt, cb) in checks) if (cb.isChecked) selected.add(opt)
+                        // Only update visible items — preserve selections that were filtered out
+                        for ((opt, cb) in checks) {
+                            if (cb.isChecked) selected.add(opt) else selected.remove(opt)
+                        }
                         titleView.text = formatMultiSelectLabel(label, selected)
                     }
                     .setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
