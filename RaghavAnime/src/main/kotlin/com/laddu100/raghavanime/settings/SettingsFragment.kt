@@ -21,6 +21,7 @@ import androidx.appcompat.widget.SwitchCompat
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
+import com.laddu100.raghavanime.RaghavAnimeFeatures
 
 class SettingsFragment : DialogFragment {
 
@@ -190,30 +191,70 @@ class SettingsFragment : DialogFragment {
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun showExperimentalDialog(ctx: Context, density: Float) {
         fun Int.dp() = (this * density).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
         val layout = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
         }
         layout.addView(TextView(ctx).apply {
             text = "Experimental Features"; textSize = 18f; setTextColor(cAccent)
-            setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 12.dp())
+            setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp())
+        })
+        layout.addView(TextView(ctx).apply {
+            text = "May not work properly"
+            setTextColor(cWarning); textSize = 11f
+            setPadding(0, 0, 0, 12.dp())
         })
 
-        layout.addView(toggleRow(ctx, "Smart Source Priority", isSmartSortEnabled(), density) { checked ->
-            setSmartSortEnabled(checked)
-        })
-
+        // SubDL
+        layout.addView(sectionLabel(ctx, "SUBTITLES", density))
         layout.addView(toggleRow(ctx, "SubDL English Subtitles", isSubDLEnabled(), density) { checked ->
             setSubDLEnabled(checked)
         })
 
+        // Smart Sort
+        layout.addView(sectionLabel(ctx, "SOURCE MANAGEMENT", density))
+        layout.addView(toggleRow(ctx, "Smart Source Priority", isSmartSortEnabled(), density) { checked ->
+            setSmartSortEnabled(checked)
+        })
+        layout.addView(profileSelector(ctx, density))
+
+        // Watch Time Tracker
+        layout.addView(sectionLabel(ctx, "WATCH TRACKING", density))
+        layout.addView(toggleRow(ctx, "Watch Time Tracker", RaghavAnimeFeatures.isEnabled("watch_time"), density) { checked ->
+            RaghavAnimeFeatures.setEnabled("watch_time", checked)
+        })
         layout.addView(TextView(ctx).apply {
-            text = "  Experimental - may not work properly"
-            setTextColor(cWarning); textSize = 11f
-            setPadding(16.dp(), 2.dp(), 16.dp(), 12.dp())
+            text = "  Tracks watch time per anime, shows in details"
+            setTextColor(cTextDim); textSize = 11f
+            setPadding(16.dp(), 2.dp(), 16.dp(), 8.dp())
         })
 
-        AlertDialog.Builder(ctx).setView(layout)
+        // Dual/Sub Badge
+        layout.addView(sectionLabel(ctx, "BADGES", density))
+        layout.addView(toggleRow(ctx, "Dual/Sub Badge System", RaghavAnimeFeatures.isEnabled("badges"), density) { checked ->
+            RaghavAnimeFeatures.setEnabled("badges", checked)
+        })
+        layout.addView(TextView(ctx).apply {
+            text = "  Shows sub/dub availability badges on search results"
+            setTextColor(cTextDim); textSize = 11f
+            setPadding(16.dp(), 2.dp(), 16.dp(), 8.dp())
+        })
+
+        // Recommendations
+        layout.addView(sectionLabel(ctx, "DISCOVERY", density))
+        layout.addView(toggleRow(ctx, "Anime Recommendations", RaghavAnimeFeatures.isEnabled("recommendations"), density) { checked ->
+            RaghavAnimeFeatures.setEnabled("recommendations", checked)
+        })
+        layout.addView(TextView(ctx).apply {
+            text = "  Shows recommended anime based on watch history"
+            setTextColor(cTextDim); textSize = 11f
+            setPadding(16.dp(), 2.dp(), 16.dp(), 8.dp())
+        })
+
+        scroll.addView(layout)
+
+        AlertDialog.Builder(ctx).setView(scroll)
             .setPositiveButton("Save") { _, _ -> }
             .setNegativeButton("Cancel", null)
             .create().apply {
@@ -221,6 +262,43 @@ class SettingsFragment : DialogFragment {
                 getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(cAccent)
                 getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(cTextDim)
             }
+    }
+
+    private fun profileSelector(ctx: Context, density: Float): LinearLayout {
+        fun Int.dp() = (this * density).toInt()
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8.dp(), 0, 8.dp())
+
+            addView(TextView(ctx).apply {
+                text = "Source Priority Profile"; textSize = 14f; setTextColor(cText)
+                setPadding(0, 0, 0, 4.dp())
+            })
+
+            val activeProfile = RaghavAnimeFeatures.getActiveProfile()
+            for (profile in RaghavAnimeFeatures.defaultProfiles) {
+                val radio = android.widget.RadioButton(ctx).apply {
+                    text = "${profile.name} - ${profile.description}"
+                    setTextColor(cTextSub)
+                    textSize = 12f
+                    isChecked = profile.name == activeProfile
+                    setOnCheckedChangeListener { _, checked ->
+                        if (checked) RaghavAnimeFeatures.setActiveProfile(profile.name)
+                    }
+                    setPadding(8.dp(), 4.dp(), 8.dp(), 4.dp())
+                }
+                addView(radio)
+            }
+        }
+    }
+
+    private fun sectionLabel(ctx: Context, text: String, density: Float): TextView {
+        fun Int.dp() = (this * density).toInt()
+        return TextView(ctx).apply {
+            this.text = text; textSize = 12f; setTextColor(cAccent)
+            setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.04f
+            setPadding(0, 12.dp(), 0, 4.dp())
+        }
     }
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")

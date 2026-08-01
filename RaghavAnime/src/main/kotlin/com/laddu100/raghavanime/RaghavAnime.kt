@@ -1,6 +1,7 @@
 package com.laddu100.raghavanime
 
 import com.lagradost.cloudstream3.CommonActivity.activity
+import com.laddu100.raghavanime.RaghavAnimeFeatures
 import com.laddu100.raghavanime.settings.SettingsFragment
 import com.lagradost.cloudstream3.CloudStreamApp
 import android.content.Context
@@ -36,10 +37,37 @@ class RaghavAnime : MainAPI() {
         "TRENDING" to "Trending Now",
         "POPULAR" to "Popular This Season",
         "RECENT" to "Recently Updated",
-        "TOP_RATED" to "Top Rated Series"
+        "TOP_RATED" to "Top Rated Series",
+        "WATCH_TIME" to "Continue Watching",
+        "RECOMMEND" to "Recommended For You"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        when (request.data) {
+            "WATCH_TIME" -> {
+                if (!RaghavAnimeFeatures.isEnabled("watch_time"))
+                    return newHomePageResponse(request.name, emptyList())
+                val list = RaghavAnimeFeatures.getWatchHistoryList()
+                val home = list.map { item ->
+                    newAnimeSearchResponse(item.title, item.url, TvType.Anime) {
+                        this.posterUrl = item.posterUrl
+                    }
+                }
+                return newHomePageResponse(request.name, home)
+            }
+            "RECOMMEND" -> {
+                if (!RaghavAnimeFeatures.isEnabled("recommendations"))
+                    return newHomePageResponse(request.name, emptyList())
+                val list = RaghavAnimeFeatures.getRecommendationsList()
+                val home = list.map { item ->
+                    newAnimeSearchResponse(item.title, item.url, TvType.Anime) {
+                        this.posterUrl = item.posterUrl
+                    }
+                }
+                return newHomePageResponse(request.name, home)
+            }
+        }
+
         val query = HOMEPAGE_QUERY
         val variables = mutableMapOf<String, Any?>("page" to page, "perPage" to 20)
 
@@ -204,11 +232,15 @@ class RaghavAnime : MainAPI() {
             })
         }
 
+        val watchTime = RaghavAnimeFeatures.getWatchTimeForAnime(anilistId)
+        val watchTimeStr = if (watchTime > 0 && RaghavAnimeFeatures.isEnabled("watch_time"))
+            "\n\n⏱ Watch time: ${RaghavAnimeFeatures.formatWatchTime(watchTime)}" else ""
+
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = posterUrl
             this.backgroundPosterUrl = bannerUrl
             this.year = year
-            this.plot = plot
+            this.plot = plot + watchTimeStr
             this.tags = tags
             if (animeScore != null) this.score = Score.from10((animeScore / 10).toString())
             this.showStatus = showStatus
@@ -227,6 +259,10 @@ class RaghavAnime : MainAPI() {
         val linkData = parseJson<LinkData>(data)
         val aniId = linkData.animeId
         val title = linkData.title
+
+        if (RaghavAnimeFeatures.isEnabled("watch_time")) {
+            try { RaghavAnimeFeatures.recordWatchTime(aniId, title, null, 24 * 60 * 1000L) } catch (_: Exception) {}
+        }
         val jpTitle = linkData.jpTitle
         val episode = linkData.episode
         val isDub = linkData.isDub
@@ -516,6 +552,11 @@ class RaghavAnime : MainAPI() {
                 }
             },
         )
+
+        // Record sub/dub availability
+        try {
+            RaghavAnimeFeatures.recordAvailability(aniId, hasSub = true, hasDub = true)
+        } catch (_: Exception) {}
 
         return true
     }
