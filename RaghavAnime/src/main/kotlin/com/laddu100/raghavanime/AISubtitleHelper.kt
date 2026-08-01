@@ -187,12 +187,13 @@ object AISubtitleHelper {
             else -> ""
         }
         if (apiKey.isBlank()) {
-            Log.d(TAG, "No API key for provider '$provider', skipping AI subtitles")
+            Log.e(TAG, "[$animeTitle ep$episode] No API key for provider '$provider', skipping AI subtitles")
             return
         }
 
         try {
-            Log.d(TAG, "[$animeTitle ep$episode] Starting AI subtitle generation via $provider")
+            Log.d(TAG, "[$animeTitle ep$episode] Starting AI subtitle generation via $provider (model=${getModel()})")
+            Log.d(TAG, "[$animeTitle ep$episode] Stream URL: $streamUrl")
 
             // Step 1: Download audio from stream
             val audioData = downloadAudio(streamUrl, headers)
@@ -396,9 +397,10 @@ object AISubtitleHelper {
                 .build()
 
             val audioMediaType = guessMediaType(audioData)
+            val ext = getExtension(audioMediaType)
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
-                .addFormDataPart("file", "audio$audioMediaType.extension", audioData.toRequestBody(audioMediaType.toMediaType()))
+                .addFormDataPart("file", "audio.$ext", audioData.toRequestBody(audioMediaType.toMediaType()))
                 .addFormDataPart("model", model)
                 .addFormDataPart("response_format", "verbose_json")
                 .addFormDataPart("language", "en")
@@ -413,13 +415,16 @@ object AISubtitleHelper {
 
             val response = client.newCall(request).execute()
             val responseText = response.body?.string()
-            response.close()
             if (!response.isSuccessful) {
-                Log.d(TAG, "Groq API error ${response.code}: ${responseText?.take(300)}")
+                Log.e(TAG, "Groq API error ${response.code}: ${responseText?.take(500)}")
+                response.close()
+                return null
             }
+            response.close()
+            Log.d(TAG, "Groq transcription success (${responseText?.length ?: 0} chars)")
             responseText
         } catch (e: Exception) {
-            Log.d(TAG, "Groq transcription error: ${e.message}")
+            Log.e(TAG, "Groq transcription error: ${e.message}")
             null
         }
     }
@@ -434,9 +439,10 @@ object AISubtitleHelper {
                 .build()
 
             val audioMediaType = guessMediaType(audioData)
+            val ext = getExtension(audioMediaType)
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
-                .addFormDataPart("file", "audio$audioMediaType.extension", audioData.toRequestBody(audioMediaType.toMediaType()))
+                .addFormDataPart("file", "audio.$ext", audioData.toRequestBody(audioMediaType.toMediaType()))
                 .addFormDataPart("model", model)
                 .addFormDataPart("response_format", "verbose_json")
                 .addFormDataPart("language", "en")
@@ -451,13 +457,16 @@ object AISubtitleHelper {
 
             val response = client.newCall(request).execute()
             val responseText = response.body?.string()
-            response.close()
             if (!response.isSuccessful) {
-                Log.d(TAG, "OpenAI API error ${response.code}: ${responseText?.take(300)}")
+                Log.e(TAG, "OpenAI API error ${response.code}: ${responseText?.take(500)}")
+                response.close()
+                return null
             }
+            response.close()
+            Log.d(TAG, "OpenAI transcription success (${responseText?.length ?: 0} chars)")
             responseText
         } catch (e: Exception) {
-            Log.d(TAG, "OpenAI transcription error: ${e.message}")
+            Log.e(TAG, "OpenAI transcription error: ${e.message}")
             null
         }
     }
@@ -493,6 +502,19 @@ object AISubtitleHelper {
             return "video/mp2t"
         }
         return "audio/mpeg"
+    }
+
+    /** Returns the file extension for a given media type. */
+    private fun getExtension(mediaType: String): String {
+        return when (mediaType) {
+            "audio/aac" -> "aac"
+            "audio/mpeg" -> "mp3"
+            "audio/mp4" -> "mp4"
+            "audio/wav" -> "wav"
+            "audio/ogg" -> "ogg"
+            "video/mp2t" -> "ts"
+            else -> "mp3"
+        }
     }
 
     // ===== VTT Generation =====
