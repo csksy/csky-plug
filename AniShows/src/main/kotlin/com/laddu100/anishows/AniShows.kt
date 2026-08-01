@@ -165,7 +165,8 @@ class AniShows : MainAPI() {
         val tmdbId: Int,
         val mediaType: String,
         val season: Int,
-        val episode: Int
+        val episode: Int,
+        val title: String = ""
     )
 
     private fun getImageUrl(path: String?): String? {
@@ -259,7 +260,7 @@ class AniShows : MainAPI() {
             val seasonData = parseJson<TmdbSeasonResponse>(seasonText)
             seasonData.episodes?.forEach { ep ->
                 val epNum = ep.episode_number ?: return@forEach
-                episodes.add(newEpisode(EpisodeData(tmdbId, "tv", seasonNum, epNum).toJson()) {
+                episodes.add(newEpisode(EpisodeData(tmdbId, "tv", seasonNum, epNum, title).toJson()) {
                     this.episode = epNum
                     this.season = seasonNum
                     this.name = ep.name ?: "Episode $epNum"
@@ -291,7 +292,7 @@ class AniShows : MainAPI() {
         val movie = parseJson<TmdbMovieResponse>(text)
         val title = movie.title ?: movie.original_title ?: return null
 
-        return newMovieLoadResponse(title, url, TvType.Movie, EpisodeData(tmdbId, "movie", 0, 0).toJson()) {
+        return newMovieLoadResponse(title, url, TvType.Movie, EpisodeData(tmdbId, "movie", 0, 0, title).toJson()) {
             this.posterUrl = getImageUrl(movie.poster_path)
             this.backgroundPosterUrl = getImageUrl(movie.backdrop_path)
             this.plot = movie.overview
@@ -381,122 +382,120 @@ class AniShows : MainAPI() {
         }
 
         // Additional sources: VegaMovies, Moviesmod, TopMovies, MoviesDrive
-        try {
-            val title = fetchTmdbTitle(tmdbId, isMovie)
-            if (title.isNotBlank()) {
-                Log.d("AniShows", "searching external providers for: $title")
+        val title = epData.title
+        if (title.isNotBlank()) {
+            Log.d("AniShows", "searching external providers for: $title")
 
-                try {
-                    val vega = VegaMoviesProvider()
-                    val vegaResults = vega.search(title)
-                    val vegaMatch = vegaResults?.firstOrNull()
-                    if (vegaMatch != null) {
-                        val vegaLoad = vega.load(vegaMatch.url) as? AnimeLoadResponse
-                        if (vegaLoad != null) {
-                            val epKey = if (isMovie) DubStatus.Subbed else DubStatus.Subbed
-                            val vegaEp = vegaLoad.episodes?.get(epKey)?.find { it.episode == episode }
+            try {
+                val vega = VegaMoviesProvider()
+                val vegaResults = vega.search(title)
+                val vegaMatch = vegaResults?.firstOrNull()
+                if (vegaMatch != null) {
+                    val vegaLoad = vega.load(vegaMatch.url) as? AnimeLoadResponse
+                    if (vegaLoad != null) {
+                        if (isMovie) {
+                            vega.loadLinks(vegaLoad.url, false, subtitleCallback, callback)
+                            Log.d("AniShows", "[vegamovies] loaded (movie)")
+                            found = true
+                        } else {
+                            val vegaEp = vegaLoad.episodes?.get(DubStatus.Subbed)?.find { it.episode == episode }
                             if (vegaEp != null) {
                                 vega.loadLinks(vegaEp.data, false, subtitleCallback, callback)
                                 Log.d("AniShows", "[vegamovies] loaded")
                                 found = true
-                            } else if (isMovie) {
-                                vega.loadLinks(vegaLoad.url, false, subtitleCallback, callback)
-                                Log.d("AniShows", "[vegamovies] loaded (movie)")
-                                found = true
                             }
                         }
-                    } else {
-                        Log.d("AniShows", "[vegamovies] no match for: $title")
                     }
-                } catch (e: Exception) {
-                    Log.d("AniShows", "[vegamovies] error: ${e.message}")
+                } else {
+                    Log.d("AniShows", "[vegamovies] no match")
                 }
+            } catch (e: Exception) {
+                Log.d("AniShows", "[vegamovies] error: ${e.message}")
+            }
 
-                try {
-                    val mod = MoviesmodProvider()
-                    val modResults = mod.search(title)
-                    val modMatch = modResults?.firstOrNull()
-                    if (modMatch != null) {
-                        val modLoad = mod.load(modMatch.url) as? AnimeLoadResponse
-                        if (modLoad != null) {
-                            val epKey = if (isMovie) DubStatus.Subbed else DubStatus.Subbed
-                            val modEp = modLoad.episodes?.get(epKey)?.find { it.episode == episode }
+            try {
+                val mod = MoviesmodProvider()
+                val modResults = mod.search(title)
+                val modMatch = modResults?.firstOrNull()
+                if (modMatch != null) {
+                    val modLoad = mod.load(modMatch.url) as? AnimeLoadResponse
+                    if (modLoad != null) {
+                        if (isMovie) {
+                            mod.loadLinks(modLoad.url, false, subtitleCallback, callback)
+                            Log.d("AniShows", "[moviesmod] loaded (movie)")
+                            found = true
+                        } else {
+                            val modEp = modLoad.episodes?.get(DubStatus.Subbed)?.find { it.episode == episode }
                             if (modEp != null) {
                                 mod.loadLinks(modEp.data, false, subtitleCallback, callback)
                                 Log.d("AniShows", "[moviesmod] loaded")
                                 found = true
-                            } else if (isMovie) {
-                                mod.loadLinks(modLoad.url, false, subtitleCallback, callback)
-                                Log.d("AniShows", "[moviesmod] loaded (movie)")
-                                found = true
                             }
                         }
-                    } else {
-                        Log.d("AniShows", "[moviesmod] no match for: $title")
                     }
-                } catch (e: Exception) {
-                    Log.d("AniShows", "[moviesmod] error: ${e.message}")
+                } else {
+                    Log.d("AniShows", "[moviesmod] no match")
                 }
-
-                try {
-                    val top = TopmoviesProvider()
-                    val topResults = top.search(title)
-                    val topMatch = topResults?.firstOrNull()
-                    if (topMatch != null) {
-                        val topLoad = top.load(topMatch.url) as? AnimeLoadResponse
-                        if (topLoad != null) {
-                            if (isMovie) {
-                                top.loadLinks(topLoad.url, false, subtitleCallback, callback)
-                                Log.d("AniShows", "[topmovies] loaded (movie)")
-                                found = true
-                            } else {
-                                val topEp = topLoad.episodes?.get(DubStatus.Subbed)?.find { it.episode == episode }
-                                if (topEp != null) {
-                                    top.loadLinks(topEp.data, false, subtitleCallback, callback)
-                                    Log.d("AniShows", "[topmovies] loaded")
-                                    found = true
-                                }
-                            }
-                        }
-                    } else {
-                        Log.d("AniShows", "[topmovies] no match for: $title")
-                    }
-                } catch (e: Exception) {
-                    Log.d("AniShows", "[topmovies] error: ${e.message}")
-                }
-
-                try {
-                    val drive = MoviesDriveProvider()
-                    val driveResults = drive.search(title)
-                    val driveMatch = driveResults?.firstOrNull()
-                    if (driveMatch != null) {
-                        val driveLoad = drive.load(driveMatch.url) as? AnimeLoadResponse
-                        if (driveLoad != null) {
-                            if (isMovie) {
-                                drive.loadLinks(driveLoad.url, false, subtitleCallback, callback)
-                                Log.d("AniShows", "[moviesdrive] loaded (movie)")
-                                found = true
-                            } else {
-                                val driveEp = driveLoad.episodes?.get(DubStatus.Subbed)?.find { it.episode == episode }
-                                if (driveEp != null) {
-                                    drive.loadLinks(driveEp.data, false, subtitleCallback, callback)
-                                    Log.d("AniShows", "[moviesdrive] loaded")
-                                    found = true
-                                }
-                            }
-                        }
-                    } else {
-                        Log.d("AniShows", "[moviesdrive] no match for: $title")
-                    }
-                } catch (e: Exception) {
-                    Log.d("AniShows", "[moviesdrive] error: ${e.message}")
-                }
+            } catch (e: Exception) {
+                Log.d("AniShows", "[moviesmod] error: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.d("AniShows", "external providers error: ${e.message}")
+
+            try {
+                val top = TopmoviesProvider()
+                val topResults = top.search(title)
+                val topMatch = topResults?.firstOrNull()
+                if (topMatch != null) {
+                    val topLoad = top.load(topMatch.url) as? AnimeLoadResponse
+                    if (topLoad != null) {
+                        if (isMovie) {
+                            top.loadLinks(topLoad.url, false, subtitleCallback, callback)
+                            Log.d("AniShows", "[topmovies] loaded (movie)")
+                            found = true
+                        } else {
+                            val topEp = topLoad.episodes?.get(DubStatus.Subbed)?.find { it.episode == episode }
+                            if (topEp != null) {
+                                top.loadLinks(topEp.data, false, subtitleCallback, callback)
+                                Log.d("AniShows", "[topmovies] loaded")
+                                found = true
+                            }
+                        }
+                    }
+                } else {
+                    Log.d("AniShows", "[topmovies] no match")
+                }
+            } catch (e: Exception) {
+                Log.d("AniShows", "[topmovies] error: ${e.message}")
+            }
+
+            try {
+                val drive = MoviesDriveProvider()
+                val driveResults = drive.search(title)
+                val driveMatch = driveResults?.firstOrNull()
+                if (driveMatch != null) {
+                    val driveLoad = drive.load(driveMatch.url) as? AnimeLoadResponse
+                    if (driveLoad != null) {
+                        if (isMovie) {
+                            drive.loadLinks(driveLoad.url, false, subtitleCallback, callback)
+                            Log.d("AniShows", "[moviesdrive] loaded (movie)")
+                            found = true
+                        } else {
+                            val driveEp = driveLoad.episodes?.get(DubStatus.Subbed)?.find { it.episode == episode }
+                            if (driveEp != null) {
+                                drive.loadLinks(driveEp.data, false, subtitleCallback, callback)
+                                Log.d("AniShows", "[moviesdrive] loaded")
+                                found = true
+                            }
+                        }
+                    }
+                } else {
+                    Log.d("AniShows", "[moviesdrive] no match")
+                }
+            } catch (e: Exception) {
+                Log.d("AniShows", "[moviesdrive] error: ${e.message}")
+            }
         }
 
-        Log.d("AniShows", "loadLinks done: found=$found")
+
         return found
     }
 
