@@ -112,8 +112,22 @@ class SettingsFragment : DialogFragment() {
         val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Sources"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
 
+        // Enable All button — at the TOP so it's always visible without scrolling
         // Keep references to all switches so Enable All can update them in-place
         val switches = mutableMapOf<String, SwitchCompat>()
+        layout.addView(Button(ctx).apply { text = "ENABLE ALL"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 4.dp(), 0, 8.dp())
+            setOnClickListener {
+                for ((key, _) in providers) {
+                    setEnabled(key, true)
+                    switches[key]?.let { sw ->
+                        sw.setOnCheckedChangeListener(null)
+                        sw.isChecked = true
+                        sw.setOnCheckedChangeListener { _, isChecked -> setEnabled(key, isChecked) }
+                    }
+                }
+                Toast.makeText(ctx, "All sources enabled", Toast.LENGTH_SHORT).show()
+            } })
+
         for ((key, name) in providers) {
             val sw = SwitchCompat(ctx).apply {
                 isChecked = isEnabled(key)
@@ -128,19 +142,6 @@ class SettingsFragment : DialogFragment() {
                 addView(sw)
             })
         }
-
-        layout.addView(Button(ctx).apply { text = "ENABLE ALL"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 12.dp(), 0, 8.dp())
-            setOnClickListener {
-                for ((key, _) in providers) {
-                    setEnabled(key, true)
-                    switches[key]?.let { sw ->
-                        sw.setOnCheckedChangeListener(null)
-                        sw.isChecked = true
-                        sw.setOnCheckedChangeListener { _, isChecked -> setEnabled(key, isChecked) }
-                    }
-                }
-                Toast.makeText(ctx, "All sources enabled", Toast.LENGTH_SHORT).show()
-            } })
         scroll.addView(layout)
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ -> }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
@@ -488,7 +489,9 @@ class SettingsFragment : DialogFragment() {
                     layout.addView(TextView(ctx).apply { text = it.take(500) + if (it.length > 500) "..." else ""; textSize = 12f; setTextColor(cTextSub); setPadding(0, 0, 0, 12.dp()) })
                 }
 
-                // Watch Now button — triggers CloudStream's built-in search via cloudstreamsearch:// intent
+                // Watch Now button — searches ONLY in RaghavAnime plugin (not global search)
+                // Temporarily sets CloudStream's search_pref_providers to ["RaghavAnime"],
+                // launches the search intent, then restores the old selection after a delay.
                 layout.addView(Button(ctx).apply {
                     text = "WATCH NOW"; setTextColor(Color.WHITE); textSize = 14f; setTypeface(typeface, Typeface.BOLD)
                     background = GradientDrawable().apply { cornerRadius = 12 * d; setColor(cAccent) }
@@ -498,6 +501,11 @@ class SettingsFragment : DialogFragment() {
                         try { this@SettingsFragment.dismiss() } catch (_: Exception) {}
                         val title = detail.title
                         try {
+                            // 1. Save the user's currently selected search providers
+                            val savedProviders = getSearchSelectedProviders()
+                            // 2. Restrict search to ONLY RaghavAnime
+                            setSearchSelectedProviders(listOf("RaghavAnime"))
+                            // 3. Launch the search intent (CloudStream reads nextSearchQuery + navigates to search tab)
                             val encoded = java.net.URLEncoder.encode(title, "UTF-8")
                             val intent = android.content.Intent(
                                 android.content.Intent.ACTION_VIEW,
@@ -505,6 +513,12 @@ class SettingsFragment : DialogFragment() {
                             )
                             intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                             ctx.startActivity(intent)
+                            // 4. Restore the user's original selection after 15 seconds
+                            //    (gives the search enough time to load RaghavAnime results)
+                            Thread {
+                                try { Thread.sleep(15000) } catch (_: Exception) {}
+                                setSearchSelectedProviders(savedProviders)
+                            }.start()
                         } catch (_: Exception) {
                             Toast.makeText(ctx, "Search for: ${detail.title} in RaghavAnime", Toast.LENGTH_LONG).show()
                         }
@@ -559,6 +573,17 @@ class SettingsFragment : DialogFragment() {
         val formatSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableFormats) }
         layout.addView(formatSpinner)
 
+        // Tags spinner (loaded from AniList MediaTagCollection, same as anilist.co search)
+        layout.addView(TextView(ctx).apply { text = "Tag"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val tagSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, listOf("Any")) }
+        layout.addView(tagSpinner)
+        CoroutineScope(Dispatchers.Main).launch {
+            val tags = withContext(Dispatchers.IO) { RaghavAnimeFeatures.fetchTags() }
+            if (tags.isNotEmpty()) {
+                tagSpinner.adapter = darkAdapter(ctx, listOf("Any") + tags.map { it.name })
+            }
+        }
+
         // Status
         layout.addView(TextView(ctx).apply { text = "Status"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
         val statusSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableStatus) }
@@ -573,12 +598,13 @@ class SettingsFragment : DialogFragment() {
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Search") { _, _ ->
             val search = searchInput.text?.toString()?.trim()?.takeIf { it.isNotBlank() }
             val genre = if (genreSpinner.selectedItemPosition > 0) genreSpinner.selectedItem.toString() else null
+            val tag = if (tagSpinner.selectedItemPosition > 0) tagSpinner.selectedItem.toString() else null
             val year = if (yearSpinner.selectedItemPosition > 0) yearSpinner.selectedItem.toString().toIntOrNull() else null
             val season = RaghavAnimeFeatures.availableSeasons[seasonSpinner.selectedItemPosition]
             val format = RaghavAnimeFeatures.availableFormats[formatSpinner.selectedItemPosition]
             val status = RaghavAnimeFeatures.availableStatus[statusSpinner.selectedItemPosition]
             val sortBy = RaghavAnimeFeatures.availableSorts[sortSpinner.selectedItemPosition].first
-            showAdvancedResults(ctx, d, search, genre, null, year, season, format, status, sortBy, 1)
+            showAdvancedResults(ctx, d, search, genre, tag, year, season, format, status, sortBy, 1)
         }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
@@ -622,6 +648,28 @@ class SettingsFragment : DialogFragment() {
     }
 
     // =================== HELPERS ===================
+    /**
+     * Reads CloudStream's currently selected search providers (the list of API names
+     * that the search tab filters by). Mirrors DataStoreHelper.searchPreferenceProviders,
+     * which is stored at "${currentAccount}/search_pref_providers".
+     * currentAccount = DataStoreHelper.selectedKeyIndex.toString() (default "0"),
+     * and selectedKeyIndex is stored at "data_store_helper/account_key_index".
+     */
+    private fun getSearchSelectedProviders(): List<String> {
+        return try {
+            val accountIndex: Int = getKey<Int>("data_store_helper/account_key_index") ?: 0
+            val accountKey = accountIndex.toString()
+            getKey<List<String>>("$accountKey/search_pref_providers") ?: emptyList()
+        } catch (_: Exception) { emptyList() }
+    }
+    private fun setSearchSelectedProviders(providers: List<String>) {
+        try {
+            val accountIndex: Int = getKey<Int>("data_store_helper/account_key_index") ?: 0
+            val accountKey = accountIndex.toString()
+            setKey("$accountKey/search_pref_providers", providers)
+        } catch (_: Exception) {}
+    }
+
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun toggleRow(ctx: Context, label: String, checked: Boolean, d: Float, onChange: (Boolean) -> Unit): LinearLayout {
         fun Int.dp() = (this * d).toInt()
