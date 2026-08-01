@@ -254,7 +254,7 @@ object RaghavAnimeFeatures {
     suspend fun discoverAnime(query: String? = null, genre: String? = null, sortBy: String = "POPULARITY_DESC", page: Int = 1): List<SimpleAnime> {
         return try {
             val gqlQuery = """
-                query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: String, ${'$'}sort: [MediaSort]) {
+                query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: [String], ${'$'}sort: [MediaSort]) {
                     Page(page: ${'$'}page, perPage: ${'$'}perPage) {
                         media(type: ANIME, search: ${'$'}search, genre_in: ${'$'}genre, sort: ${'$'}sort) {
                             id
@@ -276,9 +276,7 @@ object RaghavAnimeFeatures {
                 "sort" to listOf(sortBy)
             )
             if (query != null && query.isNotBlank()) variables["search"] = query
-            if (genre != null && genre != "Any") {
-                variables["genre"] = listOf(genre)
-            }
+            variables["genre"] = if (genre != null && genre != "Any") listOf(genre) else null
 
             val responseText = anilistQuery(gqlQuery, variables)
             val response = parseJson<AniListResponse>(responseText)
