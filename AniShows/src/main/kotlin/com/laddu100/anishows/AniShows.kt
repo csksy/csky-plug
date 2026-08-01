@@ -432,40 +432,42 @@ class AniShows : MainAPI() {
             Log.d("AniShows", "[vidrock] $serverName ($type): ${streamUrl.take(80)}")
 
             if (type == "hls") {
-                try {
-                    M3u8Helper.generateM3u8(
-                        "AniShows Vidrock $serverName ($lang)",
-                        streamUrl,
-                        "https://vidrock.ru/"
-                    ).forEach(callback)
-                    found = true
-                } catch (e: Exception) {
-                    callback.invoke(
-                        newExtractorLink(
-                            "AniShows Vidrock $serverName ($lang)",
-                            "AniShows Vidrock $serverName ($lang)",
-                            streamUrl,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = "https://vidrock.ru/"
-                            this.headers = mapOf("User-Agent" to ua, "Referer" to "https://vidrock.ru/")
-                        }
-                    )
-                    found = true
-                }
-            } else if (type == "mp4") {
                 callback.invoke(
                     newExtractorLink(
                         "AniShows Vidrock $serverName ($lang)",
                         "AniShows Vidrock $serverName ($lang)",
                         streamUrl,
-                        type = ExtractorLinkType.VIDEO
+                        type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = "https://vidrock.ru/"
                         this.headers = mapOf("User-Agent" to ua, "Referer" to "https://vidrock.ru/")
                     }
                 )
                 found = true
+            } else if (type == "mp4") {
+                try {
+                    val mp4Resp = app.get(streamUrl, headers = mapOf("User-Agent" to ua, "Referer" to "https://vidrock.ru/"), timeout = 15_000L)
+                    if (mp4Resp.code == 200 && mp4Resp.text.trimStart().startsWith("[")) {
+                        parseJson<List<Map<String, Any?>>>(mp4Resp.text).forEach { q ->
+                            val mp4Url = q["url"] as? String ?: return@forEach
+                            val res = q["resolution"]
+                            val label = "AniShows Vidrock $serverName ($lang)" + (res?.let { " ${it}p" } ?: "")
+                            callback.invoke(newExtractorLink(label, label, mp4Url, type = ExtractorLinkType.VIDEO) {
+                                this.referer = "https://vidrock.ru/"
+                                this.headers = mapOf("User-Agent" to ua, "Referer" to "https://vidrock.ru/")
+                            })
+                        }
+                        found = true
+                    } else {
+                        callback.invoke(newExtractorLink(
+                            "AniShows Vidrock $serverName ($lang)", "AniShows Vidrock $serverName ($lang)",
+                            streamUrl, type = ExtractorLinkType.VIDEO
+                        ) { this.referer = "https://vidrock.ru/"; this.headers = mapOf("User-Agent" to ua, "Referer" to "https://vidrock.ru/") })
+                        found = true
+                    }
+                } catch (e: Exception) {
+                    Log.d("AniShows", "[vidrock] $serverName mp4 error: ${e.message}")
+                }
             }
         }
         return found
@@ -508,25 +510,19 @@ class AniShows : MainAPI() {
 
             if (resolved.contains(".m3u8", ignoreCase = true)) {
                 val host = Regex("""https?://([^/]+)""").find(resolved)?.groupValues?.get(1) ?: ""
-                M3u8Helper.generateM3u8(
+                callback.invoke(newExtractorLink(
                     "AniShows ${server.replaceFirstChar { it.uppercase() }}",
-                    resolved,
-                    "https://$host/"
-                ).forEach(callback)
+                    "AniShows ${server.replaceFirstChar { it.uppercase() }}",
+                    resolved, type = ExtractorLinkType.M3U8
+                ) { this.referer = "https://$host/"; this.headers = mapOf("User-Agent" to ua, "Referer" to "https://$host/") })
                 true
             } else if (resolved.contains(".mp4", ignoreCase = true)) {
                 val host = Regex("""https?://([^/]+)""").find(resolved)?.groupValues?.get(1) ?: ""
-                callback.invoke(
-                    newExtractorLink(
-                        "AniShows ${server.replaceFirstChar { it.uppercase() }}",
-                        "AniShows ${server.replaceFirstChar { it.uppercase() }}",
-                        resolved,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = "https://$host/"
-                        this.headers = mapOf("User-Agent" to ua)
-                    }
-                )
+                callback.invoke(newExtractorLink(
+                    "AniShows ${server.replaceFirstChar { it.uppercase() }}",
+                    "AniShows ${server.replaceFirstChar { it.uppercase() }}",
+                    resolved, type = ExtractorLinkType.VIDEO
+                ) { this.referer = "https://$host/"; this.headers = mapOf("User-Agent" to ua, "Referer" to "https://$host/") })
                 true
             } else {
                 try {
@@ -567,20 +563,16 @@ class AniShows : MainAPI() {
             Log.d("AniShows", "[modiplay] resolved: ${resolved.take(100)}")
 
             if (resolved.contains(".m3u8", ignoreCase = true)) {
-                M3u8Helper.generateM3u8("AniShows ModiPlay (Hindi)", resolved, "https://rozgarlelo.modiplay.xyz/").forEach(callback)
+                callback.invoke(newExtractorLink(
+                    "AniShows ModiPlay (Hindi)", "AniShows ModiPlay (Hindi)",
+                    resolved, type = ExtractorLinkType.M3U8
+                ) { this.referer = "https://rozgarlelo.modiplay.xyz/"; this.headers = mapOf("User-Agent" to ua, "Referer" to "https://rozgarlelo.modiplay.xyz/") })
                 true
             } else if (resolved.contains(".mp4", ignoreCase = true)) {
-                callback.invoke(
-                    newExtractorLink(
-                        "AniShows ModiPlay (Hindi)",
-                        "AniShows ModiPlay (Hindi)",
-                        resolved,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = "https://rozgarlelo.modiplay.xyz/"
-                        this.headers = mapOf("User-Agent" to ua)
-                    }
-                )
+                callback.invoke(newExtractorLink(
+                    "AniShows ModiPlay (Hindi)", "AniShows ModiPlay (Hindi)",
+                    resolved, type = ExtractorLinkType.VIDEO
+                ) { this.referer = "https://rozgarlelo.modiplay.xyz/"; this.headers = mapOf("User-Agent" to ua, "Referer" to "https://rozgarlelo.modiplay.xyz/") })
                 true
             } else {
                 try {
