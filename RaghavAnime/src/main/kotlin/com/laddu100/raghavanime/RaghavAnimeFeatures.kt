@@ -15,14 +15,25 @@ object RaghavAnimeFeatures {
 
     private const val PREFIX = "raghavanime_feat_"
 
-    fun isEnabled(feature: String): Boolean = getKey<Boolean>(PREFIX + feature) ?: false
+    fun isEnabled(feature: String): Boolean = getKey<Boolean>(PREFIX + feature) ?: when (feature) {
+        "watch_time" -> true
+        "recommendations" -> true
+        else -> false
+    }
     fun setEnabled(feature: String, enabled: Boolean) { setKey(PREFIX + feature, enabled) }
 
     // ============================================================
-    // FEATURE 6: Watch Time Tracker
+    // FEATURE: Watch Time Tracker
     // ============================================================
 
-    data class WatchEntry(val anilistId: Int, val title: String, val posterUrl: String?, val watchTimeMs: Long, val episodesWatched: Int, val lastWatched: Long)
+    data class WatchEntry(
+        val anilistId: Int,
+        val title: String,
+        val posterUrl: String?,
+        val watchTimeMs: Long,
+        val episodesWatched: Int,
+        val lastWatched: Long
+    )
 
     fun recordWatchTime(anilistId: Int, title: String, posterUrl: String?, durationMs: Long) {
         try {
@@ -63,82 +74,70 @@ object RaghavAnimeFeatures {
         }
     }
 
+    fun getTotalWatchTime(): Long {
+        return getWatchHistory().sumOf { it.watchTimeMs }
+    }
+
+    fun getTotalEpisodesWatched(): Int {
+        return getWatchHistory().sumOf { it.episodesWatched }
+    }
+
+    fun getAnimeWatchedCount(): Int {
+        return getWatchHistory().size
+    }
+
+    fun getMostWatchedAnime(): WatchEntry? {
+        return getWatchHistory().maxByOrNull { it.watchTimeMs }
+    }
+
     data class SimpleAnime(val title: String, val url: String, val posterUrl: String?)
 
-    fun getWatchHistoryList(): List<SimpleAnime> {
-        return getWatchHistory().sortedByDescending { it.lastWatched }.map { entry ->
-            SimpleAnime(entry.title, "https://graphql.anilist.co/info/${entry.anilistId}", entry.posterUrl)
-        }
-    }
-
     // ============================================================
-    // FEATURE 7: Dual/Sub Badge System
+    // FEATURE: Custom Source Profiles
     // ============================================================
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class SourceAvailability(
-        val hasSub: Boolean = false,
-        val hasDub: Boolean = false
-    )
-
-    private val availabilityCache = mutableMapOf<Int, SourceAvailability>()
-
-    fun recordAvailability(anilistId: Int, hasSub: Boolean, hasDub: Boolean) {
-        availabilityCache[anilistId] = SourceAvailability(hasSub, hasDub)
-        try {
-            val map = mutableMapOf<String, Boolean>()
-            availabilityCache.forEach { (k, v) ->
-                map["${k}_sub"] = v.hasSub
-                map["${k}_dub"] = v.hasDub
-            }
-            setKey(PREFIX + "availability", map.toJson())
-        } catch (_: Exception) {}
-    }
-
-    fun getAvailability(anilistId: Int): SourceAvailability {
-        availabilityCache[anilistId]?.let { return it }
-        return try {
-            val raw = getKey<String>(PREFIX + "availability") ?: return SourceAvailability()
-            val map = parseJson<Map<String, Boolean>>(raw)
-            SourceAvailability(
-                hasSub = map["${anilistId}_sub"] ?: false,
-                hasDub = map["${anilistId}_dub"] ?: false
-            )
-        } catch (_: Exception) { SourceAvailability() }
-    }
-
-    // ============================================================
-    // FEATURE 9: Custom Source Priority Profiles
-    // ============================================================
-
-    data class SourceProfile(
+    data class CustomProfile(
         val name: String,
-        val providerOrder: List<String>,
-        val description: String
+        val sources: List<String>,
+        val enabled: Boolean = false
     )
 
-    val defaultProfiles = listOf(
-        SourceProfile("Balanced", listOf("miruro","anichan","aninami","enma","animo","anikage","anineko","anisuge","aniwaves","anikai","anidb","twodhive","anikoto","anidap","senshi","anidao"), "All sources in default order"),
-        SourceProfile("Fastest", listOf("miruro","anichan","aninami","animo","enma","anikage","anineko","anisuge","aniwaves","anikai","anidb","twodhive","anikoto","anidap","senshi","anidao"), "Prioritize fastest responding sources"),
-        SourceProfile("Best Quality", listOf("miruro","enma","animo","anichan","aninami","anikage","anineko","anisuge","aniwaves","anikai","anidb","twodhive","anikoto","anidap","senshi","anidao"), "Prioritize 1080p sources"),
-        SourceProfile("Hindi Dub", listOf("anidap","senshi","miruro","anichan","aninami","enma","animo","anikage","anineko","anisuge","aniwaves","anikai","anidb","twodhive","anikoto","anidao"), "Prioritize Hindi dub sources")
-    )
-
-    fun getActiveProfile(): String {
-        return getKey<String>(PREFIX + "active_profile") ?: "Balanced"
+    fun getCustomProfiles(): List<CustomProfile> {
+        return try {
+            val raw = getKey<String>(PREFIX + "custom_profiles") ?: return emptyList()
+            parseJson(raw)
+        } catch (_: Exception) { emptyList() }
     }
 
-    fun setActiveProfile(name: String) {
-        setKey(PREFIX + "active_profile", name)
+    fun saveCustomProfiles(profiles: List<CustomProfile>) {
+        setKey(PREFIX + "custom_profiles", profiles.toJson())
     }
 
-    fun getProfileOrder(): List<String> {
-        val name = getActiveProfile()
-        return defaultProfiles.find { it.name == name }?.providerOrder ?: defaultProfiles[0].providerOrder
+    fun getActiveCustomProfile(): CustomProfile? {
+        return getCustomProfiles().find { it.enabled }
+    }
+
+    fun setActiveProfile(profileName: String?) {
+        val profiles = getCustomProfiles().map { p ->
+            p.copy(enabled = p.name == profileName)
+        }
+        saveCustomProfiles(profiles)
+    }
+
+    fun isCustomProfileActive(): Boolean {
+        return getCustomProfiles().any { it.enabled }
+    }
+
+    fun shouldRunSource(sourceKey: String): Boolean {
+        val profile = getActiveCustomProfile()
+        if (profile != null) {
+            return sourceKey in profile.sources
+        }
+        return com.laddu100.raghavanime.settings.SettingsFragment.isEnabled(sourceKey)
     }
 
     // ============================================================
-    // FEATURE 10: Anime Recommendation Engine
+    // FEATURE: Anime Recommendation Engine
     // ============================================================
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -146,9 +145,10 @@ object RaghavAnimeFeatures {
         val id: Int? = null,
         val title: String? = null,
         val posterUrl: String? = null,
-        val score: Double? = null,
-        val reason: String? = null
+        val score: Double? = null
     )
+
+    private var cachedRecommendations: List<SimpleAnime>? = null
 
     suspend fun fetchRecommendations(anilistId: Int): List<AniListRecommendation> {
         return try {
@@ -168,8 +168,7 @@ object RaghavAnimeFeatures {
                     }
                 }
             """.trimIndent()
-            val variables = mapOf("id" to anilistId)
-            val responseText = anilistQuery(query, variables)
+            val responseText = anilistQuery(query, mapOf("id" to anilistId))
             val response = parseJson<AniListResponse>(responseText)
             val recs = response.data?.Media?.recommendations?.nodes ?: emptyList()
             recs.mapNotNull { node ->
@@ -180,15 +179,18 @@ object RaghavAnimeFeatures {
                     id = id,
                     title = title,
                     posterUrl = media.coverImage?.extraLarge ?: media.coverImage?.large,
-                    score = media.averageScore?.toDouble(),
-                    reason = "Recommended based on your anime"
+                    score = media.averageScore?.toDouble()
                 )
             }
         } catch (_: Exception) { emptyList() }
     }
 
     suspend fun getRecommendationsList(): List<SimpleAnime> {
+        cachedRecommendations?.let { return it }
+
         val history = getWatchHistory().sortedByDescending { it.lastWatched }.take(3)
+        if (history.isEmpty()) return emptyList()
+
         val allRecs = mutableListOf<AniListRecommendation>()
         val watchedIds = history.map { it.anilistId }.toSet()
 
@@ -197,14 +199,78 @@ object RaghavAnimeFeatures {
             allRecs.addAll(recs.filter { it.id !in watchedIds })
         }
 
-        return allRecs.distinctBy { it.id }.take(20).mapNotNull { rec ->
+        val result = allRecs.distinctBy { it.id }.take(20).mapNotNull { rec ->
             val id = rec.id ?: return@mapNotNull null
             val title = rec.title ?: return@mapNotNull null
             SimpleAnime(title, "https://graphql.anilist.co/info/$id", rec.posterUrl)
         }
+
+        cachedRecommendations = result
+        return result
     }
 
-    // Helper to run AniList queries
+    fun resetRecommendations() {
+        cachedRecommendations = null
+    }
+
+    // ============================================================
+    // FEATURE: Discover New Anime
+    // ============================================================
+
+    suspend fun discoverAnime(query: String? = null, genre: String? = null, sortBy: String = "POPULARITY_DESC"): List<SimpleAnime> {
+        return try {
+            val gqlQuery = """
+                query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: String, ${'$'}sort: [MediaSort]) {
+                    Page(page: ${'$'}page, perPage: ${'$'}perPage) {
+                        media(type: ANIME, search: ${'$'}search, genre_in: ${'$'}genre, sort: ${'$'}sort) {
+                            id
+                            title { english romaji }
+                            coverImage { extraLarge large }
+                            averageScore
+                            genres
+                            seasonYear
+                            format
+                            episodes
+                        }
+                    }
+                }
+            """.trimIndent()
+
+            val variables = mutableMapOf<String, Any?>(
+                "page" to 1,
+                "perPage" to 20,
+                "sort" to listOf(sortBy)
+            )
+            if (query != null && query.isNotBlank()) variables["search"] = query
+            if (genre != null && genre != "Any") {
+                variables["genre"] = genre
+            }
+
+            val responseText = anilistQuery(gqlQuery, variables)
+            val response = parseJson<AniListResponse>(responseText)
+            val mediaList = response.data?.Page?.media ?: emptyList()
+
+            mediaList.mapNotNull { media ->
+                val id = media.id ?: return@mapNotNull null
+                val title = media.title?.english ?: media.title?.romaji ?: return@mapNotNull null
+                SimpleAnime(title, "https://graphql.anilist.co/info/$id", media.coverImage?.extraLarge ?: media.coverImage?.large)
+            }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    val availableGenres = listOf(
+        "Any", "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror",
+        "Mystery", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"
+    )
+
+    val availableSorts = listOf(
+        "POPULARITY_DESC" to "Most Popular",
+        "SCORE_DESC" to "Highest Rated",
+        "START_DATE_DESC" to "Newest",
+        "TRENDING_DESC" to "Trending",
+        "FAVOURITES_DESC" to "Most Favourited"
+    )
+
     private suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
         val requestData = mapOf(
             "query" to query,
