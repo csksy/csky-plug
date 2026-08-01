@@ -66,11 +66,11 @@ class AniShows : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "$tmdbApiBase/trending" to "Trending",
-        "$tmdbApiBase/popular" to "Popular",
-        "$tmdbApiBase/top-rated" to "Top Rated",
-        "$tmdbApiBase/tv" to "TV Series",
-        "$tmdbApiBase/movie" to "Movies"
+        "$tmdbApiBase/trending/all/week" to "Trending",
+        "$tmdbApiBase/tv/popular" to "Popular TV",
+        "$tmdbApiBase/movie/popular" to "Popular Movies",
+        "$tmdbApiBase/tv/top_rated" to "Top Rated TV",
+        "$tmdbApiBase/movie/top_rated" to "Top Rated Movies"
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -192,7 +192,12 @@ class AniShows : MainAPI() {
             val url = "${request.data}?page=$page"
             val text = fetchTmdb(url) ?: return newHomePageResponse(request.name, emptyList())
             val resp = parseJson<TmdbSearchResponse>(text)
-            val home = resp.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            val inferredType = when {
+                request.data.contains("/tv/") -> "tv"
+                request.data.contains("/movie/") -> "movie"
+                else -> null
+            }
+            val home = resp.results?.mapNotNull { it.toSearchResponse(inferredType) } ?: emptyList()
             newHomePageResponse(request.name, home, hasNext = resp.page?.let { it < (resp.total_pages ?: 1) } ?: false)
         } catch (e: Exception) {
             Log.d("AniShows", "getMainPage error: ${e.message}")
@@ -200,10 +205,10 @@ class AniShows : MainAPI() {
         }
     }
 
-    private fun TmdbItem.toSearchResponse(): SearchResponse? {
+    private fun TmdbItem.toSearchResponse(inferredType: String? = null): SearchResponse? {
         val id = id ?: return null
         val title = name ?: title ?: original_name ?: original_title ?: return null
-        val type = media_type ?: if (first_air_date != null) "tv" else "movie"
+        val type = media_type ?: inferredType ?: if (first_air_date != null) "tv" else "movie"
         val tvType = when (type) {
             "tv" -> TvType.TvSeries
             "movie" -> TvType.Movie
@@ -222,7 +227,7 @@ class AniShows : MainAPI() {
             val encoded = URLEncoder.encode(query, "UTF-8")
             val text = fetchTmdb("$tmdbApiBase/search/multi?query=$encoded") ?: return emptyList()
             val resp = parseJson<TmdbSearchResponse>(text)
-            resp.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            resp.results?.mapNotNull { it.toSearchResponse(null) } ?: emptyList()
         } catch (e: Exception) {
             Log.d("AniShows", "search error: ${e.message}")
             emptyList()
