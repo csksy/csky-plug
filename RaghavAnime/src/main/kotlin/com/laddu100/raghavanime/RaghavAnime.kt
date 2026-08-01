@@ -271,6 +271,13 @@ class RaghavAnime : MainAPI() {
             }
         }
 
+        // Collect links so we can use the first one for AI subtitle generation
+        val collectedLinks = mutableListOf<ExtractorLink>()
+        val wrappedCallback: (ExtractorLink) -> Unit = { link ->
+            collectedLinks.add(link)
+            callback.invoke(link)
+        }
+
         runAllAsync(
             {
                 if (RaghavAnimeFeatures.shouldRunSource("miruro")) try {
@@ -281,7 +288,7 @@ class RaghavAnime : MainAPI() {
                         val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
                         val matchedEp = epList?.find { it.episode == episode }
                         if (matchedEp != null) {
-                            miruro.loadLinks(matchedEp.data, false, subtitleCallback, callback)
+                            miruro.loadLinks(matchedEp.data, false, subtitleCallback, wrappedCallback)
                             // success
                         } else {
                         }
@@ -300,7 +307,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniSuge"
                     )
                     if (epData != null) {
-                        aniSuge.loadLinks(epData, false, subtitleCallback, callback)
+                        aniSuge.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -344,7 +351,7 @@ class RaghavAnime : MainAPI() {
                         if (matchedData != null) break
                     }
                     if (matchedData != null) {
-                        aniWaves.loadLinks(matchedData, false, subtitleCallback, callback)
+                        aniWaves.loadLinks(matchedData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -361,7 +368,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Anikai"
                     )
                     if (epData != null) {
-                        anikai.loadLinks(epData, false, subtitleCallback, callback)
+                        anikai.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -378,7 +385,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniDb"
                     )
                     if (epData != null) {
-                        aniDb.loadLinks(epData, false, subtitleCallback, callback)
+                        aniDb.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -388,7 +395,7 @@ class RaghavAnime : MainAPI() {
             {
                 if (RaghavAnimeFeatures.shouldRunSource("anikage")) try {
                     val anikage = RaghavAniKage()
-                    anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                    anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, wrappedCallback)
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[AniKage] FAILED: ${e.message}")
                 }
@@ -403,7 +410,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Anineko"
                     )
                     if (epData != null) {
-                        anineko.loadLinks(epData, false, subtitleCallback, callback)
+                        anineko.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -422,7 +429,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "2DHive"
                     )
                     if (epData != null) {
-                        twoDHive.loadLinks(epData, false, subtitleCallback, callback)
+                        twoDHive.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -439,7 +446,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniKoto"
                     )
                     if (epData != null) {
-                        anikoto.loadLinks(epData, false, subtitleCallback, callback)
+                        anikoto.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -449,7 +456,7 @@ class RaghavAnime : MainAPI() {
             {
                 if (RaghavAnimeFeatures.shouldRunSource("enma")) try {
                     val enma = RaghavEnma()
-                    enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                    enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, wrappedCallback)
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[Enma] FAILED: ${e.message}")
                 }
@@ -464,7 +471,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Animo"
                     )
                     if (epData != null) {
-                        animo.loadLinks(epData, false, subtitleCallback, callback)
+                        animo.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                         // success recorded
                     } else {
                     }
@@ -475,7 +482,7 @@ class RaghavAnime : MainAPI() {
             {
                 if (RaghavAnimeFeatures.shouldRunSource("anidap")) try {
                     val anidap = RaghavAnidap()
-                    anidap.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                    anidap.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, wrappedCallback)
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[Anidap] FAILED: ${e.message}")
                 }
@@ -490,7 +497,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Senshi"
                     )
                     if (epData != null) {
-                        senshi.loadLinks(epData, false, subtitleCallback, callback)
+                        senshi.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -506,7 +513,7 @@ class RaghavAnime : MainAPI() {
                         val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
                         val matchedEp = epList?.find { it.episode == episode }
                         if (matchedEp != null) {
-                            aniNami.loadLinks(matchedEp.data, false, subtitleCallback, callback)
+                            aniNami.loadLinks(matchedEp.data, false, subtitleCallback, wrappedCallback)
                         } else {
                         }
                     }
@@ -524,7 +531,7 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniDao"
                     )
                     if (epData != null) {
-                        aniDao.loadLinks(epData, false, subtitleCallback, callback)
+                        aniDao.loadLinks(epData, false, subtitleCallback, wrappedCallback)
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -534,12 +541,32 @@ class RaghavAnime : MainAPI() {
             {
                 if (RaghavAnimeFeatures.shouldRunSource("anichan")) try {
                     val anichan = RaghavAniChan()
-                    anichan.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                    anichan.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, wrappedCallback)
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[AniChan] FAILED: ${e.message}")
                 }
             },
         )
+
+        // AI Subtitle Generation — triggers after all sources have loaded
+        // Uses the first available stream URL to generate English subtitles
+        if (com.laddu100.raghavanime.AISubtitleHelper.isEnabled() && isDub && collectedLinks.isNotEmpty()) {
+            try {
+                // Pick the first link (usually the best quality from the fastest source)
+                val firstLink = collectedLinks.first()
+                Log.d("RaghavAnime", "[AISub] Triggering AI subtitle generation for: ${firstLink.name}")
+                com.laddu100.raghavanime.AISubtitleHelper.generateAISubtitles(
+                    streamUrl = firstLink.url,
+                    headers = mapOf("Referer" to (firstLink.referer ?: "")),
+                    isDub = isDub,
+                    animeTitle = title,
+                    episode = episode,
+                    subtitleCallback = subtitleCallback
+                )
+            } catch (e: Throwable) {
+                Log.e("RaghavAnime", "[AISub] FAILED: ${e.message}")
+            }
+        }
 
         return true
     }

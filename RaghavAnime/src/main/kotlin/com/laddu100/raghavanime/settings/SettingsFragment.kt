@@ -243,9 +243,22 @@ class SettingsFragment : DialogFragment() {
         val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Experimental Features"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
         layout.addView(TextView(ctx).apply { text = "May not work properly"; textSize = 11f; setTextColor(cWarning); setPadding(0, 0, 0, 12.dp()) })
+
+        // --- SubDL Subtitles ---
         layout.addView(sectionLabel(ctx, "SUBTITLES", d))
         layout.addView(toggleRow(ctx, "SubDL English Subtitles", isSubDLEnabled(), d) { setSubDLEnabled(it) })
         layout.addView(descText(ctx, "Fetches English subtitles from SubDL", d))
+
+        // --- AI Subtitles ---
+        layout.addView(sectionLabel(ctx, "AI SUBTITLES (ENGLISH DUB)", d))
+        layout.addView(toggleRow(ctx, "AI Subtitle Generation", com.laddu100.raghavanime.AISubtitleHelper.isEnabled(), d) { com.laddu100.raghavanime.AISubtitleHelper.setEnabled(it) })
+        layout.addView(descText(ctx, "Auto-generates English subtitles for English dub using AI (Groq/OpenAI Whisper)", d))
+
+        // AI Subtitle Settings button
+        layout.addView(Button(ctx).apply { text = "AI SUBTITLE SETTINGS"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 4.dp(), 0, 8.dp())
+            setOnClickListener { showAISubtitleSettingsDialog(ctx, d) } })
+
+        // --- Watch Tracking ---
         layout.addView(sectionLabel(ctx, "WATCH TRACKING", d))
         layout.addView(toggleRow(ctx, "Watch Time Tracker", RaghavAnimeFeatures.isEnabled("watch_time"), d) { RaghavAnimeFeatures.setEnabled("watch_time", it) })
         layout.addView(descText(ctx, "Tracks watch time per anime, view in Watch Time Stats", d))
@@ -256,6 +269,68 @@ class SettingsFragment : DialogFragment() {
             setOnClickListener { RaghavAnimeFeatures.resetRecommendations(); Toast.makeText(ctx, "Recommendations reset. New ones will load next time.", Toast.LENGTH_SHORT).show() } })
         scroll.addView(layout)
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ -> }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
+    }
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private fun showAISubtitleSettingsDialog(ctx: Context, d: Float) {
+        fun Int.dp() = (this * d).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "AI Subtitle Settings"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Generates English subtitles for English dub streams\nRequires API key (free tier available)"; textSize = 11f; setTextColor(cTextSub); setPadding(0, 0, 0, 12.dp()) })
+
+        // Provider selector
+        layout.addView(TextView(ctx).apply { text = "Provider"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 2.dp()) })
+        val providerSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, com.laddu100.raghavanime.AISubtitleHelper.providers.map { it.second }) }
+        val currentProvider = com.laddu100.raghavanime.AISubtitleHelper.getProvider()
+        val providerIndex = com.laddu100.raghavanime.AISubtitleHelper.providers.indexOfFirst { it.first == currentProvider }.let { if (it < 0) 0 else it }
+        providerSpinner.setSelection(providerIndex)
+        layout.addView(providerSpinner)
+
+        // Model selector (updates based on provider)
+        layout.addView(TextView(ctx).apply { text = "Model"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val modelSpinner = Spinner(ctx)
+        layout.addView(modelSpinner)
+        fun updateModelSpinner() {
+            val prov = com.laddu100.raghavanime.AISubtitleHelper.providers[providerSpinner.selectedItemPosition].first
+            val models = com.laddu100.raghavanime.AISubtitleHelper.models[prov] ?: emptyList()
+            modelSpinner.adapter = darkAdapter(ctx, models.map { it.second })
+            val currentModel = com.laddu100.raghavanime.AISubtitleHelper.getModel()
+            val modelIndex = models.indexOfFirst { it.first == currentModel }.let { if (it < 0) 0 else it }
+            modelSpinner.setSelection(modelIndex)
+        }
+        updateModelSpinner()
+        providerSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { updateModelSpinner() }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        // Groq API Key
+        layout.addView(TextView(ctx).apply { text = "Groq API Key"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Get free key at console.groq.com"; textSize = 10f; setTextColor(cTextDim); setPadding(0, 0, 0, 4.dp()) })
+        val groqKeyInput = EditText(ctx).apply { hint = "gsk_..."; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); textSize = 13f; inputType = android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(com.laddu100.raghavanime.AISubtitleHelper.getGroqKey()) }
+        layout.addView(groqKeyInput)
+
+        // OpenAI API Key
+        layout.addView(TextView(ctx).apply { text = "OpenAI API Key"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Get key at platform.openai.com"; textSize = 10f; setTextColor(cTextDim); setPadding(0, 0, 0, 4.dp()) })
+        val openaiKeyInput = EditText(ctx).apply { hint = "sk-..."; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); textSize = 13f; inputType = android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(com.laddu100.raghavanime.AISubtitleHelper.getOpenAIKey()) }
+        layout.addView(openaiKeyInput)
+
+        // Info text
+        layout.addView(TextView(ctx).apply { text = "How it works:\n1. When you load an English dub episode, the plugin downloads the audio track\n2. Audio is sent to the selected AI provider for transcription\n3. Generated subtitles appear in the subtitle picker as \"AI English\"\n\nLimitations:\n- Max 24MB per request (long episodes may be truncated)\n- Adds 5-15s delay before subtitles appear\n- Only works for English dub streams\n- Requires internet connection"; textSize = 11f; setTextColor(cTextDim); setPadding(0, 12.dp(), 0, 8.dp()) })
+
+        scroll.addView(layout)
+        AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ ->
+            val prov = com.laddu100.raghavanime.AISubtitleHelper.providers[providerSpinner.selectedItemPosition].first
+            val models = com.laddu100.raghavanime.AISubtitleHelper.models[prov] ?: emptyList()
+            val model = if (models.isNotEmpty()) models[modelSpinner.selectedItemPosition].first else com.laddu100.raghavanime.AISubtitleHelper.getModel()
+            com.laddu100.raghavanime.AISubtitleHelper.setProvider(prov)
+            com.laddu100.raghavanime.AISubtitleHelper.setModel(model)
+            com.laddu100.raghavanime.AISubtitleHelper.setGroqKey(groqKeyInput.text?.toString()?.trim() ?: "")
+            com.laddu100.raghavanime.AISubtitleHelper.setOpenAIKey(openaiKeyInput.text?.toString()?.trim() ?: "")
+            Toast.makeText(ctx, "AI subtitle settings saved", Toast.LENGTH_SHORT).show()
+        }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
     // =================== WATCH TIME STATS ===================
