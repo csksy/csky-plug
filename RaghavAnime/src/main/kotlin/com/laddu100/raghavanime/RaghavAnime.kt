@@ -1,7 +1,7 @@
 package com.laddu100.raghavanime
 
 import com.lagradost.cloudstream3.CommonActivity.activity
-import com.laddu100.raghavanime.settings.SettingsDialog
+import com.laddu100.raghavanime.settings.SettingsFragment
 import com.lagradost.cloudstream3.CloudStreamApp
 import android.content.Context
 import android.app.AlertDialog
@@ -231,7 +231,7 @@ class RaghavAnime : MainAPI() {
         val episode = linkData.episode
         val isDub = linkData.isDub
 
-        if (SettingsDialog.isSubDLEnabled()) {
+        if (SettingsFragment.isSubDLEnabled()) {
             try {
                 SubDLHelper.fetchSubtitles(
                     activity?.applicationContext,
@@ -249,7 +249,7 @@ class RaghavAnime : MainAPI() {
 
         runAllAsync(
             {
-                try {
+                if (SettingsFragment.isEnabled("miruro")) try {
                     val miruro = Miruro()
                     val loadResult = miruro.load("${miruro.mainUrl}/info/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
                     if (loadResult == null) {
@@ -258,7 +258,7 @@ class RaghavAnime : MainAPI() {
                         val matchedEp = epList?.find { it.episode == episode }
                         if (matchedEp != null) {
                             miruro.loadLinks(matchedEp.data, false, subtitleCallback, callback)
-                            SettingsDialog.recordSourceSuccess("miruro")
+                            // success
                         } else {
                         }
                     }
@@ -267,7 +267,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anisuge")) try {
                     val aniSuge = AniSugeProvider()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -284,7 +284,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("aniwaves")) try {
                     val aniWaves = AniWaves()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val aniWavesTargets = listOfNotNull(title, jpTitle).map { cleanTitle(it) }
@@ -328,7 +328,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anikai")) try {
                     val anikai = Anikai()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -345,7 +345,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anidb")) try {
                     val aniDb = AniDb()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -362,7 +362,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anikage")) try {
                     val anikage = RaghavAniKage()
                     anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
                 } catch (e: Throwable) {
@@ -370,7 +370,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anineko")) try {
                     val anineko = Anineko()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -389,7 +389,7 @@ class RaghavAnime : MainAPI() {
             {
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("twodhive")) try {
                     val twoDHive = RaghavTwoDHive()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -423,16 +423,15 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("enma")) try {
                     val enma = RaghavEnma()
-                    if (SettingsDialog.isEnabled("enma")) enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
-                    if (true) SettingsDialog.recordSourceSuccess("enma")
+                    if (SettingsFragment.isEnabled("enma")) enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[Enma] FAILED: ${e.message}")
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("animo")) try {
                     val animo = RaghavAnimo()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -442,7 +441,7 @@ class RaghavAnime : MainAPI() {
                     )
                     if (epData != null) {
                         animo.loadLinks(epData, false, subtitleCallback, callback)
-                        SettingsDialog.recordSourceSuccess("animo")
+                        // success recorded
                     } else {
                     }
                 } catch (e: Throwable) {
@@ -450,7 +449,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anidap")) try {
                     val anidap = RaghavAnidap()
                     anidap.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
                 } catch (e: Throwable) {
@@ -458,7 +457,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("senshi")) try {
                     val senshi = RaghavSenshi()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -475,7 +474,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("aninami")) try {
                     val aniNami = RaghavAniNami()
                     val loadResult = aniNami.load("${aniNami.mainUrl}/anime/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
                     if (loadResult == null) {
@@ -492,7 +491,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anidao")) try {
                     val aniDao = RaghavAniDao()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -509,7 +508,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anichan")) try {
                     val anichan = RaghavAniChan()
                     anichan.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
                 } catch (e: Throwable) {
