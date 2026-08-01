@@ -117,6 +117,63 @@ object RaghavAnimeFeatures {
         } catch (_: Exception) { null }
     }
 
+    // ===== Advanced Search =====
+    val availableSeasons = listOf("Any", "WINTER", "SPRING", "SUMMER", "FALL")
+    val availableFormats = listOf("Any", "TV", "MOVIE", "OVA", "ONA", "SPECIAL", "MUSIC")
+    val availableStatus = listOf("Any", "FINISHED", "RELEASING", "NOT_YET_RELEASED", "CANCELLED")
+
+    suspend fun fetchGenres(): List<String> {
+        return try {
+            val query = "query { GenreCollection }"
+            val responseText = anilistQuery(query, emptyMap())
+            val json = com.fasterxml.jackson.databind.ObjectMapper().readTree(responseText)
+            val genres = json.get("data")?.get("GenreCollection") ?: return emptyList()
+            genres.map { it.asText() }.filter { it != "Hentai" }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    data class TagInfo(val name: String, val category: String)
+    suspend fun fetchTags(): List<TagInfo> {
+        return try {
+            val query = "query { MediaTagCollection { name category } }"
+            val responseText = anilistQuery(query, emptyMap())
+            val json = com.fasterxml.jackson.databind.ObjectMapper().readTree(responseText)
+            val tags = json.get("data")?.get("MediaTagCollection") ?: return emptyList()
+            tags.map { TagInfo(it.get("name").asText(), it.get("category")?.asText() ?: "") }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    suspend fun advancedSearch(
+        search: String? = null, genres: List<String> = emptyList(), tag: String? = null,
+        year: Int? = null, season: String? = null, format: String? = null,
+        status: String? = null, sortBy: String = "POPULARITY_DESC", page: Int = 1
+    ): DiscoverPage {
+        return try {
+            val gqlQuery = """query (${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: [String], ${'$'}tag: String, ${'$'}sort: [MediaSort], ${'$'}year: Int, ${'$'}season: MediaSeason, ${'$'}format: MediaFormat, ${'$'}status: MediaStatus) {
+                Page(page: ${'$'}page, perPage: ${'$'}perPage) {
+                    pageInfo { currentPage hasNextPage lastPage }
+                    media(type: ANIME, search: ${'$'}search, genre_in: ${'$'}genre, tag: ${'$'}tag, sort: ${'$'}sort, seasonYear: ${'$'}year, season: ${'$'}season, format: ${'$'}format, status: ${'$'}status, isAdult: false) {
+                        id title { english romaji } coverImage { extraLarge large } averageScore genres seasonYear format episodes description(asHtml: false)
+                    }
+                }
+            }""".trimIndent()
+            val variables = mutableMapOf<String, Any?>("page" to page, "perPage" to 10, "sort" to listOf(sortBy))
+            if (search?.isNotBlank() == true) variables["search"] = search
+            if (genres.isNotEmpty()) variables["genre"] = genres
+            if (tag?.isNotBlank() == true && tag != "Any") variables["tag"] = tag
+            if (year != null) variables["year"] = year
+            if (season != null && season != "Any") variables["season"] = season
+            if (format != null && format != "Any") variables["format"] = format
+            if (status != null && status != "Any") variables["status"] = status
+            val responseText = anilistQuery(gqlQuery, variables)
+            val response = parseJson<AniListResponse>(responseText)
+            val pageInfo = response.data?.Page?.pageInfo
+            val mediaList = response.data?.Page?.media ?: emptyList()
+            val results = mediaList.mapNotNull { m -> val id = m.id ?: return@mapNotNull null; val t = m.title?.english ?: m.title?.romaji ?: return@mapNotNull null; DiscoverResult(id, t, m.coverImage?.extraLarge ?: m.coverImage?.large, m.averageScore?.toDouble(), m.seasonYear, m.genres, m.format, m.episodes, m.description?.replace(Regex("<[^>]*>"), "")) }
+            DiscoverPage(results, pageInfo?.currentPage ?: page, pageInfo?.hasNextPage ?: false, pageInfo?.lastPage ?: page)
+        } catch (e: Exception) { DiscoverPage(emptyList(), page, false, page) }
+    }
+
     private suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
         val requestData = mapOf("query" to query, "variables" to variables).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
         return app.post("https://graphql.anilist.co", headers = mapOf("Accept" to "application/json", "Content-Type" to "application/json"), requestBody = requestData).text

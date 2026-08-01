@@ -19,6 +19,7 @@ import androidx.appcompat.widget.SwitchCompat
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
+import com.lagradost.cloudstream3.CommonActivity
 import com.laddu100.raghavanime.RaghavAnimeFeatures
 import com.laddu100.raghavanime.RaghavAnimeFeatures.CustomProfile
 import com.laddu100.raghavanime.RaghavAnimeFeatures.DiscoverResult
@@ -78,7 +79,8 @@ class SettingsFragment : DialogFragment() {
         }
         scroll.addView(root)
         root.addView(TextView(ctx).apply { text = "RAGHAVANIME"; textSize = 24f; setTextColor(cAccent); gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.05f })
-        root.addView(TextView(ctx).apply { text = "Tap a section to configure"; textSize = 12f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 2.dp(), 0, 16.dp()) })
+        root.addView(TextView(ctx).apply { text = "Tap a section to configure"; textSize = 12f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 2.dp(), 0, 2.dp()) })
+        root.addView(TextView(ctx).apply { text = "All features are experimental (may not work)"; textSize = 11f; setTextColor(Color.parseColor("#FFD54F")); gravity = Gravity.CENTER; setPadding(0, 0, 0, 16.dp()) })
         root.addView(sectionBtn(ctx, "SOURCES", "Enable or disable anime providers", d) { showSourcesDialog(ctx, d) })
         root.addView(sectionBtn(ctx, "CUSTOM PROFILES", "Create up to 3 source profiles", d) { showProfilesDialog(ctx, d) })
         root.addView(sectionBtn(ctx, "EXPERIMENTAL", "SubDL, recommendations, watch time", d) { showExperimentalDialog(ctx, d) })
@@ -111,7 +113,11 @@ class SettingsFragment : DialogFragment() {
         val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Sources"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
         layout.addView(Button(ctx).apply { text = "ENABLE ALL"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 4.dp(), 0, 8.dp())
-            setOnClickListener { for ((key, _) in providers) setEnabled(key, true); Toast.makeText(ctx, "All sources enabled", Toast.LENGTH_SHORT).show() } })
+            setOnClickListener {
+                for ((key, _) in providers) setEnabled(key, true)
+                Toast.makeText(ctx, "All sources enabled", Toast.LENGTH_SHORT).show()
+                dialog?.dismiss(); showSourcesDialog(ctx, d)
+            } })
         for ((key, name) in providers) layout.addView(toggleRow(ctx, name, isEnabled(key), d) { setEnabled(key, it) })
         scroll.addView(layout)
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ -> }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
@@ -296,6 +302,9 @@ class SettingsFragment : DialogFragment() {
         layout.addView(TextView(ctx).apply { text = "Sort By"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
         val sortSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableSorts.map { it.second }) }
         layout.addView(sortSpinner)
+        // Advanced Search button
+        layout.addView(Button(ctx).apply { text = "ADVANCED SEARCH"; setTextColor(Color.parseColor("#FFD54F")); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 12.dp(), 0, 4.dp())
+            setOnClickListener { dialog?.dismiss(); showAdvancedSearchDialog(ctx, d) } })
         scroll.addView(layout)
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Search") { _, _ ->
             val genre = RaghavAnimeFeatures.availableGenres[genreSpinner.selectedItemPosition]
@@ -333,7 +342,7 @@ class SettingsFragment : DialogFragment() {
                 layout.addView(TextView(ctx).apply { text = "${pageData.results.size} results"; textSize = 12f; setTextColor(cTextDim); setPadding(0, 0, 0, 8.dp()) })
 
                 for (anime in pageData.results) {
-                    layout.addView(resultCard(ctx, anime, d, dialog))
+                    layout.addView(resultCard(ctx, anime, d, dialog, Triple(query, genre, sortBy)))
                 }
 
                 // Bottom navigation
@@ -350,14 +359,14 @@ class SettingsFragment : DialogFragment() {
         }
     }
 
-    private fun resultCard(ctx: Context, anime: RaghavAnimeFeatures.DiscoverResult, d: Float, parentDialog: AlertDialog): LinearLayout {
+    private fun resultCard(ctx: Context, anime: RaghavAnimeFeatures.DiscoverResult, d: Float, parentDialog: AlertDialog, searchParams: Triple<String?, String, String>? = null): LinearLayout {
         fun Int.dp() = (this * d).toInt()
         return LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
             background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 10 * d; setColor(cCard) }
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 6.dp() }
             isClickable = true; isFocusable = true
-            setOnClickListener { parentDialog.dismiss(); showAnimeDetailDialog(ctx, d, anime) }
+            setOnClickListener { parentDialog.dismiss(); showAnimeDetailDialog(ctx, d, anime, searchParams) }
 
             // Poster thumbnail
             addView(ImageView(ctx).apply {
@@ -389,13 +398,24 @@ class SettingsFragment : DialogFragment() {
         }
     }
 
-    private fun showAnimeDetailDialog(ctx: Context, d: Float, anime: RaghavAnimeFeatures.DiscoverResult) {
+    private var lastSearchParams: Triple<String?, String, String>? = null
+
+    private fun showAnimeDetailDialog(ctx: Context, d: Float, anime: RaghavAnimeFeatures.DiscoverResult, searchParams: Triple<String?, String, String>? = null) {
+        if (searchParams != null) lastSearchParams = searchParams
         fun Int.dp() = (this * d).toInt()
         val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
         val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
         layout.addView(TextView(ctx).apply { text = "Loading..."; textSize = 14f; setTextColor(cTextDim); setPadding(0, 8.dp(), 0, 8.dp()) })
         scroll.addView(layout)
-        val dialog = AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Close") { _, _ -> }.create()
+        val dialog = AlertDialog.Builder(ctx).setView(scroll)
+            .setPositiveButton("Close") { _, _ -> }
+            .setNeutralButton("Back to Results") { _, _ ->
+            if (lastSearchParams != null) {
+                val (q, g, s) = lastSearchParams!!
+                showDiscoverResults(ctx, d, q, g, s, 1)
+            }
+        }
+            .create()
         dialog.show()
         CoroutineScope(Dispatchers.Main).launch {
             try {
@@ -446,17 +466,145 @@ class SettingsFragment : DialogFragment() {
                     setPadding(0, 16.dp(), 0, 16.dp())
                     setOnClickListener {
                         dialog.dismiss()
-                        try { this@SettingsFragment.dialog?.dismiss() } catch (_: Exception) {}
                         try { this@SettingsFragment.dismiss() } catch (_: Exception) {}
                         try {
-                            MainActivity.nextSearchQuery = detail.title
-                            MainActivity.reloadHomeEvent.invoke(true)
+                            val title = detail.title
+                            com.lagradost.cloudstream3.CommonActivity.activity?.runOnUiThread {
+                                try {
+                                    com.lagradost.cloudstream3.MainActivity.nextSearchQuery = title
+                                    com.lagradost.cloudstream3.MainActivity.reloadHomeEvent.invoke(true)
+                                } catch (_: Exception) {}
+                            }
                         } catch (_: Exception) {
-                            Toast.makeText(ctx, "Search for: ${detail.title}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(ctx, "Search for: ${detail.title} in RaghavAnime", Toast.LENGTH_LONG).show()
                         }
                     }
                 })
 
+            } catch (e: Exception) {
+                layout.removeAllViews()
+                layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
+            }
+        }
+    }
+
+    // =================== ADVANCED SEARCH ===================
+    private fun showAdvancedSearchDialog(ctx: Context, d: Float) {
+        fun Int.dp() = (this * d).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "Advanced Search"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 2.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Experimental feature (may not work)"; textSize = 11f; setTextColor(Color.parseColor("#FFD54F")); setPadding(0, 0, 0, 12.dp()) })
+
+        // Search input
+        layout.addView(TextView(ctx).apply { text = "Search (optional)"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 2.dp()) })
+        val searchInput = EditText(ctx).apply { hint = "Anime name"; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()) }
+        layout.addView(searchInput)
+
+        // Genres (multi-select checkbox list)
+        layout.addView(TextView(ctx).apply { text = "Genres"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val genreChecksContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val genreChecks = mutableMapOf<String, CheckBox>()
+        CoroutineScope(Dispatchers.Main).launch {
+            val genres = withContext(Dispatchers.IO) { RaghavAnimeFeatures.fetchGenres() }
+            if (genres.isEmpty()) {
+                genreChecksContainer.addView(TextView(ctx).apply { text = "Loading genres..."; textSize = 12f; setTextColor(cTextDim); setPadding(0, 4.dp(), 0, 4.dp()) })
+            } else {
+                genreChecksContainer.removeAllViews()
+                for (genre in genres) {
+                    val cb = CheckBox(ctx).apply { text = genre; setTextColor(cText); textSize = 12f }
+                    genreChecks[genre] = cb
+                    genreChecksContainer.addView(cb)
+                }
+            }
+        }
+        val genreScroll = ScrollView(ctx).apply { addView(genreChecksContainer); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 150.dp()) }
+        layout.addView(genreScroll)
+
+        // Tags spinner
+        layout.addView(TextView(ctx).apply { text = "Tag"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val tagSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, listOf("Any")) }
+        layout.addView(tagSpinner)
+        CoroutineScope(Dispatchers.Main).launch {
+            val tags = withContext(Dispatchers.IO) { RaghavAnimeFeatures.fetchTags() }
+            if (tags.isNotEmpty()) {
+                val tagNames = listOf("Any") + tags.map { it.name }
+                tagSpinner.adapter = darkAdapter(ctx, tagNames)
+            }
+        }
+
+        // Year input
+        layout.addView(TextView(ctx).apply { text = "Year (e.g., 2023)"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val yearInput = EditText(ctx).apply { hint = "Any"; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); inputType = android.text.InputType.TYPE_CLASS_NUMBER }
+        layout.addView(yearInput)
+
+        // Season
+        layout.addView(TextView(ctx).apply { text = "Season"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val seasonSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableSeasons) }
+        layout.addView(seasonSpinner)
+
+        // Format
+        layout.addView(TextView(ctx).apply { text = "Format"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val formatSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableFormats) }
+        layout.addView(formatSpinner)
+
+        // Status
+        layout.addView(TextView(ctx).apply { text = "Status"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val statusSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableStatus) }
+        layout.addView(statusSpinner)
+
+        // Sort
+        layout.addView(TextView(ctx).apply { text = "Sort By"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
+        val sortSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, RaghavAnimeFeatures.availableSorts.map { it.second }) }
+        layout.addView(sortSpinner)
+
+        scroll.addView(layout)
+        AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Search") { _, _ ->
+            val search = searchInput.text?.toString()?.trim()?.takeIf { it.isNotBlank() }
+            val selectedGenres = genreChecks.filter { it.value.isChecked }.keys.toList()
+            val tag = if (tagSpinner.selectedItemPosition > 0) tagSpinner.selectedItem.toString() else null
+            val year = yearInput.text?.toString()?.trim()?.toIntOrNull()
+            val season = RaghavAnimeFeatures.availableSeasons[seasonSpinner.selectedItemPosition]
+            val format = RaghavAnimeFeatures.availableFormats[formatSpinner.selectedItemPosition]
+            val status = RaghavAnimeFeatures.availableStatus[statusSpinner.selectedItemPosition]
+            val sortBy = RaghavAnimeFeatures.availableSorts[sortSpinner.selectedItemPosition].first
+            showAdvancedResults(ctx, d, search, selectedGenres, tag, year, season, format, status, sortBy, 1)
+        }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
+    }
+
+    private fun showAdvancedResults(ctx: Context, d: Float, search: String?, genres: List<String>, tag: String?, year: Int?, season: String, format: String, status: String, sortBy: String, page: Int) {
+        fun Int.dp() = (this * d).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "Searching..."; textSize = 14f; setTextColor(cTextDim); setPadding(0, 8.dp(), 0, 8.dp()) })
+        scroll.addView(layout)
+        val dialog = AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Close") { _, _ -> }.create()
+        dialog.show()
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                val pageData = withContext(Dispatchers.IO) { RaghavAnimeFeatures.advancedSearch(search, genres, tag, year, season, format, status, sortBy, page) }
+                layout.removeAllViews()
+                if (pageData.results.isEmpty()) {
+                    layout.addView(TextView(ctx).apply { text = "No results found"; textSize = 14f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp()) })
+                    return@launch
+                }
+                val pageBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 8.dp()) }
+                if (page > 1) pageBar.addView(Button(ctx).apply { text = "< Prev"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tag, year, season, format, status, sortBy, page - 1) } })
+                pageBar.addView(TextView(ctx).apply { text = "  Page ${pageData.currentPage} / ${pageData.lastPage}  "; textSize = 13f; setTextColor(cTextSub); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                if (pageData.hasNextPage) pageBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tag, year, season, format, status, sortBy, page + 1) } })
+                layout.addView(pageBar)
+                layout.addView(TextView(ctx).apply { text = "${pageData.results.size} results"; textSize = 12f; setTextColor(cTextDim); setPadding(0, 0, 0, 8.dp()) })
+                for (anime in pageData.results) {
+                    layout.addView(LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 10 * d; setColor(cCard) }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 6.dp() }; isClickable = true; setOnClickListener { dialog.dismiss(); showAnimeDetailDialog(ctx, d, anime) }
+                        addView(TextView(ctx).apply { text = anime.title; textSize = 14f; setTextColor(cText); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); setTypeface(typeface, Typeface.BOLD) })
+                        addView(TextView(ctx).apply { text = ">"; textSize = 16f; setTextColor(cAccent); setPadding(8.dp(), 0, 0, 0) }) })
+                }
+                if (pageData.hasNextPage || page > 1) {
+                    val bottomBar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, 12.dp(), 0, 8.dp()) }
+                    if (page > 1) bottomBar.addView(Button(ctx).apply { text = "< Previous"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tag, year, season, format, status, sortBy, page - 1) } })
+                    if (pageData.hasNextPage) bottomBar.addView(Button(ctx).apply { text = "Next >"; setTextColor(cAccent); textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setOnClickListener { dialog.dismiss(); showAdvancedResults(ctx, d, search, genres, tag, year, season, format, status, sortBy, page + 1) } })
+                    layout.addView(bottomBar)
+                }
             } catch (e: Exception) {
                 layout.removeAllViews()
                 layout.addView(TextView(ctx).apply { text = "Error: ${e.message}"; textSize = 14f; setTextColor(cWarning) })
