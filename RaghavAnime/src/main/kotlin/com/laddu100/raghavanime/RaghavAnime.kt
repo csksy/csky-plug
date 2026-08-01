@@ -406,7 +406,7 @@ class RaghavAnime : MainAPI() {
                 }
             },
             {
-                try {
+                if (SettingsFragment.isEnabled("anikoto")) try {
                     val anikoto = RaghavAnikoto()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -425,7 +425,7 @@ class RaghavAnime : MainAPI() {
             {
                 if (SettingsFragment.isEnabled("enma")) try {
                     val enma = RaghavEnma()
-                    if (SettingsFragment.isEnabled("enma")) enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                    enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[Enma] FAILED: ${e.message}")
                 }
