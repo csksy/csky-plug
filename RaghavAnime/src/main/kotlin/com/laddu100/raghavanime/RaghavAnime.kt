@@ -1,6 +1,7 @@
 package com.laddu100.raghavanime
 
 import com.lagradost.cloudstream3.CommonActivity.activity
+import com.laddu100.raghavanime.settings.SettingsDialog
 import com.lagradost.cloudstream3.CloudStreamApp
 import android.content.Context
 import android.app.AlertDialog
@@ -230,7 +231,7 @@ class RaghavAnime : MainAPI() {
         val episode = linkData.episode
         val isDub = linkData.isDub
 
-        if (RaghavAnimeSettings.isSubDLEnabled()) {
+        if (SettingsDialog.isSubDLEnabled()) {
             try {
                 SubDLHelper.fetchSubtitles(
                     activity?.applicationContext,
@@ -257,7 +258,7 @@ class RaghavAnime : MainAPI() {
                         val matchedEp = epList?.find { it.episode == episode }
                         if (matchedEp != null) {
                             miruro.loadLinks(matchedEp.data, false, subtitleCallback, callback)
-                            RaghavAnimeSettings.recordSourceSuccess("miruro")
+                            SettingsDialog.recordSourceSuccess("miruro")
                         } else {
                         }
                     }
@@ -424,8 +425,8 @@ class RaghavAnime : MainAPI() {
             {
                 try {
                     val enma = RaghavEnma()
-                    if (RaghavAnimeSettings.isEnabled("enma")) enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
-                    if (true) RaghavAnimeSettings.recordSourceSuccess("enma")
+                    if (SettingsDialog.isEnabled("enma")) enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                    if (true) SettingsDialog.recordSourceSuccess("enma")
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[Enma] FAILED: ${e.message}")
                 }
@@ -441,7 +442,7 @@ class RaghavAnime : MainAPI() {
                     )
                     if (epData != null) {
                         animo.loadLinks(epData, false, subtitleCallback, callback)
-                        RaghavAnimeSettings.recordSourceSuccess("animo")
+                        SettingsDialog.recordSourceSuccess("animo")
                     } else {
                     }
                 } catch (e: Throwable) {

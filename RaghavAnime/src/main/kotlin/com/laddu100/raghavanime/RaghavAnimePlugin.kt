@@ -3,6 +3,7 @@ package com.laddu100.raghavanime
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import com.laddu100.raghavanime.settings.SettingsDialog
 
 @CloudstreamPlugin
 class RaghavAnimePlugin : Plugin() {
@@ -19,5 +20,9 @@ class RaghavAnimePlugin : Plugin() {
         registerExtractorAPI(AniWavesEchoVideo())
         registerExtractorAPI(AniWavesFilemoon())
         registerExtractorAPI(AniWavesMyVidPlay())
+
+        this.openSettings = { ctx ->
+            SettingsDialog.show(ctx)
+        }
     }
 }
