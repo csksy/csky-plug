@@ -1,6 +1,7 @@
 package com.laddu100.raghavanime
 
 import com.lagradost.cloudstream3.CommonActivity.activity
+import com.lagradost.cloudstream3.CloudStreamApp
 import android.content.Context
 import android.app.AlertDialog
 import android.widget.LinearLayout
@@ -229,6 +230,21 @@ class RaghavAnime : MainAPI() {
         val episode = linkData.episode
         val isDub = linkData.isDub
 
+        if (RaghavAnimeSettings.isSubDLEnabled()) {
+            try {
+                SubDLHelper.fetchSubtitles(
+                    activity?.applicationContext,
+                    title,
+                    jpTitle,
+                    episode,
+                    season = 1,
+                    isMovie = false,
+                    subtitleCallback
+                )
+            } catch (e: Throwable) {
+                Log.e("RaghavAnime", "[SubDL] FAILED: ${e.message}")
+            }
+        }
 
         runAllAsync(
             {
@@ -241,6 +257,7 @@ class RaghavAnime : MainAPI() {
                         val matchedEp = epList?.find { it.episode == episode }
                         if (matchedEp != null) {
                             miruro.loadLinks(matchedEp.data, false, subtitleCallback, callback)
+                            RaghavAnimeSettings.recordSourceSuccess("miruro")
                         } else {
                         }
                     }
@@ -407,7 +424,8 @@ class RaghavAnime : MainAPI() {
             {
                 try {
                     val enma = RaghavEnma()
-                    enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                    if (RaghavAnimeSettings.isEnabled("enma")) enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                    if (true) RaghavAnimeSettings.recordSourceSuccess("enma")
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[Enma] FAILED: ${e.message}")
                 }
@@ -423,6 +441,7 @@ class RaghavAnime : MainAPI() {
                     )
                     if (epData != null) {
                         animo.loadLinks(epData, false, subtitleCallback, callback)
+                        RaghavAnimeSettings.recordSourceSuccess("animo")
                     } else {
                     }
                 } catch (e: Throwable) {

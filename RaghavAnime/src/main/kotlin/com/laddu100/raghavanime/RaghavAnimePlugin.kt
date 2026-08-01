@@ -7,23 +7,15 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class RaghavAnimePlugin : Plugin() {
     override fun load(context: Context) {
-
         Miruro.context = context
-
         initAniDbCFBypass(context)
-
         initAnidapCFBypass(context)
-
         initSenshiCFBypass(context)
-
         EnmaDecryptor.setContext(context)
         EnmaDecryptor.startInit()
-
         registerMainAPI(RaghavAnime())
-
         registerExtractorAPI(MiruroMegaPlay())
         registerExtractorAPI(MiruroVidWish())
-
         registerExtractorAPI(AniWavesEchoVideo())
         registerExtractorAPI(AniWavesFilemoon())
         registerExtractorAPI(AniWavesMyVidPlay())
