@@ -1,4 +1,10 @@
-version = 6
+version = 7
+
+android {
+    buildFeatures {
+        buildConfig = true
+    }
+}
 
 cloudstream {
     language = "en"
