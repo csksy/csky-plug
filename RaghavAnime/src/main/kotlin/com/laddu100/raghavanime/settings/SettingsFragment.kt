@@ -160,6 +160,7 @@ class SettingsFragment : DialogFragment {
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun showSourcesDialog(ctx: Context, density: Float) {
         fun Int.dp() = (this * density).toInt()
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
         val layout = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg)
@@ -174,8 +175,9 @@ class SettingsFragment : DialogFragment {
                 setEnabled(key, checked)
             })
         }
+        scroll.addView(layout)
 
-        AlertDialog.Builder(ctx).setView(layout)
+        AlertDialog.Builder(ctx).setView(scroll)
             .setPositiveButton("Save") { _, _ -> }
             .setNegativeButton("Cancel", null)
             .create().apply {
