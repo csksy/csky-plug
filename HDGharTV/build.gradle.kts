@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 android {
     buildFeatures {
@@ -11,7 +11,7 @@ dependencies {
 }
 
 cloudstream {
-    language = "en"
+    language = "hi"
     description = "Movies & Series with Multi-Audio (Hindi, English, Tamil, Telugu, etc.)"
     authors = listOf("KSHITIJ8473")
 

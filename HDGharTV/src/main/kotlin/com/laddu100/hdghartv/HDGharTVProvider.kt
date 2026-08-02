@@ -14,11 +14,10 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 class HDGharTVProvider : MainAPI() {
     override var mainUrl = "https://hdghartv.cc"
     override var name = "HDGharTV"
-    override var lang = "en"
+    override var lang = "hi"
     override val hasMainPage = true
     override val hasDownloadSupport = false
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-    override val hasQuickSearch = false
 
     private val fallbackApiBase = "https://hdghartv.cc"
     private val TAG = "HDGharTV"
@@ -35,7 +34,6 @@ class HDGharTVProvider : MainAPI() {
         @JsonProperty("type") val type: String? = null,
         @JsonProperty("language") val language: String? = null,
         @JsonProperty("isActive") val isActive: Boolean? = null,
-        @JsonProperty("embed") val embed: Boolean? = null,
         @JsonProperty("headers") val headers: String? = null,
         @JsonProperty("userAgent") val userAgent: String? = null
     )
@@ -46,7 +44,6 @@ class HDGharTVProvider : MainAPI() {
         @JsonProperty("name") val name: String? = null,
         @JsonProperty("overview") val overview: String? = null,
         @JsonProperty("stillPath") val stillPath: String? = null,
-        @JsonProperty("runtime") val runtime: Int? = null,
         @JsonProperty("streamingLinks") val streamingLinks: List<StreamLink>? = null
     )
 
@@ -56,14 +53,12 @@ class HDGharTVProvider : MainAPI() {
         @JsonProperty("name") val name: String? = null,
         @JsonProperty("overview") val overview: String? = null,
         @JsonProperty("posterPath") val posterPath: String? = null,
-        @JsonProperty("episodeCount") val episodeCount: Int? = null,
         @JsonProperty("episodes") val episodes: List<Episode>? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class MediaItem(
         @JsonProperty("_id") val id: String? = null,
-        @JsonProperty("tmdbId") val tmdbId: Int? = null,
         @JsonProperty("title") val title: String? = null,
         @JsonProperty("originalTitle") val originalTitle: String? = null,
         @JsonProperty("overview") val overview: String? = null,
@@ -71,16 +66,10 @@ class HDGharTVProvider : MainAPI() {
         @JsonProperty("backdropPath") val backdropPath: String? = null,
         @JsonProperty("releaseDate") val releaseDate: String? = null,
         @JsonProperty("firstAirDate") val firstAirDate: String? = null,
-        @JsonProperty("runtime") val runtime: Int? = null,
         @JsonProperty("genres") val genres: List<Genre>? = null,
-        @JsonProperty("categories") val categories: List<String>? = null,
         @JsonProperty("voteAverage") val voteAverage: Double? = null,
-        @JsonProperty("originalLanguage") val originalLanguage: String? = null,
         @JsonProperty("streamingLinks") val streamingLinks: List<StreamLink>? = null,
-        @JsonProperty("seasons") val seasons: List<Season>? = null,
-        @JsonProperty("numberOfSeasons") val numberOfSeasons: Int? = null,
-        @JsonProperty("numberOfEpisodes") val numberOfEpisodes: Int? = null,
-        @JsonProperty("enableStream") val enableStream: Boolean? = null
+        @JsonProperty("seasons") val seasons: List<Season>? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -92,16 +81,13 @@ class HDGharTVProvider : MainAPI() {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class MediaListResponse(
         @JsonProperty("data") val data: List<MediaItem>? = null,
-        @JsonProperty("page") val page: Int? = null,
         @JsonProperty("totalPages") val totalPages: Int? = null,
         @JsonProperty("total") val total: Int? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class FeaturedItem(
-        @JsonProperty("_id") val id: String? = null,
         @JsonProperty("sourceId") val sourceId: String? = null,
-        @JsonProperty("tmdbId") val tmdbId: Int? = null,
         @JsonProperty("title") val title: String? = null,
         @JsonProperty("type") val type: String? = null,
         @JsonProperty("overview") val overview: String? = null,
@@ -123,20 +109,10 @@ class HDGharTVProvider : MainAPI() {
         val posterUrl: String? = null
     )
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class EpisodeLoadData(
-        val id: String,
-        val season: Int,
-        val episode: Int,
-        val title: String,
-        val posterUrl: String? = null
-    )
-
     override val mainPage = mainPageOf(
         "movies" to "Movies",
         "series" to "Series",
-        "featured" to "Featured",
-        "trending" to "Trending Searches"
+        "featured" to "Featured"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -177,17 +153,6 @@ class HDGharTVProvider : MainAPI() {
                         lists.add(HomePageList("Featured", items, isHorizontalImages = true))
                     }
                 }
-                "trending" -> {
-                    val res = app.get("$base/api/search/trending", referer = "$base/")
-                    val trending = parseJson<List<String>>(res.text)
-                    val items = trending.map { query ->
-                        val loadData = LoadData(id = query, type = "search", title = query)
-                        newMovieSearchResponse(query, loadData.toJson(), TvType.Movie) {}
-                    }
-                    if (items.isNotEmpty()) {
-                        lists.add(HomePageList("Trending Searches", items, isHorizontalImages = true))
-                    }
-                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "getMainPage: ${e.message}")
@@ -213,13 +178,8 @@ class HDGharTVProvider : MainAPI() {
         try {
             val res = app.get("$base/api/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}", referer = "$base/")
             val parsed = parseJson<ApiSearchResponse>(res.text)
-
-            parsed.movies?.forEach { m ->
-                m.toSearchResponse("movie")?.let { results.add(it) }
-            }
-            parsed.series?.forEach { s ->
-                s.toSearchResponse("series")?.let { results.add(it) }
-            }
+            parsed.movies?.forEach { m -> m.toSearchResponse("movie")?.let { results.add(it) } }
+            parsed.series?.forEach { s -> s.toSearchResponse("series")?.let { results.add(it) } }
         } catch (e: Exception) {
             Log.e(TAG, "search: ${e.message}")
         }
@@ -231,7 +191,7 @@ class HDGharTVProvider : MainAPI() {
         val loadData = try {
             parseJson<LoadData>(url)
         } catch (e: Exception) {
-            Log.e(TAG, "load: parse error: ${e.message}")
+            Log.e(TAG, "load: ${e.message}")
             return null
         }
 
@@ -243,11 +203,9 @@ class HDGharTVProvider : MainAPI() {
                     val res = app.get("$base/api/movies/public/${loadData.id}", referer = "$base/")
                     val movie = parseJson<MediaItem>(res.text)
                     val title = movie.title ?: movie.originalTitle ?: loadData.title
-
                     val streams = movie.streamingLinks?.filter { it.isActive != false && !it.url.isNullOrBlank() } ?: emptyList()
-                    val loadDataWithStreams = streams.toJson()
 
-                    newMovieLoadResponse(title, url, TvType.Movie, loadDataWithStreams) {
+                    newMovieLoadResponse(title, url, TvType.Movie, streams.toJson()) {
                         this.posterUrl = movie.posterPath ?: loadData.posterUrl
                         this.backgroundPosterUrl = movie.backdropPath
                         this.plot = movie.overview
@@ -266,16 +224,10 @@ class HDGharTVProvider : MainAPI() {
                         season.episodes?.forEach { ep ->
                             val epNum = ep.episodeNumber ?: return@forEach
                             val streams = ep.streamingLinks?.filter { it.isActive != false && !it.url.isNullOrBlank() } ?: emptyList()
-                            val epLoadData = EpisodeLoadData(
-                                id = loadData.id,
-                                season = seasonNum,
-                                episode = epNum,
-                                title = title,
-                                posterUrl = ep.stillPath ?: season.posterPath ?: series.posterPath
-                            ).toJson() + "|STREAMS|" + streams.toJson()
+                            val epData = streams.toJson()
 
                             episodes.add(
-                                newEpisode(epLoadData) {
+                                newEpisode(epData) {
                                     this.name = ep.name ?: "Episode $epNum"
                                     this.season = seasonNum
                                     this.episode = epNum
@@ -308,22 +260,18 @@ class HDGharTVProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val streamsJson = if (data.contains("|STREAMS|")) {
-            data.substringAfter("|STREAMS|")
-        } else {
-            data
-        }
-
         val streams = try {
-            parseJson<List<StreamLink>>(streamsJson)
+            parseJson<List<StreamLink>>(data)
         } catch (e: Exception) {
-            Log.e(TAG, "loadLinks: parse error: ${e.message}")
+            Log.e(TAG, "loadLinks: ${e.message}")
             return false
         }
 
         if (streams.isEmpty()) return false
 
+        val base = apiBase()
         var found = false
+
         for (stream in streams) {
             val url = stream.url ?: continue
             if (url.isBlank()) continue
@@ -337,8 +285,7 @@ class HDGharTVProvider : MainAPI() {
                 else -> Qualities.Unknown.value
             }
 
-            val language = stream.language?.takeIf { it.isNotBlank() }
-            val name = if (language != null) "$name - $language" else name
+            val linkName = "HDGharTV ${stream.quality ?: "Unknown"}"
 
             val type = when {
                 url.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
@@ -348,7 +295,7 @@ class HDGharTVProvider : MainAPI() {
 
             val headers = mutableMapOf(
                 "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-                "Referer" to "${apiBase()}/"
+                "Referer" to "$base/"
             )
             if (stream.headers?.isNotBlank() == true) {
                 try {
@@ -363,7 +310,7 @@ class HDGharTVProvider : MainAPI() {
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
-                    name = "$this.name - ${stream.quality ?: "Unknown"}",
+                    name = linkName,
                     url = url,
                     type = type
                 ) {
