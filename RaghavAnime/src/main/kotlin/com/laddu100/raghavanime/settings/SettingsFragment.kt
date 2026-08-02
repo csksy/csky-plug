@@ -77,7 +77,6 @@ class SettingsFragment : DialogFragment() {
         }
     }
 
-    // =================== EXPERIMENTAL ===================
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun showExperimentalDialog(ctx: Context, d: Float) {
         fun Int.dp() = (this * d).toInt()
@@ -86,17 +85,14 @@ class SettingsFragment : DialogFragment() {
         layout.addView(TextView(ctx).apply { text = "Experimental Features"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
         layout.addView(TextView(ctx).apply { text = "May not work properly"; textSize = 11f; setTextColor(cWarning); setPadding(0, 0, 0, 12.dp()) })
 
-        // Watch Time Tracker
         layout.addView(sectionLabel(ctx, "WATCH TRACKING", d))
         val watchTimeToggle = toggleRow(ctx, "Watch Time Tracker", RaghavAnimeFeatures.isEnabled("watch_time"), d) { checked ->
             if (!checked) {
-                // Warning: recommendations depend on watch time
                 AlertDialog.Builder(ctx).setTitle("WARNING").setMessage("Anime Recommendations depends on Watch Time Tracker.\n\nIf you turn off Watch Time Tracker, recommendations will no longer update.\n\nAre you sure you want to turn it off?")
                     .setPositiveButton("Yes, turn off") { _, _ ->
                         RaghavAnimeFeatures.setEnabled("watch_time", false)
                     }
                     .setNegativeButton("Cancel") { _, _ ->
-                        // Re-enable the toggle
                         (layout.findViewWithTag<SwitchCompat>("watch_time_toggle"))?.isChecked = true
                     }.show()
             } else {
@@ -108,7 +104,6 @@ class SettingsFragment : DialogFragment() {
         layout.addView(watchTimeToggle)
         layout.addView(descText(ctx, "Tracks watch time per anime. Required for recommendations.", d))
 
-        // Recommendations
         layout.addView(sectionLabel(ctx, "RECOMMENDATIONS", d))
         val recToggle = toggleRow(ctx, "Anime Recommendations", RaghavAnimeFeatures.isEnabled("recommendations"), d) { checked ->
             RaghavAnimeFeatures.setEnabled("recommendations", checked)
@@ -119,7 +114,6 @@ class SettingsFragment : DialogFragment() {
         layout.addView(recToggle)
         layout.addView(descText(ctx, "Shows recommended anime on homepage based on your watch history", d))
 
-        // Reset recommendations button
         layout.addView(Button(ctx).apply { text = "RESET RECOMMENDATIONS"; setTextColor(cWarning); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 8.dp(), 0, 8.dp())
             setOnClickListener {
                 AlertDialog.Builder(ctx).setTitle("Reset Recommendations").setMessage("This will clear all recommendations from the homepage.\n\nNew recommendations will appear after you watch a new anime.\n\nContinue?")
@@ -130,7 +124,6 @@ class SettingsFragment : DialogFragment() {
                     .setNegativeButton("Cancel", null).show()
             } })
 
-        // Reset watch history button
         layout.addView(Button(ctx).apply { text = "RESET WATCH HISTORY"; setTextColor(cWarning); textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 4.dp(), 0, 8.dp())
             setOnClickListener {
                 AlertDialog.Builder(ctx).setTitle("Reset Watch History").setMessage("This will delete ALL watch time data AND reset recommendations.\n\nAre you sure?")
@@ -144,7 +137,6 @@ class SettingsFragment : DialogFragment() {
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ -> }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
 
-    // =================== HELPERS ===================
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private fun toggleRow(ctx: Context, label: String, checked: Boolean, d: Float, onChange: (Boolean) -> Unit): LinearLayout {
         fun Int.dp() = (this * d).toInt()

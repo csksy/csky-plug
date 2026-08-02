@@ -10,19 +10,6 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 
-/**
- * RaghavAnimeFeatures — Watch Time Tracker + Anime Recommendations
- *
- * Both features are ON by default and persistent across app restarts.
- *
- * Recommendations logic:
- * - Fetches recommendations from AniList for ALL watched anime (not just top 3)
- * - Aggregates and deduplicates by AniList ID
- * - Sorts by recommendation score (averageScore from AniList)
- * - Caches to persistent storage so recommendations survive app restart
- * - Updates every time user watches a new anime
- * - Reset button clears the cache so next homepage load regenerates fresh
- */
 object RaghavAnimeFeatures {
 
     private const val PREFIX = "raghavanime_feat_"
@@ -34,7 +21,6 @@ object RaghavAnimeFeatures {
     }
     fun setEnabled(feature: String, enabled: Boolean) { setKey(PREFIX + feature, enabled) }
 
-    // ===== Watch Time Tracker =====
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class WatchEntry(
         val anilistId: Int,
@@ -60,9 +46,7 @@ object RaghavAnimeFeatures {
                 list.add(WatchEntry(anilistId, title, posterUrl, durationMs, 1, System.currentTimeMillis()))
             }
             setKey(PREFIX + "watch_history", list.take(100).toJson())
-            // Clear the reset flag so recommendations can regenerate on next homepage load
             setKey(PREFIX + "rec_reset", false)
-            // Invalidate recommendations cache so next homepage load regenerates with new watch history
             invalidateRecommendationsCache()
         } catch (_: Exception) {}
     }
@@ -89,7 +73,6 @@ object RaghavAnimeFeatures {
         invalidateRecommendationsCache()
     }
 
-    // ===== Anime Recommendations =====
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class SimpleAnime(val title: String, val url: String, val posterUrl: String?)
 
@@ -101,11 +84,6 @@ object RaghavAnimeFeatures {
         val score: Int?
     )
 
-    /**
-     * Fetches recommendations for a single AniList anime.
-     * Uses AniList GraphQL recommendations(sort: RATING_DESC) — these are user-curated
-     * recommendations on AniList, sorted by rating (most agreed-upon first).
-     */
     private suspend fun fetchRecommendationsForAnime(anilistId: Int): List<RecommendationEntry> {
         return try {
             val query = """
@@ -137,21 +115,6 @@ object RaghavAnimeFeatures {
         } catch (_: Exception) { emptyList() }
     }
 
-    /**
-     * Generates the recommendations list from the ENTIRE watch history.
-     *
-     * How it works:
-     * 1. Reads all watched anime from watch history (up to 100 entries)
-     * 2. For each watched anime, fetches its top 20 AniList recommendations
-     * 3. Aggregates all recommendations into one list
-     * 4. Removes already-watched anime from the recommendations
-     * 5. Deduplicates by AniList ID (keeping the one with highest score)
-     * 6. Sorts by score (highest first)
-     * 7. Takes top 20
-     * 8. Caches result to persistent storage
-     *
-     * This runs in background and is called from getRecommendationsList().
-     */
     suspend fun regenerateRecommendations(): List<RecommendationEntry> {
         val history = getWatchHistory()
         if (history.isEmpty()) {
@@ -162,7 +125,6 @@ object RaghavAnimeFeatures {
         val watchedIds = history.map { it.anilistId }.toSet()
         val allRecs = mutableMapOf<Int, RecommendationEntry>()
 
-        // Fetch recommendations for ALL watched anime (cap at 50 to avoid too many API calls)
         for (entry in history.take(50)) {
             val recs = fetchRecommendationsForAnime(entry.anilistId)
             for (rec in recs) {
@@ -182,18 +144,9 @@ object RaghavAnimeFeatures {
         return result
     }
 
-    /**
-     * Returns the recommendations list.
-     * - If reset flag is set, returns empty list (user tapped reset, don't regenerate until next watch)
-     * - If cache exists and is not empty, returns cached list (fast, works offline)
-     * - If cache is empty, regenerates from watch history
-     */
     suspend fun getRecommendationsList(): List<SimpleAnime> {
-        // Check if user reset recommendations — if so, return empty until they watch something new
         val isReset = getKey<Boolean>(PREFIX + "rec_reset") ?: false
-        if (isReset) {
-            return emptyList()
-        }
+        if (isReset) return emptyList()
 
         val cached = getCachedRecommendations()
         if (cached.isNotEmpty()) {
@@ -212,10 +165,6 @@ object RaghavAnimeFeatures {
         try { setKey(PREFIX + "rec_cache", emptyList<RecommendationEntry>().toJson()) } catch (_: Exception) {}
     }
 
-    /**
-     * Reset recommendations — clears the cache AND sets a flag so recommendations
-     * don't regenerate until the user watches a new anime.
-     */
     fun resetRecommendations() {
         invalidateRecommendationsCache()
         setKey(PREFIX + "rec_reset", true)
