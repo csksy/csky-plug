@@ -23,13 +23,13 @@ class TimStreamsProvider : MainAPI() {
     override val hasDownloadSupport = false
     override val supportedTypes = setOf(TvType.Live)
 
-    private val fallbackApiUrl = "https://api.timstreams.st/api"
+    private val fallbackApiBase = "https://api.timstreams.st"
     private val fallbackCdnBase = "https://logic.icelanders.st/"
     private val TAG = "TimStreams"
 
     private suspend fun apiUrl(): String {
         val domain = FirebaseDomainHelper.getDomain("timstreams_api")
-        return (domain ?: fallbackApiUrl).removeSuffix("/") + "/api"
+        return (domain ?: fallbackApiBase).removeSuffix("/") + "/api"
     }
 
     private suspend fun cdnBase(): String {
