@@ -60,6 +60,8 @@ object RaghavAnimeFeatures {
                 list.add(WatchEntry(anilistId, title, posterUrl, durationMs, 1, System.currentTimeMillis()))
             }
             setKey(PREFIX + "watch_history", list.take(100).toJson())
+            // Clear the reset flag so recommendations can regenerate on next homepage load
+            setKey(PREFIX + "rec_reset", false)
             // Invalidate recommendations cache so next homepage load regenerates with new watch history
             invalidateRecommendationsCache()
         } catch (_: Exception) {}
@@ -182,10 +184,17 @@ object RaghavAnimeFeatures {
 
     /**
      * Returns the recommendations list.
+     * - If reset flag is set, returns empty list (user tapped reset, don't regenerate until next watch)
      * - If cache exists and is not empty, returns cached list (fast, works offline)
      * - If cache is empty, regenerates from watch history
      */
     suspend fun getRecommendationsList(): List<SimpleAnime> {
+        // Check if user reset recommendations — if so, return empty until they watch something new
+        val isReset = getKey<Boolean>(PREFIX + "rec_reset") ?: false
+        if (isReset) {
+            return emptyList()
+        }
+
         val cached = getCachedRecommendations()
         if (cached.isNotEmpty()) {
             return cached.map { SimpleAnime(it.title, "https://graphql.anilist.co/info/${it.id}", it.posterUrl) }
@@ -204,11 +213,12 @@ object RaghavAnimeFeatures {
     }
 
     /**
-     * Reset recommendations — clears the cache completely.
-     * Next time the homepage RECOMMEND section loads, it will regenerate from watch history.
+     * Reset recommendations — clears the cache AND sets a flag so recommendations
+     * don't regenerate until the user watches a new anime.
      */
     fun resetRecommendations() {
         invalidateRecommendationsCache()
+        setKey(PREFIX + "rec_reset", true)
     }
 
     private suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {

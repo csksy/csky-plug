@@ -44,6 +44,10 @@ class RaghavAnime : MainAPI() {
             if (!RaghavAnimeFeatures.isEnabled("recommendations")) {
                 return newHomePageResponse(request.name, emptyList())
             }
+            // Only return recommendations on page 1 — prevents infinite duplicate scroll
+            if (page > 1) {
+                return newHomePageResponse(request.name, emptyList())
+            }
             return try {
                 val list = RaghavAnimeFeatures.getRecommendationsList()
                 val home = list.map { item ->
