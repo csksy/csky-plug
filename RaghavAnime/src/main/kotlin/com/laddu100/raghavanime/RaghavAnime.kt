@@ -53,13 +53,24 @@ class RaghavAnime : MainAPI() {
             lastDownCheckTime = now
             val testQuery = "query { Page(page:1, perPage:1) { media(type: ANIME) { id } } }"
             val responseText = anilistQuery(testQuery, emptyMap())
-            val hasError = responseText.contains("\"errors\"") && !responseText.contains("\"data\"")
-            val isDown = hasError || responseText.contains("temporarily disabled") || responseText.isBlank()
-            if (isDown) showAniListDownPopup()
-            return isDown
+
+            if (responseText.contains("temporarily disabled")) {
+                showAniListDownPopup()
+                return true
+            }
+
+            if (responseText.contains("\"data\"") && !responseText.contains("\"data\":null")) {
+                anilistDownPopupShown = false
+                return false
+            }
+
+            if (responseText.contains("Too Many Requests") || responseText.contains("429")) {
+                return false
+            }
+
+            return false
         } catch (e: Exception) {
-            showAniListDownPopup()
-            return true
+            return false
         } finally {
             downCheckLock.unlock()
         }
