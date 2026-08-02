@@ -1,4 +1,4 @@
-package com.laddu100
+package com.laddu100.hdghartv
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.lagradost.api.Log

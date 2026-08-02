@@ -24,20 +24,12 @@ class TimStreamsProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Live)
 
     private val fallbackApiBase = "https://api.timstreams.st"
-    private val fallbackCdnBase = "https://logic.icelanders.st/"
     private val TAG = "TimStreams"
 
     private suspend fun apiUrl(): String {
         val domain = FirebaseDomainHelper.getDomain("timstreams_api")
         return (domain ?: fallbackApiBase).removeSuffix("/") + "/api"
     }
-
-    private suspend fun cdnBase(): String {
-        return (FirebaseDomainHelper.getDomain("timstreams_cdn") ?: fallbackCdnBase).ensureSuffix("/")
-    }
-
-    private fun String.ensureSuffix(suffix: String): String =
-        if (endsWith(suffix)) this else this + suffix
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TimStream(
@@ -130,7 +122,7 @@ class TimStreamsProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "getMainPage FAILED: ${e.message}")
+            Log.e(TAG, "getMainPage: ${e.message}")
         }
 
         return newHomePageResponse(lists, hasNext = false)
@@ -141,7 +133,7 @@ class TimStreamsProvider : MainAPI() {
             val res = app.get("${apiUrl()}/live-upcoming", timeout = 30_000L, referer = "$mainUrl/")
             parseJson<LiveUpcomingResponse>(res.text).events
         } catch (e: Exception) {
-            Log.e(TAG, "fetchLiveUpcoming FAILED: ${e.message}")
+            Log.e(TAG, "fetchLiveUpcoming: ${e.message}")
             null
         }
     }
@@ -151,7 +143,7 @@ class TimStreamsProvider : MainAPI() {
             val res = app.get("${apiUrl()}/channels", timeout = 30_000L, referer = "$mainUrl/")
             parseJson<ChannelsResponse>(res.text).channels
         } catch (e: Exception) {
-            Log.e(TAG, "fetchChannels FAILED: ${e.message}")
+            Log.e(TAG, "fetchChannels: ${e.message}")
             null
         }
     }
@@ -208,7 +200,7 @@ class TimStreamsProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "search FAILED: ${e.message}")
+            Log.e(TAG, "search: ${e.message}")
         }
 
         return results
@@ -223,7 +215,7 @@ class TimStreamsProvider : MainAPI() {
                 this.dataUrl = loadData.toJson()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "load FAILED: ${e.message}")
+            Log.e(TAG, "load: ${e.message}")
             null
         }
     }
@@ -238,14 +230,11 @@ class TimStreamsProvider : MainAPI() {
         val loadData = try {
             parseJson<LoadData>(data)
         } catch (e: Exception) {
-            Log.e(TAG, "loadLinks: failed to parse LoadData: ${e.message}")
+            Log.e(TAG, "loadLinks: parse error: ${e.message}")
             return false
         }
 
-        if (loadData.streams.isEmpty()) {
-            Log.e(TAG, "loadLinks: no streams in LoadData")
-            return false
-        }
+        if (loadData.streams.isEmpty()) return false
 
         var found = false
         for (stream in loadData.streams) {
@@ -266,31 +255,12 @@ class TimStreamsProvider : MainAPI() {
                             val resolvedUrl = app.get(streamUrl, referer = "$mainUrl/", interceptor = resolver).url
 
                             if (resolvedUrl.contains(".m3u8", ignoreCase = true) || resolvedUrl.contains(".mp4", ignoreCase = true)) {
-                                val embedHost = try {
-                                    val uri = android.net.Uri.parse(streamUrl)
-                                    "${uri.scheme}://${uri.host}"
-                                } catch (e: Exception) { null }
-
-                                val cookieStr = if (embedHost != null) {
-                                    try { android.webkit.CookieManager.getInstance().getCookie(embedHost) ?: "" } catch (e: Exception) { "" }
-                                } else { "" }
-
-                                val cdnHost = try {
-                                    val uri = android.net.Uri.parse(resolvedUrl)
-                                    "${uri.scheme}://${uri.host}"
-                                } catch (e: Exception) { null }
-
-                                val cdnCookies = if (cdnHost != null) {
-                                    try { android.webkit.CookieManager.getInstance().getCookie(cdnHost) ?: "" } catch (e: Exception) { "" }
-                                } else { "" }
-
-                                val allCookies = listOf(cookieStr, cdnCookies).filter { it.isNotBlank() }.joinToString("; ")
-
                                 val headers = mutableMapOf(
                                     "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
                                     "Referer" to streamUrl
                                 )
-                                if (allCookies.isNotBlank()) headers["Cookie"] = allCookies
+                                val cookies = getCookiesForUrl(streamUrl) + getCookiesForUrl(resolvedUrl)
+                                if (cookies.isNotBlank()) headers["Cookie"] = cookies
 
                                 val isM3u8 = resolvedUrl.contains(".m3u8", ignoreCase = true)
                                 callback.invoke(
@@ -307,7 +277,7 @@ class TimStreamsProvider : MainAPI() {
                                 found = true
                             }
                         } catch (e: Exception) {
-                            Log.e(TAG, "loadLinks: '$streamName' icelanders.st failed: ${e.message}")
+                            Log.e(TAG, "loadLinks: '$streamName' icelanders.st: ${e.message}")
                         }
                     }
 
@@ -323,37 +293,15 @@ class TimStreamsProvider : MainAPI() {
                             val resolvedUrl = app.get(streamUrl, referer = "$mainUrl/", interceptor = resolver).url
 
                             if (resolvedUrl.contains(".m3u8", ignoreCase = true)) {
-                                try {
-                                    android.webkit.CookieManager.getInstance().flush()
-                                } catch (e: Exception) { }
-
-                                val cdnHost = try {
-                                    val uri = android.net.Uri.parse(resolvedUrl)
-                                    "${uri.scheme}://${uri.host}"
-                                } catch (e: Exception) { null }
-
-                                val cookieStr = if (cdnHost != null) {
-                                    try {
-                                        android.webkit.CookieManager.getInstance().getCookie(cdnHost) ?: ""
-                                    } catch (e: Exception) { "" }
-                                } else { "" }
-
-                                val ritzCookies = try {
-                                    android.webkit.CookieManager.getInstance().getCookie("https://ritzembeds.pages.dev") ?: ""
-                                } catch (e: Exception) { "" }
-
-                                val allCookies = listOf(cookieStr, ritzCookies)
-                                    .filter { it.isNotBlank() }
-                                    .joinToString("; ")
+                                try { android.webkit.CookieManager.getInstance().flush() } catch (_: Exception) {}
 
                                 val headers = mutableMapOf(
                                     "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
                                     "Referer" to streamUrl,
                                     "Origin" to "https://ritzembeds.pages.dev"
                                 )
-                                if (allCookies.isNotBlank()) {
-                                    headers["Cookie"] = allCookies
-                                }
+                                val cookies = getCookiesForUrl(resolvedUrl) + getCookiesForUrl("https://ritzembeds.pages.dev")
+                                if (cookies.isNotBlank()) headers["Cookie"] = cookies
 
                                 callback.invoke(
                                     newExtractorLink(
@@ -369,19 +317,17 @@ class TimStreamsProvider : MainAPI() {
                                 found = true
                             }
                         } catch (e: Exception) {
-                            Log.e(TAG, "loadLinks: '$streamName' WebViewResolver failed: ${e.message}")
+                            Log.e(TAG, "loadLinks: '$streamName' ritzembeds: ${e.message}")
                         }
                     }
 
                     streamUrl.contains("luluvdo.com") || streamUrl.contains("luluvid.com") -> {
                         val realUrl = streamUrl.replace("luluvid.com", "luluvdo.com")
-                        val loaded = loadExtractor(realUrl, "$mainUrl/", subtitleCallback, callback)
-                        if (loaded) found = true
+                        if (loadExtractor(realUrl, "$mainUrl/", subtitleCallback, callback)) found = true
                     }
 
                     streamUrl.contains("player.vimeo.com") -> {
-                        val loaded = loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)
-                        if (loaded) found = true
+                        if (loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)) found = true
                     }
 
                     streamUrl.contains("upn.one") -> {
@@ -396,17 +342,12 @@ class TimStreamsProvider : MainAPI() {
                             val resolvedUrl = app.get(streamUrl, referer = "$mainUrl/", interceptor = resolver).url
 
                             if (resolvedUrl.contains(".m3u8", ignoreCase = true) || resolvedUrl.contains(".mp4", ignoreCase = true)) {
-                                val upnCookies = try {
-                                    android.webkit.CookieManager.getInstance().getCookie("https://timstreams.upn.one") ?: ""
-                                } catch (e: Exception) { "" }
-
                                 val headers = mutableMapOf(
                                     "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
                                     "Referer" to "https://timstreams.upn.one/"
                                 )
-                                if (upnCookies.isNotBlank()) {
-                                    headers["Cookie"] = upnCookies
-                                }
+                                val cookies = getCookiesForUrl("https://timstreams.upn.one")
+                                if (cookies.isNotBlank()) headers["Cookie"] = cookies
 
                                 val isM3u8 = resolvedUrl.contains(".m3u8", ignoreCase = true)
                                 callback.invoke(
@@ -422,13 +363,11 @@ class TimStreamsProvider : MainAPI() {
                                 )
                                 found = true
                             } else {
-                                val loaded = loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)
-                                if (loaded) found = true
+                                if (loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)) found = true
                             }
                         } catch (e: Exception) {
-                            Log.e(TAG, "loadLinks: '$streamName' upn.one failed: ${e.message}")
-                            val loaded = loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)
-                            if (loaded) found = true
+                            Log.e(TAG, "loadLinks: '$streamName' upn.one: ${e.message}")
+                            if (loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)) found = true
                         }
                     }
 
@@ -457,15 +396,24 @@ class TimStreamsProvider : MainAPI() {
                     }
 
                     else -> {
-                        val loaded = loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)
-                        if (loaded) found = true
+                        if (loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)) found = true
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "loadLinks: FAILED for stream '$streamName': ${e.message}")
+                Log.e(TAG, "loadLinks: '$streamName': ${e.message}")
             }
         }
 
         return found
+    }
+
+    private fun getCookiesForUrl(url: String): String {
+        return try {
+            val host = try {
+                val uri = android.net.Uri.parse(url)
+                "${uri.scheme}://${uri.host}"
+            } catch (e: Exception) { return "" }
+            android.webkit.CookieManager.getInstance().getCookie(host) ?: ""
+        } catch (_: Exception) { "" }
     }
 }
