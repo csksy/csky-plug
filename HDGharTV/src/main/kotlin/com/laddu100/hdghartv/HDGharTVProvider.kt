@@ -85,7 +85,7 @@ class HDGharTVProvider : MainAPI() {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class Genre(
-        @JsonProperty("id") val id: Int? = null,
+        @JsonProperty("id") val id: String? = null,
         @JsonProperty("name") val name: String? = null
     )
 
