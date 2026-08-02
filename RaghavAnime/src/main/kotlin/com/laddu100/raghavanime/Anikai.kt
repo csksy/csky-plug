@@ -1,4 +1,5 @@
 package com.laddu100.raghavanime
+import com.lagradost.api.Log
 
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
@@ -46,10 +47,8 @@ class Anikai : MainAPI() {
         "Completed" to "Completed"
     )
 
-    // ============================================================
-    //  A. HOMEPAGE
-    // ============================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        mainUrl = FirebaseDomainHelper.getDomain("anikai") ?: mainUrl
         val doc = app.get("$mainUrl/home").document
         val home = mutableListOf<SearchResponse>()
         val category = request.data
@@ -99,10 +98,8 @@ class Anikai : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // ============================================================
-    //  B. SEARCH
-    // ============================================================
     override suspend fun search(query: String): List<SearchResponse> {
+        mainUrl = FirebaseDomainHelper.getDomain("anikai") ?: mainUrl
         val url = "$mainUrl/browser?keyword=${java.net.URLEncoder.encode(query, "utf-8")}"
         val doc = app.get(url).document
         val results = mutableListOf<SearchResponse>()
@@ -128,23 +125,8 @@ class Anikai : MainAPI() {
         return results
     }
 
-    // ============================================================
-    //  C. LOAD (details + episode list with sub/dub separation)
-    // ============================================================
-    //
-    //  The episode list HTML has <a> tags with data-sub / data-dub / data-hsub
-    //  attributes that mark which audio tracks are available for that episode.
-    //
-    //  We add the SAME episode URL to both the Subbed and Dubbed lists, but
-    //  with DIFFERENT data string prefixes:
-    //    - Subbed list:  "sub|<watchUrl>"
-    //    - Dubbed list:  "dub|<watchUrl>"
-    //
-    //  When the user picks an episode from the Dubbed tab in CloudStream,
-    //  loadLinks receives "dub|<watchUrl>" and knows to select the dub
-    //  server-items group.
-    //
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("anikai") ?: mainUrl
         val doc = app.get(url).document
 
         val title = doc.selectFirst("h1.title")?.text()?.trim() ?: return null
@@ -190,14 +172,13 @@ class Anikai : MainAPI() {
             val hasSub  = ep.attr("data-sub") == "1"
             val hasDub  = ep.attr("data-dub") == "1"
 
-            // Subbed: Japanese audio with subtitles (soft-sub or hard-sub)
             if (hasSub || hasHsub) {
                 subEpisodes.add(newEpisode("sub|${fixUrl(epHref)}") {
                     this.name = name
                     this.episode = epNum
                 })
             }
-            // Dubbed: English audio
+
             if (hasDub) {
                 dubEpisodes.add(newEpisode("dub|${fixUrl(epHref)}") {
                     this.name = name
@@ -219,32 +200,6 @@ class Anikai : MainAPI() {
         }
     }
 
-    // ============================================================
-    //  D. LOAD LINKS (the Sub/Dub fix)
-    // ============================================================
-    //
-    //  Data string format:  "<audioType>|<watchUrl>"
-    //    audioType = "sub" or "dub"
-    //
-    //  On the anikai.cc watch page, there are 3 separate divs:
-    //    <div class="server-items lang-group" data-id="hsub">  → hard-sub servers
-    //    <div class="server-items lang-group" data-id="sub">   → soft-sub servers
-    //    <div class="server-items lang-group" data-id="dub">   → dub servers
-    //
-    //  Each group has the SAME server names (HD-1, HD-2, etc.) but with
-    //  DIFFERENT data-video embed URLs. The dub embed URLs point to
-    //  completely separate streams on the host (different m3u8, different
-    //  audio track — verified by extracting and comparing audio MD5s).
-    //
-    //    doc.select("div.server-items[data-id=$type] span.server-video")
-    //
-    //  This is more reliable in Jsoup than .select().filter{} because it
-    //  lets Jsoup's CSS engine do the matching in one pass.
-    //
-    //  For "sub": collect from BOTH "sub" and "hsub" groups (soft-sub
-    //             preferred, hard-sub as fallback).
-    //  For "dub": collect from "dub" group ONLY — never mix in sub sources.
-    //
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -259,13 +214,8 @@ class Anikai : MainAPI() {
 
         val doc = app.get(watchUrl).document
 
-        // === SERVER GROUP SELECTION ===
-        // Determine which audio-type groups to collect servers from.
-        // Pattern adapted from the AnimeKai.to reference plugin.
         val types = if ("sub" in dubOrSub) listOf("sub", "hsub") else listOf("dub")
 
-        // Use a direct CSS attribute selector for each type.
-        // This is the same pattern as: document.select("div.server-items[data-id=$type]")
         val servers = types.flatMap { type ->
             doc.select("div.server-items[data-id=$type] span.server-video")
                 .map { span -> Pair(type, span) }
@@ -292,7 +242,7 @@ class Anikai : MainAPI() {
                         ?.let { URLDecoder.decode(it, "UTF-8") } ?: "English"
                     subtitleCallback.invoke(newSubtitleFile(subLabel, decodedSub))
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { Log.e("RaghavAnime", "Anikai: ${e.message}") }
 
             try {
                 when {
@@ -365,16 +315,13 @@ class Anikai : MainAPI() {
                         }
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { Log.e("RaghavAnime", "Anikai: ${e.message}") }
         }
 
         return foundAnySources
     }
 }
 
-// ============================================================
-//  JsPacker — unpacks eval(function(p,a,c,k,e,d){...}) obfuscation
-// ============================================================
 object JsPacker {
     private const val CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 

@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.api.Log
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 import kotlinx.coroutines.async
@@ -34,7 +33,6 @@ class AniSugeProvider : MainAPI() {
 
     private val cfKiller = CloudflareKiller()
 
-    // VRF Hashing helpers
     private fun rc4(key: ByteArray, input: ByteArray): ByteArray {
         val s = IntArray(256) { it }
         var j = 0
@@ -121,6 +119,7 @@ class AniSugeProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        mainUrl = FirebaseDomainHelper.getDomain("anisuge") ?: mainUrl
         if (page > 1) return newHomePageResponse(request.name, emptyList())
         val html = quickGet("$mainUrl/home")
         val soup = Jsoup.parse(html)
@@ -150,6 +149,7 @@ class AniSugeProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        mainUrl = FirebaseDomainHelper.getDomain("anisuge") ?: mainUrl
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val html = quickGet("$mainUrl/filter?keyword=$encodedQuery")
         val soup = Jsoup.parse(html)
@@ -170,6 +170,7 @@ class AniSugeProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("anisuge") ?: mainUrl
         val html = quickGet(url)
         val soup = Jsoup.parse(html)
 
@@ -270,7 +271,7 @@ class AniSugeProvider : MainAPI() {
         val animeId = parts[1]
         val epNum = parts[2]
         val dataIds = parts[3]
-        val selectedType = parts[4] // "sub" or "dub"
+        val selectedType = parts[4]
 
         val serverListResponseText = app.get(
             url = "$baseUrl/ajax/server/list?servers=$dataIds",
@@ -287,7 +288,7 @@ class AniSugeProvider : MainAPI() {
         val serverListSoup = Jsoup.parse(serverListHtml)
 
         val serverTypes = serverListSoup.select(".server-type")
-        val serversToLoad = mutableListOf<Pair<String, String>>() // Pair of serverName, linkId
+        val serversToLoad = mutableListOf<Pair<String, String>>()
 
         for (st in serverTypes) {
             val typeAttr = st.attr("data-type")
@@ -334,7 +335,6 @@ class AniSugeProvider : MainAPI() {
                     val parsedUrl = java.net.URI(playerUrl)
                     val embedBase = "${parsedUrl.scheme}://${parsedUrl.host}"
 
-                    // Try direct plyr.php / KiwiStream base64 decoding first
                     if (playerUrl.contains("plyr.php#")) {
                         val b64 = playerUrl.substringAfter("#").substringBefore("#")
                         val decodedUrl = try {
@@ -359,7 +359,6 @@ class AniSugeProvider : MainAPI() {
                         }
                     }
 
-                    // Otherwise check if it is a Megaplay clone or custom embed
                     val isMegaplayClone = playerUrl.contains("megaplay.buzz") ||
                                           playerUrl.contains("vidwish.live") ||
                                           playerUrl.contains("vidtube.site") ||
@@ -421,10 +420,8 @@ class AniSugeProvider : MainAPI() {
                                 }
                             }
                         } catch (e: Exception) {
-                            Log.e("AniSuge", "API extraction failed for $serverName, trying WebView: ${e.message}")
                         }
 
-                        // If API failed to get links for Megaplay clone, use WebViewResolver fallback
                         if (!loadedSingle) {
                             try {
                                 val resolver = com.lagradost.cloudstream3.network.WebViewResolver(
@@ -449,11 +446,10 @@ class AniSugeProvider : MainAPI() {
                                     ).forEach(wrappedCallback)
                                 }
                             } catch (e: Exception) {
-                                Log.e("AniSuge", "WebView extraction failed for $serverName: ${e.message}")
                             }
                         }
                     } else {
-                        // Custom embed or kiwi stream
+
                         val loaded = loadExtractor(playerUrl, "$baseUrl/", subtitleCallback, wrappedCallback)
                         if (!loaded) {
                             try {
@@ -494,12 +490,10 @@ class AniSugeProvider : MainAPI() {
                                     }
                                 }
                             } catch (e: Exception) {
-                                Log.e("AniSuge", "Custom WebView extraction failed for $serverName: ${e.message}")
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e("AniSuge", "Failed loading links from server $serverName: ${e.message}")
                 }
                 loadedSingle
             }

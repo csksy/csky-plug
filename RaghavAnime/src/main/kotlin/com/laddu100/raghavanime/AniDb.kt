@@ -69,6 +69,7 @@ class AniDb : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        mainUrl = FirebaseDomainHelper.getDomain("anidb") ?: mainUrl
         val url = request.data + page.toString()
         val res = cfAppGet(url).document
         val searchRes = searchResponseBuilder(res)
@@ -76,11 +77,13 @@ class AniDb : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
+        mainUrl = FirebaseDomainHelper.getDomain("anidb") ?: mainUrl
         val browseRes = cfAppGet("$mainUrl/browse?q=$query").document
         return searchResponseBuilder(browseRes).toNewSearchResponseList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("anidb") ?: mainUrl
         val slug = url.substringAfterLast("/")
         val siteId = slug.substringAfterLast("-").toIntOrNull() ?: return null
 

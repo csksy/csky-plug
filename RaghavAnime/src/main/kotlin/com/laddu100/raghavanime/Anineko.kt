@@ -51,6 +51,7 @@ class Anineko : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        mainUrl = FirebaseDomainHelper.getDomain("anineko") ?: mainUrl
         val url = "$mainUrl${request.data}?page=$page"
         val doc = app.get(url).document
 
@@ -79,6 +80,7 @@ class Anineko : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        mainUrl = FirebaseDomainHelper.getDomain("anineko") ?: mainUrl
         val url = "$mainUrl/browser?keyword=${query}"
         val doc = app.get(url).document
 
@@ -105,6 +107,7 @@ class Anineko : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("anineko") ?: mainUrl
         val doc = app.get(url).document
 
         val title = doc.selectFirst("h1")?.text() ?: return null

@@ -1,4 +1,5 @@
 package com.laddu100.raghavanime
+import com.lagradost.api.Log
 
 import android.content.Context
 import android.os.Handler
@@ -18,6 +19,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
@@ -36,9 +38,6 @@ fun encodePipeRequest(payload: Map<String, Any?>): String {
     )
 }
 
-/**
- * Decode a base64url + gzip response (old format, no XOR).
- */
 fun decodePipeResponse(responseBody: String): String {
     val trimmed = responseBody.trim()
     val padded = trimmed + "=".repeat((4 - trimmed.length % 4) % 4)
@@ -46,25 +45,20 @@ fun decodePipeResponse(responseBody: String): String {
     return decompress(compressed)
 }
 
-/**
- * Decompress data that may be gzip, zlib, or raw deflate.
- * Mirrors the JS Kr() function: checks magic bytes to determine format.
- */
 private fun decompress(data: ByteArray): String {
-    // gzip: magic bytes 1f 8b 08
+
     if (data.size > 2 && data[0] == 0x1f.toByte() && data[1] == 0x8b.toByte()) {
         val bais = ByteArrayInputStream(data)
         val gzis = GZIPInputStream(bais)
         return gzis.use { it.readBytes().toString(Charsets.UTF_8) }
     }
-    // zlib or raw deflate: use Inflater with nowrap
-    // zlib header: first byte & 0x0f == 0x08, first byte >> 4 <= 7, (byte0<<8|byte1) % 31 == 0
+
     val isZlib = data.size > 1 &&
         (data[0].toInt() and 0x0f) == 0x08 &&
         (data[0].toInt() shr 4) <= 7 &&
         (((data[0].toInt() and 0xff) shl 8) or (data[1].toInt() and 0xff)) % 31 == 0
 
-    val inflater = if (isZlib) Inflater() else Inflater(true) // true = raw deflate (no zlib header)
+    val inflater = if (isZlib) Inflater() else Inflater(true)
     val bais = ByteArrayInputStream(data)
     val iis = InflaterInputStream(bais, inflater)
     return iis.use { it.readBytes().toString(Charsets.UTF_8) }
@@ -72,7 +66,6 @@ private fun decompress(data: ByteArray): String {
 
 private fun gunzip(data: ByteArray): String = decompress(data)
 
-// JS: Ga = new Uint8Array("71951034f8fbcf53d89db52ceb3dc22c".match(/.{2}/g).map(e => parseInt(e, 16)))
 private val XOR_KEY = byteArrayOf(
     0x71, 0x95.toByte(), 0x10, 0x34, 0xF8.toByte(), 0xFB.toByte(), 0xCF.toByte(), 0x53,
     0xD8.toByte(), 0x9D.toByte(), 0xB5.toByte(), 0x2C, 0xEB.toByte(), 0x3D, 0xC2.toByte(), 0x2C
@@ -86,16 +79,9 @@ private fun xorDecrypt(data: ByteArray): ByteArray {
     return result
 }
 
-/**
- * Decode pipe response based on x-obfuscated header value.
- *
- * - No header / null  → plain JSON text, return as-is
- * - Header present, value != "2" → base64url + gzip
- * - Header === "2" → base64url + XOR + gzip
- */
 fun decodePipeResponseWithHeader(responseBody: String, obfuscatedHeader: String?): String {
     if (obfuscatedHeader == null) {
-        // Plain JSON response
+
         return responseBody.trim()
     }
 
@@ -110,14 +96,9 @@ fun decodePipeResponseWithHeader(responseBody: String, obfuscatedHeader: String?
     return decompress(decoded)
 }
 
-/**
- * Auto-detect response format (for WebView fallback where we can't read headers).
- * Tries: plain JSON → base64url+decompress → base64url+XOR+decompress
- */
 fun decodePipeResponseAuto(responseBody: String): String {
     val trimmed = responseBody.trim()
 
-    // 1. Plain JSON?
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
         return trimmed
     }
@@ -129,16 +110,14 @@ fun decodePipeResponseAuto(responseBody: String): String {
         throw Exception("Cannot base64-decode pipe response")
     }
 
-    // 2. base64url + decompress (gzip/zlib/deflate)?
     try {
         return decompress(decoded)
-    } catch (_: Exception) {}
+    } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
 
-    // 3. base64url + XOR + decompress?
     try {
         val xored = xorDecrypt(decoded)
         return decompress(xored)
-    } catch (_: Exception) {}
+    } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
 
     throw Exception("Cannot decode pipe response (tried JSON, decompress, XOR+decompress)")
 }
@@ -163,9 +142,6 @@ val MIRURO_DOMAINS = listOf(
 const val CF_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
-/**
- * Cloudflare bypass via WebView + JS fetch() injection.
- */
 object MiruroCloudflare {
     private val cookieCache = ConcurrentHashMap<String, String>()
     private val workingDomain = AtomicReference<String?>(MIRURO_DOMAINS[0])
@@ -192,10 +168,6 @@ object MiruroCloudflare {
         return false
     }
 
-    /**
-     * Fetch the pipe API response via WebView.
-     * Loads homepage → waits for CF solve → injects fetch() → returns response text.
-     */
     suspend fun fetchPipeViaWebView(
         context: Context?,
         domain: String,
@@ -217,8 +189,8 @@ object MiruroCloudflare {
                             if (cookies.isNotEmpty()) {
                                 setCookies(domain, cookies)
                             }
-                        } catch (_: Exception) {}
-                        try { webView?.destroy() } catch (_: Exception) {}
+                        } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+                        try { webView?.destroy() } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
                         cont.resume(result)
                     }
                 }
@@ -252,7 +224,6 @@ object MiruroCloudflare {
                     view?.evaluateJavascript(js) {
                     }
 
-                    // Poll for result every 500ms (up to 15s)
                     for (i in 1..30) {
                         val delay = (i * 500).toLong()
                         Handler(Looper.getMainLooper()).postDelayed({
@@ -317,7 +288,6 @@ object MiruroCloudflare {
 
                     webView?.loadUrl(domain)
 
-                    // Periodic challenge-solved check every 1s (CF can take 5-10s)
                     for (i in 1..12) {
                         val delay = (i * 1000).toLong()
                         Handler(Looper.getMainLooper()).postDelayed({
@@ -325,7 +295,6 @@ object MiruroCloudflare {
                         }, delay)
                     }
 
-                    // Overall timeout: 30s
                     Handler(Looper.getMainLooper()).postDelayed({
                         finish(null)
                     }, 30000)
@@ -394,7 +363,7 @@ private suspend fun miruroPipeRequestForDomain(
                 try {
                     return decodePipeResponseWithHeader(body, obfHeader)
                 } catch (_: Exception) {
-                    try { return decodePipeResponseAuto(body) } catch (_: Exception) {}
+                    try { return decodePipeResponseAuto(body) } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
                 }
             }
         }
@@ -550,7 +519,34 @@ val INFO_QUERY = """
     }
 """.trimIndent()
 
+private val anilistCache = mutableMapOf<String, Pair<String, Long>>()
+private const val ANILIST_CACHE_TTL = 10 * 60 * 1000L
+private val anilistLocks = mutableMapOf<String, kotlinx.coroutines.sync.Mutex>()
+
 suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
+    val cacheKey = "$query|${variables.toJson()}"
+    val now = System.currentTimeMillis()
+    anilistCache[cacheKey]?.let { (cached, time) ->
+        if (now - time < ANILIST_CACHE_TTL) return cached
+    }
+
+    val lock = synchronized(anilistLocks) {
+        anilistLocks.getOrPut(cacheKey) { kotlinx.coroutines.sync.Mutex() }
+    }
+
+    if (lock.isLocked) {
+        repeat(50) {
+            kotlinx.coroutines.delay(100)
+            anilistCache[cacheKey]?.let { (cached, time) ->
+                if (now - time < ANILIST_CACHE_TTL) return cached
+            }
+        }
+    }
+
+    anilistCache[cacheKey]?.let { (cached, time) ->
+        if (now - time < ANILIST_CACHE_TTL) return cached
+    }
+
     val requestData = mapOf(
         "query" to query,
         "variables" to variables
@@ -561,27 +557,22 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
         "Content-Type" to "application/json"
     )
 
-    // Single attempt with minimal retry — AniList either works or it doesn't.
-    // Retrying 4x with 500ms backoff wastes 3+ seconds when AniList is down.
-    for (attempt in 1..2) {
-        try {
-            val response = app.post(
-                ANILIST_URL,
-                headers = headers,
-                requestBody = requestData
-            )
-            val text = response.text
-            if (text.isNotBlank() && !text.contains("\"errors\"")) {
-                return text
-            }
-            // AniList returned an error — log and retry once
-        } catch (e: Exception) {
-            com.lagradost.api.Log.e("RaghavAnime", "AniList request failed on attempt $attempt: ${e.message}")
+    try {
+        val response = app.post(
+            ANILIST_URL,
+            headers = headers,
+            requestBody = requestData,
+            timeout = 15_000L
+        )
+        val text = response.text
+        if (text.isNotBlank() && !text.contains("\"errors\"")) {
+            anilistCache[cacheKey] = text to now
+            return text
         }
-        if (attempt < 2) {
-            try { kotlinx.coroutines.delay(500L) } catch (_: Exception) {}
-        }
+    } catch (e: Exception) {
     }
+
+    anilistCache[cacheKey]?.let { (cached, _) -> return cached }
     throw Exception("AniList query failed")
 }
 
