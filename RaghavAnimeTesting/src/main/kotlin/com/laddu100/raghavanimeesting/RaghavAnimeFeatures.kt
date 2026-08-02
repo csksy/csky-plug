@@ -1,4 +1,4 @@
-package com.laddu100.raghavanime
+package com.laddu100.raghavanimeesting
 
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
@@ -48,7 +48,7 @@ object RaghavAnimeFeatures {
     fun getActiveCustomProfile(): CustomProfile? = getCustomProfiles().find { it.enabled }
     fun setActiveProfile(profileName: String?) { saveCustomProfiles(getCustomProfiles().map { p -> p.copy(enabled = p.name == profileName) }) }
     fun isCustomProfileActive(): Boolean = getCustomProfiles().any { it.enabled }
-    fun shouldRunSource(sourceKey: String): Boolean { val p = getActiveCustomProfile(); if (p != null) return sourceKey in p.sources; return com.laddu100.raghavanime.settings.SettingsFragment.isEnabled(sourceKey) }
+    fun shouldRunSource(sourceKey: String): Boolean { val p = getActiveCustomProfile(); if (p != null) return sourceKey in p.sources; return com.laddu100.raghavanimeesting.settings.SettingsFragment.isEnabled(sourceKey) }
 
     // ===== Recommendations =====
     @JsonIgnoreProperties(ignoreUnknown = true) data class AniListRecommendation(val id: Int? = null, val title: String? = null, val posterUrl: String? = null, val score: Double? = null)

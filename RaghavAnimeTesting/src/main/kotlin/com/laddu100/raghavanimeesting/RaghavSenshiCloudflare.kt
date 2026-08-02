@@ -1,4 +1,4 @@
-package com.laddu100.raghavanime
+package com.laddu100.raghavanimeesting
 
 import android.annotation.SuppressLint
 import android.app.Dialog
@@ -13,7 +13,6 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -25,11 +24,9 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.fragment.app.FragmentActivity
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
@@ -38,30 +35,30 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlin.coroutines.resume
 
-private const val TAG = "AniDB_CFBypass"
+private const val CF_TAG = "Senshi_CFBypass"
 
-// Phrases that indicate a Cloudflare challenge page
 private val CF_BLOCKER_PHRASES = listOf(
     "just a moment", "checking your browser", "ddos-guard",
     "attention required", "verify you are human", "cloudflare",
-    "challenge-platform", "cf-ray", "enable javascript"
+    "challenge-platform", "cf-ray", "enable javascript", "turnstile"
 )
 
-// Page titles that indicate an active challenge
 private val CF_CHALLENGE_TITLES = listOf(
     "just a moment", "just a moment...", "checking your browser",
-    "attention required", "ddos-guard", "one more step"
+    "attention required", "ddos-guard", "one more step", "senshi.live"
 )
 
-private object AniDbCFStore {
-    private const val PREFS_NAME = "AniDbCFBypass"
+private object SenshiCFStore {
+    private const val PREFS_NAME = "SenshiCFBypass"
     private const val KEY_COOKIES = "cf_cookies"
     private const val KEY_UA = "cf_user_agent"
     private const val KEY_HOST = "cf_cookie_host"
     private const val KEY_TIMESTAMP = "cf_timestamp"
-    private const val COOKIE_TTL_MS = 45 * 60 * 1000L // 45 minutes (cf_clearance ~1hr)
+    private const val COOKIE_TTL_MS = 45 * 60 * 1000L
 
     private var prefs: android.content.SharedPreferences? = null
     private var cachedCookies: String? = null
@@ -111,11 +108,9 @@ private object AniDbCFStore {
         cachedTimestamp = 0L
         prefs?.edit()?.clear()?.apply()
     }
-
-    fun hasValidCookies(): Boolean = getCookies() != null
 }
 
-fun isCloudflareBlocked(response: NiceResponse): Boolean {
+fun isSenshiCloudflareBlocked(response: NiceResponse): Boolean {
     if (response.code != 403 && response.code != 503) return false
     val body = response.text.lowercase()
     return CF_BLOCKER_PHRASES.any { body.contains(it) }
@@ -126,9 +121,9 @@ private fun isChallengeTitle(title: String): Boolean {
     return CF_CHALLENGE_TITLES.any { lower.contains(it) }
 }
 
-private val cfBypassMutex = Mutex()
+private val senshiCfBypassMutex = Mutex()
 
-class AniDbCFDialog(
+class SenshiCFDialog(
     private val targetUrl: String,
     private val onFinished: ((Boolean) -> Unit)? = null
 ) : BottomSheetDialogFragment() {
@@ -167,7 +162,7 @@ class AniDbCFDialog(
                     else scheduleNextPoll()
                 }
                 pollElapsedMs >= POLL_TIMEOUT_MS -> {
-                    updateStatus("⏱️ Timed out. Try solving the CAPTCHA then tap Bypass again.")
+                    updateStatus("Timed out. Try solving the CAPTCHA then tap Bypass again.")
                 }
                 else -> scheduleNextPoll()
             }
@@ -176,7 +171,7 @@ class AniDbCFDialog(
 
     private fun scheduleNextPoll() {
         pollElapsedMs += POLL_INTERVAL_MS
-        updateStatus("⏳ Waiting for cookies… (${pollElapsedMs / 1000}s)")
+        updateStatus("Waiting for cookies... (${pollElapsedMs / 1000}s)")
         handler.postDelayed(cookiePollRunnable, POLL_INTERVAL_MS)
     }
 
@@ -213,24 +208,21 @@ class AniDbCFDialog(
             layoutParams = ViewGroup.LayoutParams(-1, -2)
         }
 
-        // Title
         root.addView(TextView(requireContext()).apply {
-            text = "🛡️ AniDB – Cloudflare Bypass"
+            text = "Senshi - Cloudflare Bypass"
             textSize = 18f
             setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, 0, (8 * dp).toInt())
         })
 
-        // Status text
         TextView(requireContext()).apply {
-            text = "Loading challenge page…"
+            text = "Loading challenge page..."
             textSize = 13f
             setTextColor(Color.parseColor("#A0A0B0"))
             setPadding(0, 0, 0, (4 * dp).toInt())
         }.also { statusText = it; root.addView(it) }
 
-        // Hint
         root.addView(TextView(requireContext()).apply {
             text = "Solve any CAPTCHA shown below. The dialog will close automatically once done."
             textSize = 11f
@@ -238,13 +230,11 @@ class AniDbCFDialog(
             setPadding(0, 0, 0, (12 * dp).toInt())
         })
 
-        // Progress bar
         ProgressBar(requireContext(), null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (12 * dp).toInt() }
         }.also { progressBar = it; root.addView(it) }
 
-        // WebView container
         FrameLayout(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(-1, webViewHeight)
             webView = buildWebView()
@@ -257,12 +247,10 @@ class AniDbCFDialog(
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        // Clear stale CF cookies before loading (Cinemacity's approach — fixes 1% failure rate)
-        // Stale cf_clearance in CookieManager can cause the WebView to think it's already bypassed
+
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
-            // Clear stale CF challenge cookies
             listOf("cf_clearance", "cf_chl_rc_ni", "cf_chl_prog").forEach { name ->
                 setCookie(targetHost, "$name=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT")
             }
@@ -285,11 +273,11 @@ class AniDbCFDialog(
                 allowContentAccess = true
                 allowFileAccess = true
                 loadsImagesAutomatically = true
-                userAgentString = settings.userAgentString // keep default WebView UA
+                userAgentString = settings.userAgentString
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    if (!cookiesSaved) updateStatus("Loading… $newProgress%")
+                    if (!cookiesSaved) updateStatus("Loading... $newProgress%")
                 }
             }
             webViewClient = object : WebViewClient() {
@@ -298,17 +286,15 @@ class AniDbCFDialog(
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (cookiesSaved) return
                     val title = view?.title ?: ""
-                    Log.d(TAG, "onPageFinished title='$title' url=$url")
 
                     if (isChallengeTitle(title)) {
-                        updateStatus("🔄 Challenge active – solve the CAPTCHA above")
+                        updateStatus("Challenge active - solve the CAPTCHA above")
                         return
                     }
 
-                    updateStatus("✏️ Page loaded – checking cookies…")
+                    updateStatus("Page loaded - checking cookies...")
                     CookieManager.getInstance().flush()
 
-                    // Check cookies from both the target host and the current URL
                     val cookiesFromTarget = CookieManager.getInstance().getCookie(targetHost) ?: ""
                     val cookiesFromUrl = url?.let {
                         try {
@@ -338,9 +324,9 @@ class AniDbCFDialog(
         handler.removeCallbacks(cookiePollRunnable)
 
         val ua = webView?.settings?.userAgentString ?: ""
-        AniDbCFStore.save(cookieStr, ua, targetHost)
+        SenshiCFStore.save(cookieStr, ua, targetHost)
 
-        updateStatus("✅ Done! Cookies saved.")
+        updateStatus("Done! Cookies saved.")
 
         webView?.postDelayed({
             if (isAdded) {
@@ -362,7 +348,7 @@ class AniDbCFDialog(
         activity?.runOnUiThread {
             statusText?.apply {
                 text = msg
-                if (msg.startsWith("✅")) {
+                if (msg.startsWith("Done")) {
                     setTextColor(Color.parseColor("#4CAF50"))
                     progressBar?.visibility = View.GONE
                 } else {
@@ -381,108 +367,159 @@ class AniDbCFDialog(
     }
 }
 
-private suspend fun showCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
+private suspend fun showSenshiCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
     val activity = CommonActivity.activity as? AppCompatActivity
     if (activity == null || activity.isFinishing || activity.isDestroyed) {
-        Log.e(TAG, "No activity available to show CF dialog")
         return@withContext false
     }
     suspendCancellableCoroutine { cont ->
-        val dialog = AniDbCFDialog(url) { success ->
+        val dialog = SenshiCFDialog(url) { success ->
             if (cont.isActive) cont.resume(success)
         }
         try {
-            dialog.show(activity.supportFragmentManager, "AniDbCFDialog")
+            dialog.show(activity.supportFragmentManager, "SenshiCFDialog")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to show CF dialog: ${e.message}")
             if (cont.isActive) cont.resume(false)
         }
         cont.invokeOnCancellation { dialog.dismissAllowingStateLoss() }
     }
 }
 
-suspend fun cfAppGet(
+internal fun buildSenshiHeaders(extra: Map<String, String> = emptyMap()): Map<String, String> {
+    val h = extra.toMutableMap()
+    if (!h.containsKey("Accept")) {
+        h["Accept"] = "application/json, text/plain, */*"
+    }
+    if (!h.containsKey("Accept-Language")) {
+        h["Accept-Language"] = "en-US,en;q=0.5"
+    }
+    h["sec-ch-ua-mobile"] = "?1"
+    h["sec-ch-ua-platform"] = "\"Android\""
+    SenshiCFStore.getCookies()?.let { cookies ->
+        h["Cookie"] = cookies
+    }
+    SenshiCFStore.getUserAgent()?.let { ua ->
+        h["User-Agent"] = ua
+    } ?: run {
+        if (!h.containsKey("User-Agent")) {
+            h["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        }
+    }
+    return h
+}
+
+internal suspend fun cfGet(
     url: String,
-    headers: Map<String, String> = emptyMap()
+    headers: Map<String, String> = emptyMap(),
+    timeout: Long = 30_000L
 ): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)
         "${uri.scheme}://${uri.host}"
     } catch (e: Exception) { url }
 
-    // Build headers with stored CF cookies + UA + browser fingerprint
-    fun buildCfHeaders(): Map<String, String> {
-        val h = headers.toMutableMap()
-        // Browser fingerprint headers (Cloudflare checks these — same as phisher's interceptor)
-        if (!h.containsKey("Accept")) {
-            h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-        if (!h.containsKey("Accept-Language")) {
-            h["Accept-Language"] = "en-US,en;q=0.5"
-        }
-        h["sec-ch-ua-mobile"] = "?1"
-        h["sec-ch-ua-platform"] = "\"Android\""
-        // Stored CF cookies + UA
-        AniDbCFStore.getCookies()?.let { cookies ->
-            h["Cookie"] = cookies
-        }
-        AniDbCFStore.getUserAgent()?.let { ua ->
-            h["User-Agent"] = ua
-        } ?: run {
-            // Default browser-like UA if no stored UA
-            if (!h.containsKey("User-Agent")) {
-                h["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
-            }
-        }
-        return h
-    }
-
-    // First attempt (with stored cookies if available)
     var response = try {
-        app.get(url, headers = buildCfHeaders())
+        app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout)
     } catch (e: Exception) {
-        Log.e(TAG, "Request failed: ${e.message}")
         throw e
     }
 
-    if (!isCloudflareBlocked(response)) return response
+    if (!isSenshiCloudflareBlocked(response)) return response
 
-    // CF blocked — need to bypass
-    Log.d(TAG, "Cloudflare blocked (HTTP ${response.code}) for $url — triggering bypass")
 
-    // Use mutex so only ONE bypass dialog shows at a time
-    cfBypassMutex.withLock {
-        // Double-check: another coroutine may have already bypassed while we waited
-        val cachedCookies = AniDbCFStore.getCookies()
-        if (cachedCookies != null && AniDbCFStore.getHost() == targetHost) {
-            response = try { app.get(url, headers = buildCfHeaders()) } catch (e: Exception) { throw e }
-            if (!isCloudflareBlocked(response)) return response
+    senshiCfBypassMutex.withLock {
+
+        val cachedCookies = SenshiCFStore.getCookies()
+        if (cachedCookies != null && SenshiCFStore.getHost() == targetHost) {
+            response = try { app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout) } catch (e: Exception) { throw e }
+            if (!isSenshiCloudflareBlocked(response)) return response
         }
 
-        // Clear stale cookies and show bypass dialog
-        AniDbCFStore.clear()
-        val bypassSuccess = showCFBypassDialogAndWait(url)
+        SenshiCFStore.clear()
+        val bypassSuccess = showSenshiCFBypassDialogAndWait(url)
 
         if (!bypassSuccess) {
-            Log.e(TAG, "CF bypass dialog failed/cancelled")
-            return@withLock // response is still the blocked one
+            return@withLock
         }
 
-        // Retry with new cookies (up to 2 attempts)
         for (attempt in 1..2) {
-            response = try { app.get(url, headers = buildCfHeaders()) } catch (e: Exception) { throw e }
-            if (!isCloudflareBlocked(response)) {
-                Log.d(TAG, " Request succeeded after CF bypass (attempt $attempt)")
+            response = try { app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout) } catch (e: Exception) { throw e }
+            if (!isSenshiCloudflareBlocked(response)) {
                 return@withLock
             }
-            Log.e(TAG, "Still CF-blocked after retry $attempt")
         }
     }
 
     return response
 }
 
-fun initAniDbCFBypass(context: Context) {
-    AniDbCFStore.init(context)
-    Log.d(TAG, "AniDB CF bypass initialized")
+internal suspend fun cfPost(
+    url: String,
+    body: String,
+    headers: Map<String, String> = emptyMap(),
+    timeout: Long = 30_000L
+): NiceResponse {
+    val targetHost = try {
+        val uri = Uri.parse(url)
+        "${uri.scheme}://${uri.host}"
+    } catch (e: Exception) { url }
+
+    val fullHeaders = buildSenshiHeaders(headers).toMutableMap().apply {
+        if (!containsKey("Content-Type")) {
+            this["Content-Type"] = "application/json"
+        }
+    }
+
+    var response = try {
+        val reqBody = body.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        app.post(url, requestBody = reqBody, headers = fullHeaders, timeout = timeout)
+    } catch (e: Exception) {
+        throw e
+    }
+
+    if (!isSenshiCloudflareBlocked(response)) return response
+
+
+    senshiCfBypassMutex.withLock {
+        val cachedCookies = SenshiCFStore.getCookies()
+        if (cachedCookies != null && SenshiCFStore.getHost() == targetHost) {
+            response = try {
+                val reqBody = body.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                app.post(url, requestBody = reqBody, headers = fullHeaders, timeout = timeout)
+            } catch (e: Exception) { throw e }
+            if (!isSenshiCloudflareBlocked(response)) return response
+        }
+
+        SenshiCFStore.clear()
+        val bypassSuccess = showSenshiCFBypassDialogAndWait(url)
+
+        if (!bypassSuccess) {
+            return@withLock
+        }
+
+        for (attempt in 1..2) {
+
+            val retryHeaders = buildSenshiHeaders(headers).toMutableMap().apply {
+                if (!containsKey("Content-Type")) {
+                    this["Content-Type"] = "application/json"
+                }
+            }
+            response = try {
+                val reqBody = body.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                app.post(url, requestBody = reqBody, headers = retryHeaders, timeout = timeout)
+            } catch (e: Exception) { throw e }
+            if (!isSenshiCloudflareBlocked(response)) {
+                return@withLock
+            }
+        }
+    }
+
+    return response
+}
+
+internal fun initSenshiCFBypass(context: Context) {
+    try {
+        SenshiCFStore.init(context)
+    } catch (e: Exception) {
+    }
 }

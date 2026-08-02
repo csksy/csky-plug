@@ -1,4 +1,4 @@
-package com.laddu100.raghavanime
+package com.laddu100.raghavanimeesting
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty

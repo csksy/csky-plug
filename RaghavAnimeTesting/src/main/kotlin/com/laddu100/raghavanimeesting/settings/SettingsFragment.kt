@@ -1,4 +1,4 @@
-package com.laddu100.raghavanime.settings
+package com.laddu100.raghavanimeesting.settings
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -21,12 +21,12 @@ import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.utils.AppContextUtils.loadSearchResult
-import com.laddu100.raghavanime.RaghavAnime
-import com.laddu100.raghavanime.RaghavAnimeFeatures
-import com.laddu100.raghavanime.RaghavAnimeFeatures.CustomProfile
-import com.laddu100.raghavanime.RaghavAnimeFeatures.DiscoverResult
-import com.laddu100.raghavanime.RaghavAnimeFeatures.DiscoverPage
-import com.laddu100.raghavanime.RaghavAnimeFeatures.AnimeDetail
+import com.laddu100.raghavanimeesting.RaghavAnimeTesting
+import com.laddu100.raghavanimeesting.RaghavAnimeFeatures
+import com.laddu100.raghavanimeesting.RaghavAnimeFeatures.CustomProfile
+import com.laddu100.raghavanimeesting.RaghavAnimeFeatures.DiscoverResult
+import com.laddu100.raghavanimeesting.RaghavAnimeFeatures.DiscoverPage
+import com.laddu100.raghavanimeesting.RaghavAnimeFeatures.AnimeDetail
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -251,7 +251,7 @@ class SettingsFragment : DialogFragment() {
 
         // --- AI Subtitles ---
         layout.addView(sectionLabel(ctx, "AI SUBTITLES (ENGLISH DUB)", d))
-        layout.addView(toggleRow(ctx, "AI Subtitle Generation", com.laddu100.raghavanime.AISubtitleHelper.isEnabled(), d) { com.laddu100.raghavanime.AISubtitleHelper.setEnabled(it) })
+        layout.addView(toggleRow(ctx, "AI Subtitle Generation", com.laddu100.raghavanimeesting.AISubtitleHelper.isEnabled(), d) { com.laddu100.raghavanimeesting.AISubtitleHelper.setEnabled(it) })
         layout.addView(descText(ctx, "Auto-generates English subtitles for English dub using AI (Groq/OpenAI Whisper)", d))
 
         // AI Subtitle Settings button
@@ -281,9 +281,9 @@ class SettingsFragment : DialogFragment() {
 
         // Provider selector
         layout.addView(TextView(ctx).apply { text = "Provider"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 4.dp(), 0, 2.dp()) })
-        val providerSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, com.laddu100.raghavanime.AISubtitleHelper.providers.map { it.second }) }
-        val currentProvider = com.laddu100.raghavanime.AISubtitleHelper.getProvider()
-        val providerIndex = com.laddu100.raghavanime.AISubtitleHelper.providers.indexOfFirst { it.first == currentProvider }.let { if (it < 0) 0 else it }
+        val providerSpinner = Spinner(ctx).apply { adapter = darkAdapter(ctx, com.laddu100.raghavanimeesting.AISubtitleHelper.providers.map { it.second }) }
+        val currentProvider = com.laddu100.raghavanimeesting.AISubtitleHelper.getProvider()
+        val providerIndex = com.laddu100.raghavanimeesting.AISubtitleHelper.providers.indexOfFirst { it.first == currentProvider }.let { if (it < 0) 0 else it }
         providerSpinner.setSelection(providerIndex)
         layout.addView(providerSpinner)
 
@@ -292,10 +292,10 @@ class SettingsFragment : DialogFragment() {
         val modelSpinner = Spinner(ctx)
         layout.addView(modelSpinner)
         fun updateModelSpinner() {
-            val prov = com.laddu100.raghavanime.AISubtitleHelper.providers[providerSpinner.selectedItemPosition].first
-            val models = com.laddu100.raghavanime.AISubtitleHelper.models[prov] ?: emptyList()
+            val prov = com.laddu100.raghavanimeesting.AISubtitleHelper.providers[providerSpinner.selectedItemPosition].first
+            val models = com.laddu100.raghavanimeesting.AISubtitleHelper.models[prov] ?: emptyList()
             modelSpinner.adapter = darkAdapter(ctx, models.map { it.second })
-            val currentModel = com.laddu100.raghavanime.AISubtitleHelper.getModel()
+            val currentModel = com.laddu100.raghavanimeesting.AISubtitleHelper.getModel()
             val modelIndex = models.indexOfFirst { it.first == currentModel }.let { if (it < 0) 0 else it }
             modelSpinner.setSelection(modelIndex)
         }
@@ -308,13 +308,13 @@ class SettingsFragment : DialogFragment() {
         // Groq API Key
         layout.addView(TextView(ctx).apply { text = "Groq API Key"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
         layout.addView(TextView(ctx).apply { text = "Get free key at console.groq.com"; textSize = 10f; setTextColor(cTextDim); setPadding(0, 0, 0, 4.dp()) })
-        val groqKeyInput = EditText(ctx).apply { hint = "gsk_..."; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); textSize = 13f; inputType = android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(com.laddu100.raghavanime.AISubtitleHelper.getGroqKey()) }
+        val groqKeyInput = EditText(ctx).apply { hint = "gsk_..."; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); textSize = 13f; inputType = android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(com.laddu100.raghavanimeesting.AISubtitleHelper.getGroqKey()) }
         layout.addView(groqKeyInput)
 
         // OpenAI API Key
         layout.addView(TextView(ctx).apply { text = "OpenAI API Key"; textSize = 14f; setTextColor(cTextSub); setPadding(0, 10.dp(), 0, 2.dp()) })
         layout.addView(TextView(ctx).apply { text = "Get key at platform.openai.com"; textSize = 10f; setTextColor(cTextDim); setPadding(0, 0, 0, 4.dp()) })
-        val openaiKeyInput = EditText(ctx).apply { hint = "sk-..."; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); textSize = 13f; inputType = android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(com.laddu100.raghavanime.AISubtitleHelper.getOpenAIKey()) }
+        val openaiKeyInput = EditText(ctx).apply { hint = "sk-..."; setHintTextColor(cTextDim); setTextColor(cText); setBackgroundColor(cCard); setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp()); textSize = 13f; inputType = android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(com.laddu100.raghavanimeesting.AISubtitleHelper.getOpenAIKey()) }
         layout.addView(openaiKeyInput)
 
         // Info text
@@ -322,13 +322,13 @@ class SettingsFragment : DialogFragment() {
 
         scroll.addView(layout)
         AlertDialog.Builder(ctx).setView(scroll).setPositiveButton("Save") { _, _ ->
-            val prov = com.laddu100.raghavanime.AISubtitleHelper.providers[providerSpinner.selectedItemPosition].first
-            val models = com.laddu100.raghavanime.AISubtitleHelper.models[prov] ?: emptyList()
-            val model = if (models.isNotEmpty()) models[modelSpinner.selectedItemPosition].first else com.laddu100.raghavanime.AISubtitleHelper.getModel()
-            com.laddu100.raghavanime.AISubtitleHelper.setProvider(prov)
-            com.laddu100.raghavanime.AISubtitleHelper.setModel(model)
-            com.laddu100.raghavanime.AISubtitleHelper.setGroqKey(groqKeyInput.text?.toString()?.trim() ?: "")
-            com.laddu100.raghavanime.AISubtitleHelper.setOpenAIKey(openaiKeyInput.text?.toString()?.trim() ?: "")
+            val prov = com.laddu100.raghavanimeesting.AISubtitleHelper.providers[providerSpinner.selectedItemPosition].first
+            val models = com.laddu100.raghavanimeesting.AISubtitleHelper.models[prov] ?: emptyList()
+            val model = if (models.isNotEmpty()) models[modelSpinner.selectedItemPosition].first else com.laddu100.raghavanimeesting.AISubtitleHelper.getModel()
+            com.laddu100.raghavanimeesting.AISubtitleHelper.setProvider(prov)
+            com.laddu100.raghavanimeesting.AISubtitleHelper.setModel(model)
+            com.laddu100.raghavanimeesting.AISubtitleHelper.setGroqKey(groqKeyInput.text?.toString()?.trim() ?: "")
+            com.laddu100.raghavanimeesting.AISubtitleHelper.setOpenAIKey(openaiKeyInput.text?.toString()?.trim() ?: "")
             Toast.makeText(ctx, "AI subtitle settings saved", Toast.LENGTH_SHORT).show()
         }.setNegativeButton("Cancel", null).create().apply { show(); styleButtons() }
     }
@@ -602,7 +602,7 @@ class SettingsFragment : DialogFragment() {
         CoroutineScope(Dispatchers.Main).launch {
             try {
                 // Call RaghavAnime's search() directly — no global search, no other plugins affected
-                val results = withContext(Dispatchers.IO) { RaghavAnime().search(query) }
+                val results = withContext(Dispatchers.IO) { RaghavAnimeTesting().search(query) }
                 layout.removeAllViews()
                 if (results.isEmpty()) {
                     layout.addView(TextView(ctx).apply { text = "No results found in RaghavAnime for \"$query\""; textSize = 14f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 24.dp(), 0, 24.dp()) })

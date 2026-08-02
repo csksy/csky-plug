@@ -27,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
@@ -41,12 +42,14 @@ import kotlin.coroutines.resume
 
 private const val CF_TAG = "Senshi_CFBypass"
 
+// Phrases that indicate a Cloudflare challenge page
 private val CF_BLOCKER_PHRASES = listOf(
     "just a moment", "checking your browser", "ddos-guard",
     "attention required", "verify you are human", "cloudflare",
     "challenge-platform", "cf-ray", "enable javascript", "turnstile"
 )
 
+// Page titles that indicate an active challenge
 private val CF_CHALLENGE_TITLES = listOf(
     "just a moment", "just a moment...", "checking your browser",
     "attention required", "ddos-guard", "one more step", "senshi.live"
@@ -58,7 +61,7 @@ private object SenshiCFStore {
     private const val KEY_UA = "cf_user_agent"
     private const val KEY_HOST = "cf_cookie_host"
     private const val KEY_TIMESTAMP = "cf_timestamp"
-    private const val COOKIE_TTL_MS = 45 * 60 * 1000L
+    private const val COOKIE_TTL_MS = 45 * 60 * 1000L // 45 minutes (cf_clearance ~1hr)
 
     private var prefs: android.content.SharedPreferences? = null
     private var cachedCookies: String? = null
@@ -208,6 +211,7 @@ class SenshiCFDialog(
             layoutParams = ViewGroup.LayoutParams(-1, -2)
         }
 
+        // Title
         root.addView(TextView(requireContext()).apply {
             text = "Senshi - Cloudflare Bypass"
             textSize = 18f
@@ -216,6 +220,7 @@ class SenshiCFDialog(
             setPadding(0, 0, 0, (8 * dp).toInt())
         })
 
+        // Status text
         TextView(requireContext()).apply {
             text = "Loading challenge page..."
             textSize = 13f
@@ -223,6 +228,7 @@ class SenshiCFDialog(
             setPadding(0, 0, 0, (4 * dp).toInt())
         }.also { statusText = it; root.addView(it) }
 
+        // Hint
         root.addView(TextView(requireContext()).apply {
             text = "Solve any CAPTCHA shown below. The dialog will close automatically once done."
             textSize = 11f
@@ -230,11 +236,13 @@ class SenshiCFDialog(
             setPadding(0, 0, 0, (12 * dp).toInt())
         })
 
+        // Progress bar
         ProgressBar(requireContext(), null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (12 * dp).toInt() }
         }.also { progressBar = it; root.addView(it) }
 
+        // WebView container
         FrameLayout(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(-1, webViewHeight)
             webView = buildWebView()
@@ -247,7 +255,7 @@ class SenshiCFDialog(
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-
+        // Clear stale CF cookies before loading (CinemaCity approach)
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
@@ -256,6 +264,7 @@ class SenshiCFDialog(
             }
             flush()
         }
+        Log.d(CF_TAG, "Dialog loading URL: $targetUrl")
         webView?.loadUrl(targetUrl)
         handler.postDelayed(cookiePollRunnable, POLL_INTERVAL_MS)
     }
@@ -286,6 +295,7 @@ class SenshiCFDialog(
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (cookiesSaved) return
                     val title = view?.title ?: ""
+                    Log.d(CF_TAG, "onPageFinished title='$title' url=$url")
 
                     if (isChallengeTitle(title)) {
                         updateStatus("Challenge active - solve the CAPTCHA above")
@@ -370,6 +380,7 @@ class SenshiCFDialog(
 private suspend fun showSenshiCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
     val activity = CommonActivity.activity as? AppCompatActivity
     if (activity == null || activity.isFinishing || activity.isDestroyed) {
+        Log.e(CF_TAG, "No activity available to show CF dialog")
         return@withContext false
     }
     suspendCancellableCoroutine { cont ->
@@ -379,6 +390,7 @@ private suspend fun showSenshiCFBypassDialogAndWait(url: String): Boolean = with
         try {
             dialog.show(activity.supportFragmentManager, "SenshiCFDialog")
         } catch (e: Exception) {
+            Log.e(CF_TAG, "Failed to show CF dialog: ${e.message}")
             if (cont.isActive) cont.resume(false)
         }
         cont.invokeOnCancellation { dialog.dismissAllowingStateLoss() }
@@ -421,32 +433,39 @@ internal suspend fun cfGet(
     var response = try {
         app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout)
     } catch (e: Exception) {
+        Log.e(CF_TAG, "cfGet request failed: ${e.message}")
         throw e
     }
 
     if (!isSenshiCloudflareBlocked(response)) return response
 
+    Log.d(CF_TAG, "Cloudflare blocked (HTTP ${response.code}) for $url -> triggering bypass")
 
     senshiCfBypassMutex.withLock {
-
+        // Double-check: another coroutine may have bypassed while we waited
         val cachedCookies = SenshiCFStore.getCookies()
         if (cachedCookies != null && SenshiCFStore.getHost() == targetHost) {
             response = try { app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout) } catch (e: Exception) { throw e }
             if (!isSenshiCloudflareBlocked(response)) return response
         }
 
+        // Clear stale cookies and show bypass dialog
         SenshiCFStore.clear()
         val bypassSuccess = showSenshiCFBypassDialogAndWait(url)
 
         if (!bypassSuccess) {
+            Log.e(CF_TAG, "CF bypass dialog failed/cancelled")
             return@withLock
         }
 
+        // Retry with new cookies (up to 2 attempts)
         for (attempt in 1..2) {
             response = try { app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout) } catch (e: Exception) { throw e }
             if (!isSenshiCloudflareBlocked(response)) {
+                Log.d(CF_TAG, "Request succeeded after CF bypass (attempt $attempt)")
                 return@withLock
             }
+            Log.e(CF_TAG, "Still CF-blocked after retry $attempt")
         }
     }
 
@@ -474,11 +493,13 @@ internal suspend fun cfPost(
         val reqBody = body.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
         app.post(url, requestBody = reqBody, headers = fullHeaders, timeout = timeout)
     } catch (e: Exception) {
+        Log.e(CF_TAG, "cfPost request failed: ${e.message}")
         throw e
     }
 
     if (!isSenshiCloudflareBlocked(response)) return response
 
+    Log.d(CF_TAG, "Cloudflare blocked POST (HTTP ${response.code}) for $url -> triggering bypass")
 
     senshiCfBypassMutex.withLock {
         val cachedCookies = SenshiCFStore.getCookies()
@@ -494,11 +515,12 @@ internal suspend fun cfPost(
         val bypassSuccess = showSenshiCFBypassDialogAndWait(url)
 
         if (!bypassSuccess) {
+            Log.e(CF_TAG, "CF bypass dialog failed/cancelled")
             return@withLock
         }
 
         for (attempt in 1..2) {
-
+            // Rebuild headers to pick up new cookies
             val retryHeaders = buildSenshiHeaders(headers).toMutableMap().apply {
                 if (!containsKey("Content-Type")) {
                     this["Content-Type"] = "application/json"
@@ -509,8 +531,10 @@ internal suspend fun cfPost(
                 app.post(url, requestBody = reqBody, headers = retryHeaders, timeout = timeout)
             } catch (e: Exception) { throw e }
             if (!isSenshiCloudflareBlocked(response)) {
+                Log.d(CF_TAG, "POST succeeded after CF bypass (attempt $attempt)")
                 return@withLock
             }
+            Log.e(CF_TAG, "Still CF-blocked after retry $attempt")
         }
     }
 
@@ -520,6 +544,8 @@ internal suspend fun cfPost(
 internal fun initSenshiCFBypass(context: Context) {
     try {
         SenshiCFStore.init(context)
+        Log.d(CF_TAG, "Senshi CF bypass initialized")
     } catch (e: Exception) {
+        Log.e(CF_TAG, "Failed to init CF bypass: ${e.message}")
     }
 }

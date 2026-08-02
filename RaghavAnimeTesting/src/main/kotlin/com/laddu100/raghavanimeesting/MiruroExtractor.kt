@@ -1,7 +1,6 @@
-package com.laddu100.raghavanime
+package com.laddu100.raghavanimeesting
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.network.WebViewResolver
@@ -59,7 +58,6 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 }
             }
         }.onFailure { error ->
-            Log.e(name, "API extraction failed, trying WebView: ${error.message}")
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""\.m3u8"""),
                 additionalUrls = listOf(Regex("""\.m3u8""")),
@@ -128,7 +126,6 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 }
             }
         }.onFailure { error ->
-            Log.e(name, "WebView extraction failed: ${error.message}")
         }
     }
 }

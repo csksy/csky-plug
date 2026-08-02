@@ -1,4 +1,4 @@
-package com.laddu100.raghavanime
+package com.laddu100.raghavanimeesting
 
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
@@ -53,6 +53,7 @@ class AniWaves : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
         val category = request.data
         val url = "$mainUrl/home"
         val doc = app.get(url).document
@@ -86,6 +87,7 @@ class AniWaves : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
         val url = "$mainUrl/filter?keyword=$query"
         val doc = app.get(url).document
         val results = mutableListOf<SearchResponse>()
@@ -124,6 +126,7 @@ class AniWaves : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
         val doc = app.get(url).document
 
         val title = doc.selectFirst("h1.title")?.text() ?: return null
