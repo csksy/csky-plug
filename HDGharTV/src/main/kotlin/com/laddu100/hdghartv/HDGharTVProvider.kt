@@ -285,8 +285,6 @@ class HDGharTVProvider : MainAPI() {
                 else -> Qualities.Unknown.value
             }
 
-            val linkName = "HDGharTV ${stream.quality ?: "Unknown"}"
-
             val type = when {
                 url.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
                 url.contains(".mp4", ignoreCase = true) -> ExtractorLinkType.VIDEO
@@ -310,7 +308,7 @@ class HDGharTVProvider : MainAPI() {
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
-                    name = linkName,
+                    name = stream.quality ?: "Unknown",
                     url = url,
                     type = type
                 ) {
