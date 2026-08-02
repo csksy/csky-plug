@@ -34,10 +34,30 @@ class RaghavAnime : MainAPI() {
         "TRENDING" to "Trending Now",
         "POPULAR" to "Popular This Season",
         "RECENT" to "Recently Updated",
-        "TOP_RATED" to "Top Rated Series"
+        "TOP_RATED" to "Top Rated Series",
+        "RECOMMEND" to "Recommended For You"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // RECOMMEND section — uses watch history-based recommendations
+        if (request.data == "RECOMMEND") {
+            if (!RaghavAnimeFeatures.isEnabled("recommendations")) {
+                return newHomePageResponse(request.name, emptyList())
+            }
+            return try {
+                val list = RaghavAnimeFeatures.getRecommendationsList()
+                val home = list.map { item ->
+                    newAnimeSearchResponse(item.title, item.url, TvType.Anime) {
+                        this.posterUrl = item.posterUrl
+                    }
+                }
+                newHomePageResponse(request.name, home)
+            } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Recommendations] FAILED: ${e.message}")
+                newHomePageResponse(request.name, emptyList())
+            }
+        }
+
         val query = HOMEPAGE_QUERY
         val variables = mutableMapOf<String, Any?>("page" to page, "perPage" to 20)
 
@@ -233,6 +253,10 @@ class RaghavAnime : MainAPI() {
         val episode = linkData.episode
         val isDub = linkData.isDub
 
+        // Record watch time (24min per episode by default — triggers recommendations cache invalidation)
+        if (RaghavAnimeFeatures.isEnabled("watch_time")) {
+            try { RaghavAnimeFeatures.recordWatchTime(aniId, title, null, 24 * 60 * 1000L) } catch (_: Exception) {}
+        }
 
         runAllAsync(
             {
