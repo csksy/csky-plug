@@ -87,6 +87,13 @@ class AnimoTvSlashProvider : MainAPI() {
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
+    data class M3u8ProxyResponse(
+        @JsonProperty("m3u8") val m3u8: String? = null,
+        @JsonProperty("referer") val referer: String? = null,
+        @JsonProperty("proxyUrl") val proxyUrl: String? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class AniZipMapping(
         @JsonProperty("themoviedb_id") val themoviedbId: Int? = null,
         @JsonProperty("type") val type: String? = null,
@@ -364,7 +371,7 @@ class AnimoTvSlashProvider : MainAPI() {
                 val watch = parseJson<WatchResponse>(watchRes.text)
                 val streams = watch.streams ?: emptyList()
 
-                if (streams.isEmpty() && lang == "dub") continue
+                if (streams.isEmpty()) continue
 
                 val animeSession = watch.animeSession
 
@@ -388,10 +395,36 @@ class AnimoTvSlashProvider : MainAPI() {
                     val linkName = "${labelFansub} $labelQuality $labelLang".trim()
 
                     try {
-                        val loaded = loadExtractor(kwikUrl, "$base/", subtitleCallback, callback)
-                        if (loaded) {
+                        val proxyApiUrl = "$base/api/stream/m3u8?url=${java.net.URLEncoder.encode(kwikUrl, "UTF-8")}"
+                        val proxyRes = app.get(proxyApiUrl, referer = "$base/")
+                        val proxyData = parseJson<M3u8ProxyResponse>(proxyRes.text)
+                        val m3u8Url = proxyData.m3u8
+                        val streamReferer = proxyData.referer ?: kwikUrl
+
+                        if (m3u8Url != null && m3u8Url.isNotBlank()) {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = this.name,
+                                    name = linkName,
+                                    url = m3u8Url,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.quality = quality
+                                    this.headers = mapOf(
+                                        "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+                                        "Referer" to streamReferer
+                                    )
+                                }
+                            )
                             found = true
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "loadLinks: m3u8 proxy failed for $kwikUrl: ${e.message}")
+                    }
+
+                    try {
+                        val loaded = loadExtractor(kwikUrl, "$base/", subtitleCallback, callback)
+                        if (loaded) found = true
                     } catch (e: Exception) {
                         Log.e(TAG, "loadLinks: loadExtractor failed for $kwikUrl: ${e.message}")
                     }
@@ -462,8 +495,6 @@ class AnimoTvSlashProvider : MainAPI() {
                         Log.e(TAG, "loadLinks: Beep source failed: ${e.message}")
                     }
                 }
-
-                if (lang == "sub") break
             } catch (e: Exception) {
                 Log.e(TAG, "loadLinks: $lang failed: ${e.message}")
             }
