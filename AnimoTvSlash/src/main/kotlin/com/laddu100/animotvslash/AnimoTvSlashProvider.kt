@@ -402,18 +402,25 @@ class AnimoTvSlashProvider : MainAPI() {
                         val streamReferer = proxyData.referer ?: kwikUrl
 
                         if (m3u8Url != null && m3u8Url.isNotBlank()) {
+                            val localUrl = KwikProxyServer.getProxiedM3u8Url(m3u8Url, streamReferer)
+                            val finalUrl = localUrl ?: m3u8Url
+                            val finalHeaders = if (localUrl != null) {
+                                mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+                            } else {
+                                mapOf(
+                                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+                                    "Referer" to streamReferer
+                                )
+                            }
                             callback.invoke(
                                 newExtractorLink(
                                     source = this.name,
                                     name = linkName,
-                                    url = m3u8Url,
+                                    url = finalUrl,
                                     type = ExtractorLinkType.M3U8
                                 ) {
                                     this.quality = quality
-                                    this.headers = mapOf(
-                                        "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-                                        "Referer" to streamReferer
-                                    )
+                                    this.headers = finalHeaders
                                 }
                             )
                             found = true
