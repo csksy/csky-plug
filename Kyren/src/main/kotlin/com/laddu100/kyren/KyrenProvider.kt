@@ -27,6 +27,8 @@ class KyrenProvider : MainAPI() {
         "Referer" to "https://kyren.moe/"
     )
 
+    private val servers = listOf("megaplay", "megaplay-direct", "tryembed")
+
     override val mainPage = mainPageOf(
         "POPULARITY_DESC" to "Popular",
         "TRENDING_DESC" to "Trending",
@@ -113,7 +115,10 @@ class KyrenProvider : MainAPI() {
         val title: String,
         val episodeCount: Int,
         val posterUrl: String? = null,
-        val isMovie: Boolean = false
+        val isMovie: Boolean = false,
+        val subAvailable: Boolean = true,
+        val dubAvailable: Boolean = false,
+        val lang: String = "sub"
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -121,6 +126,7 @@ class KyrenProvider : MainAPI() {
         val id: Int,
         val episode: Int,
         val title: String,
+        val lang: String,
         val posterUrl: String? = null
     )
 
@@ -148,7 +154,9 @@ class KyrenProvider : MainAPI() {
             title = animeTitle,
             episodeCount = episodes ?: 1,
             posterUrl = image,
-            isMovie = format == "MOVIE"
+            isMovie = format == "MOVIE",
+            subAvailable = subAvailable != false,
+            dubAvailable = dubAvailable == true
         )
         return newAnimeSearchResponse(animeTitle, loadData.toJson(), if (format == "MOVIE") TvType.AnimeMovie else TvType.Anime) {
             this.posterUrl = image
@@ -195,6 +203,9 @@ class KyrenProvider : MainAPI() {
                 anime.nextAiringEpisode?.episode?.let { it - 1 } ?: anime.episodes ?: loadData.episodeCount
             }
 
+            val hasSub = anime.subAvailable != false
+            val hasDub = anime.dubAvailable == true
+
             val episodesData = try {
                 val epUrl = "$mainUrl/api/anime/episodes/${loadData.id}"
                 val epRes = app.get(epUrl, headers = apiHeaders)
@@ -206,23 +217,13 @@ class KyrenProvider : MainAPI() {
 
             val epList = episodesData?.data ?: emptyList()
 
-            if (loadData.isMovie || anime.format == "MOVIE") {
-                val movieData = LoadData(loadData.id, title, 1, poster, true)
-                newMovieLoadResponse(title, url, TvType.AnimeMovie, movieData.toJson()) {
-                    this.posterUrl = poster
-                    this.backgroundPosterUrl = anime.bannerImage
-                    this.plot = plot
-                    this.year = year
-                    this.tags = genres
-                }
-            } else {
-                val episodes = mutableListOf<Episode>()
-
+            val buildEpisodes: (String) -> List<Episode> = { lang ->
+                val eps = mutableListOf<Episode>()
                 if (epList.isNotEmpty()) {
                     for (ep in epList) {
                         val epNum = ep.number ?: continue
-                        val epData = EpisodeData(loadData.id, epNum, title, ep.thumbnail ?: poster).toJson()
-                        episodes.add(newEpisode(epData) {
+                        val epData = EpisodeData(loadData.id, epNum, title, lang, ep.thumbnail ?: poster).toJson()
+                        eps.add(newEpisode(epData) {
                             this.name = ep.title ?: "Episode $epNum"
                             this.episode = epNum
                             this.season = 1
@@ -232,8 +233,8 @@ class KyrenProvider : MainAPI() {
                     }
                 } else {
                     for (epNum in 1..episodeCount) {
-                        val epData = EpisodeData(loadData.id, epNum, title, poster).toJson()
-                        episodes.add(newEpisode(epData) {
+                        val epData = EpisodeData(loadData.id, epNum, title, lang, poster).toJson()
+                        eps.add(newEpisode(epData) {
                             this.name = "Episode $epNum"
                             this.episode = epNum
                             this.season = 1
@@ -241,13 +242,30 @@ class KyrenProvider : MainAPI() {
                         })
                     }
                 }
+                eps
+            }
 
-                newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+            if (loadData.isMovie || anime.format == "MOVIE") {
+                val movieData = LoadData(loadData.id, title, 1, poster, true, hasSub, hasDub, "sub")
+                newMovieLoadResponse(title, url, TvType.AnimeMovie, movieData.toJson()) {
                     this.posterUrl = poster
                     this.backgroundPosterUrl = anime.bannerImage
                     this.plot = plot
                     this.year = year
                     this.tags = genres
+                }
+            } else {
+                val subEps = if (hasSub) buildEpisodes("sub") else emptyList()
+                val dubEps = if (hasDub) buildEpisodes("dub") else emptyList()
+
+                newAnimeLoadResponse(title, url, TvType.Anime) {
+                    this.posterUrl = poster
+                    this.backgroundPosterUrl = anime.bannerImage
+                    this.plot = plot
+                    this.year = year
+                    this.tags = genres
+                    if (subEps.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEps)
+                    if (dubEps.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEps)
                 }
             }
         } catch (e: Exception) {
@@ -263,24 +281,34 @@ class KyrenProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val isMovie = data.contains("\"isMovie\":true")
-        val animeId = try {
-            if (isMovie) parseJson<LoadData>(data).id
-            else parseJson<EpisodeData>(data).id
-        } catch (e: Exception) {
-            Log.e("Kyren", "loadLinks parse: ${e.message}")
-            return false
-        }
+        val animeId: Int
+        val episode: Int
+        val title: String
+        val lang: String
 
-        val episode = if (isMovie) 1 else try { parseJson<EpisodeData>(data).episode } catch (_: Exception) { 1 }
-        val title = if (isMovie) parseJson<LoadData>(data).title else parseJson<EpisodeData>(data).title
+        if (isMovie) {
+            val movieData = try { parseJson<LoadData>(data) } catch (e: Exception) { return false }
+            animeId = movieData.id
+            episode = 1
+            title = movieData.title
+            lang = movieData.lang
+        } else {
+            val epData = try { parseJson<EpisodeData>(data) } catch (e: Exception) { return false }
+            animeId = epData.id
+            episode = epData.episode
+            title = epData.title
+            lang = epData.lang
+        }
 
         var found = false
 
-        for (lang in listOf("sub", "dub")) {
-            for (server in listOf("megaplay", "megaplay-direct", "tryembed")) {
+        val langsToTry = if (isMovie) listOf("sub", "dub") else listOf(lang)
+
+        for (currentLang in langsToTry) {
+            for (server in servers) {
                 try {
                     val encodedTitle = URLEncoder.encode(title, "UTF-8")
-                    val streamUrl = "$mainUrl/api/stream/$animeId/$episode?lang=$lang&title=$encodedTitle&server=$server"
+                    val streamUrl = "$mainUrl/api/stream/$animeId/$episode?lang=$currentLang&title=$encodedTitle&server=$server"
 
                     val res = app.get(streamUrl, headers = apiHeaders)
                     val parsed = parseJson<StreamResponse>(res.text)
@@ -292,7 +320,7 @@ class KyrenProvider : MainAPI() {
                         val sourceUrl = source.url ?: continue
                         if (sourceUrl.isBlank()) continue
 
-                        val langLabel = if (lang == "dub" || source.isDub == true) "Dub" else "Sub"
+                        val langLabel = if (currentLang == "dub") "Dub" else "Sub"
                         val providerName = source.provider ?: server
                         val quality = when (source.quality?.lowercase()) {
                             "1080p" -> Qualities.P1080.value
@@ -338,7 +366,7 @@ class KyrenProvider : MainAPI() {
                         subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
                     }
                 } catch (e: Exception) {
-                    Log.e("Kyren", "loadLinks: $lang/$server: ${e.message}")
+                    Log.e("Kyren", "loadLinks: $currentLang/$server: ${e.message}")
                 }
             }
         }
