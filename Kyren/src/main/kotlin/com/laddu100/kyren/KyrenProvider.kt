@@ -5,9 +5,11 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
 
@@ -19,128 +21,238 @@ class KyrenProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
     override var lang = "en"
 
-    override val mainPage = mainPageOf(
-        "$mainUrl/api/anime/latest" to "Latest Releases"
+    private val apiHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+        "Accept" to "application/json",
+        "Referer" to "https://kyren.moe/"
     )
 
-    @Volatile
-    private var isUrlLoaded = false
-
-    private suspend fun loadFirebaseUrl() {
-        if (isUrlLoaded) return
-        try {
-            val response = app.get(
-                "https://cloudstreampluginhelper-default-rtdb.firebaseio.com/.json",
-                timeout = 10_000L
-            ).text
-            val config = parseJson<FirebaseConfig>(response)
-            val url = config.kyren_url ?: config.kyren
-            if (!url.isNullOrBlank()) {
-                mainUrl = url.removeSuffix("/")
-            }
-            isUrlLoaded = true
-        } catch (e: Exception) {
-            isUrlLoaded = true
-        }
-    }
+    override val mainPage = mainPageOf(
+        "POPULARITY_DESC" to "Popular",
+        "TRENDING_DESC" to "Trending",
+        "SCORE_DESC" to "Top Rated",
+        "START_DATE_DESC" to "Latest"
+    )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class FirebaseConfig(
-        @JsonProperty("kyren_url") val kyren_url: String? = null,
-        @JsonProperty("kyren") val kyren: String? = null
+    data class ApiSearchResponse(
+        @JsonProperty("items") val items: List<AnimeItem>? = null,
+        @JsonProperty("total") val total: Int? = null,
+        @JsonProperty("hasNextPage") val hasNextPage: Boolean? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AnimeItem(
+        @JsonProperty("id") val id: Int? = null,
+        @JsonProperty("slug") val slug: String? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("titleEnglish") val titleEnglish: String? = null,
+        @JsonProperty("titleRomaji") val titleRomaji: String? = null,
+        @JsonProperty("image") val image: String? = null,
+        @JsonProperty("bannerImage") val bannerImage: String? = null,
+        @JsonProperty("synopsis") val synopsis: String? = null,
+        @JsonProperty("status") val status: String? = null,
+        @JsonProperty("format") val format: String? = null,
+        @JsonProperty("seasonYear") val seasonYear: Int? = null,
+        @JsonProperty("episodes") val episodes: Int? = null,
+        @JsonProperty("rating") val rating: Double? = null,
+        @JsonProperty("genres") val genres: List<String>? = null,
+        @JsonProperty("subAvailable") val subAvailable: Boolean? = null,
+        @JsonProperty("dubAvailable") val dubAvailable: Boolean? = null,
+        @JsonProperty("nextAiringEpisode") val nextAiringEpisode: NextAiring? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class NextAiring(@JsonProperty("episode") val episode: Int? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class EpisodeList(
+        @JsonProperty("data") val data: List<EpisodeInfo>? = null,
+        @JsonProperty("total") val total: Int? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class EpisodeInfo(
+        @JsonProperty("number") val number: Int? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("titleJp") val titleJp: String? = null,
+        @JsonProperty("thumbnail") val thumbnail: String? = null,
+        @JsonProperty("duration") val duration: Int? = null,
+        @JsonProperty("aired") val aired: String? = null,
+        @JsonProperty("filler") val filler: Boolean? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class StreamResponse(
+        @JsonProperty("ok") val ok: Boolean? = null,
+        @JsonProperty("sources") val sources: List<StreamSource>? = null,
+        @JsonProperty("subtitles") val subtitles: List<SubtitleInfo>? = null,
+        @JsonProperty("error") val error: String? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class StreamSource(
+        @JsonProperty("provider") val provider: String? = null,
+        @JsonProperty("url") val url: String? = null,
+        @JsonProperty("language") val language: String? = null,
+        @JsonProperty("type") val type: String? = null,
+        @JsonProperty("quality") val quality: String? = null,
+        @JsonProperty("isDub") val isDub: Boolean? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class SubtitleInfo(
+        @JsonProperty("url") val url: String? = null,
+        @JsonProperty("lang") val lang: String? = null,
+        @JsonProperty("label") val label: String? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class LoadData(
+        val id: Int,
+        val title: String,
+        val episodeCount: Int,
+        val posterUrl: String? = null,
+        val isMovie: Boolean = false
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class EpisodeData(
+        val id: Int,
+        val episode: Int,
+        val title: String,
+        val posterUrl: String? = null
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        loadFirebaseUrl()
-        val url = if (page > 1) "${request.data}?page=$page" else request.data
-        val res = app.get(url, timeout = 30_000L).text
-        val parsed = parseJson<LatestResponse>(res)
-        val items = parsed.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
-        return newHomePageResponse(request.name, items)
+        val sort = request.data
+        val items = try {
+            val url = "$mainUrl/api/anime/search?q=&page=$page&perPage=30&sort=$sort"
+            val res = app.get(url, headers = apiHeaders)
+            val parsed = parseJson<ApiSearchResponse>(res.text)
+            parsed.items ?: emptyList()
+        } catch (e: Exception) {
+            Log.e("Kyren", "getMainPage: ${e.message}")
+            emptyList()
+        }
+
+        val searchItems = items.mapNotNull { it.toSearchResponse() }
+        return newHomePageResponse(request.name, searchItems)
     }
 
-    private fun AnimeData.toSearchResponse(): SearchResponse? {
-        val title = this.title?.english ?: this.title?.romaji ?: return null
-        val poster = this.coverImage?.extraLarge ?: this.coverImage?.large
-        val id = this.id ?: return null
-        val href = "$mainUrl/api/anime/info/$id"
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
-            this.posterUrl = poster
+    private fun AnimeItem.toSearchResponse(): SearchResponse? {
+        val animeId = id ?: return null
+        val animeTitle = titleEnglish ?: title ?: titleRomaji ?: return null
+        val loadData = LoadData(
+            id = animeId,
+            title = animeTitle,
+            episodeCount = episodes ?: 1,
+            posterUrl = image,
+            isMovie = format == "MOVIE"
+        )
+        return newAnimeSearchResponse(animeTitle, loadData.toJson(), if (format == "MOVIE") TvType.AnimeMovie else TvType.Anime) {
+            this.posterUrl = image
+            addDubStatus(dubExist = dubAvailable == true, subExist = subAvailable != false)
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        loadFirebaseUrl()
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val res = app.get("$mainUrl/api/anime/search?q=$encoded", timeout = 30_000L).text
-        val parsed = parseJson<SearchApiResponse>(res)
-        return parsed.items?.mapNotNull { it.toSearchResponse() } ?: emptyList()
-    }
-
-    private fun SearchItem.toSearchResponse(): SearchResponse? {
-        val title = this.title ?: return null
-        val id = this.id ?: return null
-        val href = "$mainUrl/api/anime/info/$id"
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
-            this.posterUrl = this@toSearchResponse.image
+        if (query.isBlank()) return emptyList()
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val url = "$mainUrl/api/anime/search?q=$encoded&page=1&perPage=30"
+            val res = app.get(url, headers = apiHeaders)
+            val parsed = parseJson<ApiSearchResponse>(res.text)
+            parsed.items?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        } catch (e: Exception) {
+            Log.e("Kyren", "search: ${e.message}")
+            emptyList()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        loadFirebaseUrl()
-        val id = url.substringAfterLast("/")
-        
-        val infoRes = app.get(url, timeout = 30_000L).text
-        val info = parseJson<AnimeInfo>(infoRes)
-        
-        // Use AniList ID if available, otherwise fall back to MAL ID
-        val streamId = info.idAnilist ?: info.id ?: info.idMal ?: return null
-        Log.d("Kyren", "Using streamId: $streamId (idAnilist=${info.idAnilist}, idMal=${info.idMal})")
-        
-        val title = info.titleEnglish ?: info.titleRomaji ?: info.title ?: return null
-        val poster = info.image
-        val plot = info.description
-        val genres = info.genres
-        val year = info.year
-        
-        val epRes = app.get("$mainUrl/api/anime/episodes/$id", timeout = 30_000L).text
-        val epParsed = parseJson<EpisodesResponse>(epRes)
-        val eps = epParsed.data ?: emptyList()
-        
-        val totalEps = info.episodes ?: eps.size
-        val isMovie = info.type?.equals("MOVIE", ignoreCase = true) == true && totalEps <= 1
-        
-        val subEpisodes = mutableListOf<Episode>()
-        val dubEpisodes = mutableListOf<Episode>()
-        
-        for (ep in eps) {
-            val epNum = ep.number ?: continue
-            val epTitle = ep.title ?: "Episode $epNum"
-            // Use streamId (AniList ID) in the data string
-            val dataStr = "$streamId|$epNum|$title|$year|$totalEps"
-            
-            subEpisodes.add(newEpisode("$dataStr|sub") {
-                this.episode = epNum
-                this.name = epTitle
-                this.posterUrl = ep.thumbnail
-            })
-            
-            dubEpisodes.add(newEpisode("$dataStr|dub") {
-                this.episode = epNum
-                this.name = epTitle
-                this.posterUrl = ep.thumbnail
-            })
+        val loadData = try {
+            parseJson<LoadData>(url)
+        } catch (e: Exception) {
+            Log.e("Kyren", "load parse: ${e.message}")
+            return null
         }
-        
-        val tvType = if (isMovie && dubEpisodes.isEmpty()) TvType.AnimeMovie else TvType.Anime
-        
-        return newAnimeLoadResponse(title, url, tvType) {
-            this.posterUrl = poster
-            this.plot = plot
-            this.tags = genres
-            this.year = year
-            if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
-            if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
+
+        return try {
+            val infoUrl = "$mainUrl/api/anime/info/${loadData.id}"
+            val infoRes = app.get(infoUrl, headers = apiHeaders)
+            val anime = parseJson<AnimeItem>(infoRes.text)
+
+            val title = anime.titleEnglish ?: anime.title ?: loadData.title
+            val poster = anime.image ?: loadData.posterUrl
+            val plot = anime.synopsis?.replace(Regex("<[^>]*>"), "")
+            val year = anime.seasonYear
+            val genres = anime.genres ?: emptyList()
+
+            val episodeCount = if (anime.status == "FINISHED") {
+                anime.episodes ?: loadData.episodeCount
+            } else {
+                anime.nextAiringEpisode?.episode?.let { it - 1 } ?: anime.episodes ?: loadData.episodeCount
+            }
+
+            val episodesData = try {
+                val epUrl = "$mainUrl/api/anime/episodes/${loadData.id}"
+                val epRes = app.get(epUrl, headers = apiHeaders)
+                parseJson<EpisodeList>(epRes.text)
+            } catch (e: Exception) {
+                Log.e("Kyren", "load episodes: ${e.message}")
+                null
+            }
+
+            val epList = episodesData?.data ?: emptyList()
+
+            if (loadData.isMovie || anime.format == "MOVIE") {
+                val movieData = LoadData(loadData.id, title, 1, poster, true)
+                newMovieLoadResponse(title, url, TvType.AnimeMovie, movieData.toJson()) {
+                    this.posterUrl = poster
+                    this.backgroundPosterUrl = anime.bannerImage
+                    this.plot = plot
+                    this.year = year
+                    this.tags = genres
+                }
+            } else {
+                val episodes = mutableListOf<Episode>()
+
+                if (epList.isNotEmpty()) {
+                    for (ep in epList) {
+                        val epNum = ep.number ?: continue
+                        val epData = EpisodeData(loadData.id, epNum, title, ep.thumbnail ?: poster).toJson()
+                        episodes.add(newEpisode(epData) {
+                            this.name = ep.title ?: "Episode $epNum"
+                            this.episode = epNum
+                            this.season = 1
+                            this.posterUrl = ep.thumbnail ?: poster
+                            this.description = if (ep.filler == true) "Filler episode" else null
+                        })
+                    }
+                } else {
+                    for (epNum in 1..episodeCount) {
+                        val epData = EpisodeData(loadData.id, epNum, title, poster).toJson()
+                        episodes.add(newEpisode(epData) {
+                            this.name = "Episode $epNum"
+                            this.episode = epNum
+                            this.season = 1
+                            this.posterUrl = poster
+                        })
+                    }
+                }
+
+                newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+                    this.posterUrl = poster
+                    this.backgroundPosterUrl = anime.bannerImage
+                    this.plot = plot
+                    this.year = year
+                    this.tags = genres
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Kyren", "load: ${e.message}")
+            null
         }
     }
 
@@ -150,192 +262,87 @@ class KyrenProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        loadFirebaseUrl()
-        val parts = data.split("|")
-        if (parts.size < 6) return false
-        
-        val streamId = parts[0]  // This is now the AniList ID
-        val epNum = parts[1]
-        val title = parts[2]
-        val year = parts[3]
-        val totalEps = parts[4]
-        val lang = parts[5]
-        
-        Log.d("Kyren", "loadLinks: streamId=$streamId, ep=$epNum, lang=$lang")
-        
-        // Try multiple servers in sequence
-        val servers = listOf("megaplay", "animeverse", "senshi", "vidnest", "tryembed", "pahe")
-        
-        for (server in servers) {
-            try {
-                val encodedTitle = URLEncoder.encode(title, "UTF-8")
-                val streamUrl = "$mainUrl/api/stream/$streamId/$epNum?lang=$lang&title=$encodedTitle&server=$server&year=$year&episodes=$totalEps"
-                
-                Log.d("Kyren", "Trying server: $server")
-                
-                val res = app.get(streamUrl, timeout = 30_000L).text
-                val parsed = parseJson<StreamResponse>(res)
-                
-                if (parsed.ok == true && !parsed.sources.isNullOrEmpty()) {
-                    val source = parsed.sources.firstOrNull()
-                    val embedUrl = source?.url
-                    
-                    if (embedUrl != null) {
-                        Log.d("Kyren", "Found source: ${source.provider} - $embedUrl")
-                        if (resolveEmbed(embedUrl, subtitleCallback, callback)) {
-                            return true
-                        }
-                    }
-                } else {
-                    Log.d("Kyren", "Server $server: ${parsed.error ?: "no sources"}")
-                }
-            } catch (e: Exception) {
-                Log.d("Kyren", "Server $server error: ${e.message}")
-            }
-        }
-        
-        return false
-    }
-    
-    private suspend fun resolveEmbed(
-        embedUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        return try {
-            val html = app.get(embedUrl, referer = "$mainUrl/", timeout = 30_000L).text
-            val dataId = Regex("data-id=\"(\\d+)\"").find(html)?.groupValues?.get(1)
-            
-            if (dataId != null) {
-                val sourcesUrl = "https://megaplay.buzz/stream/getSourcesNew?id=$dataId"
-                val headers = mapOf(
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to embedUrl
-                )
-                val sourcesRes = app.get(sourcesUrl, headers = headers, timeout = 30_000L).text
-                val sourcesParsed = parseJson<MegaPlaySources>(sourcesRes)
-                
-                val m3u8 = sourcesParsed.sources?.file
-                if (m3u8 != null) {
-                    val link = newExtractorLink("Kyren", "Kyren", m3u8, ExtractorLinkType.M3U8) {
-                        this.quality = Qualities.Unknown.value
-                        this.headers = mapOf("Referer" to "https://megaplay.buzz/")
-                    }
-                    callback.invoke(link)
-                    
-                    sourcesParsed.tracks?.forEach { track ->
-                        if (track.kind == "captions" && track.file != null) {
-                            subtitleCallback.invoke(SubtitleFile(
-                                track.label?.take(2) ?: "en",
-                                track.file
-                            ))
-                        }
-                    }
-                    return true
-                }
-            }
-            false
+        val isMovie = data.contains("\"isMovie\":true")
+        val animeId = try {
+            if (isMovie) parseJson<LoadData>(data).id
+            else parseJson<EpisodeData>(data).id
         } catch (e: Exception) {
-            Log.d("Kyren", "Embed resolve error: ${e.message}")
-            false
+            Log.e("Kyren", "loadLinks parse: ${e.message}")
+            return false
         }
+
+        val episode = if (isMovie) 1 else try { parseJson<EpisodeData>(data).episode } catch (_: Exception) { 1 }
+        val title = if (isMovie) parseJson<LoadData>(data).title else parseJson<EpisodeData>(data).title
+
+        var found = false
+
+        for (lang in listOf("sub", "dub")) {
+            for (server in listOf("megaplay", "megaplay-direct", "tryembed")) {
+                try {
+                    val encodedTitle = URLEncoder.encode(title, "UTF-8")
+                    val streamUrl = "$mainUrl/api/stream/$animeId/$episode?lang=$lang&title=$encodedTitle&server=$server"
+
+                    val res = app.get(streamUrl, headers = apiHeaders)
+                    val parsed = parseJson<StreamResponse>(res.text)
+
+                    if (parsed.ok != true) continue
+
+                    val sources = parsed.sources ?: emptyList()
+                    for (source in sources) {
+                        val sourceUrl = source.url ?: continue
+                        if (sourceUrl.isBlank()) continue
+
+                        val langLabel = if (lang == "dub" || source.isDub == true) "Dub" else "Sub"
+                        val providerName = source.provider ?: server
+                        val quality = when (source.quality?.lowercase()) {
+                            "1080p" -> Qualities.P1080.value
+                            "720p" -> Qualities.P720.value
+                            "480p" -> Qualities.P480.value
+                            "360p" -> Qualities.P360.value
+                            else -> Qualities.Unknown.value
+                        }
+
+                        when (source.type) {
+                            "hls" -> {
+                                callback.invoke(
+                                    newExtractorLink(
+                                        source = this.name,
+                                        name = "$providerName $langLabel",
+                                        url = sourceUrl,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.quality = quality
+                                        this.headers = mapOf(
+                                            "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+                                            "Referer" to "$mainUrl/"
+                                        )
+                                    }
+                                )
+                                found = true
+                            }
+                            "embed" -> {
+                                val loaded = loadExtractor(sourceUrl, "$mainUrl/", subtitleCallback, callback)
+                                if (loaded) found = true
+                            }
+                            else -> {
+                                val loaded = loadExtractor(sourceUrl, "$mainUrl/", subtitleCallback, callback)
+                                if (loaded) found = true
+                            }
+                        }
+                    }
+
+                    parsed.subtitles?.forEach { sub ->
+                        val subUrl = sub.url ?: return@forEach
+                        if (subUrl.isBlank()) return@forEach
+                        val subLabel = sub.label ?: sub.lang ?: "English"
+                        subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
+                    }
+                } catch (e: Exception) {
+                    Log.e("Kyren", "loadLinks: $lang/$server: ${e.message}")
+                }
+            }
+        }
+
+        return found
     }
-
-    // Data classes with AniList ID support
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class LatestResponse(
-        @JsonProperty("data") val data: List<AnimeData>?,
-        @JsonProperty("meta") val meta: Meta?
-    )
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class Meta(@JsonProperty("nextPage") val nextPage: Boolean?)
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AnimeData(
-        @JsonProperty("id") val id: Int?,
-        @JsonProperty("title") val title: TitleObj?,
-        @JsonProperty("coverImage") val coverImage: CoverImage?
-    )
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class TitleObj(
-        @JsonProperty("english") val english: String?,
-        @JsonProperty("romaji") val romaji: String?
-    )
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class CoverImage(
-        @JsonProperty("extraLarge") val extraLarge: String?,
-        @JsonProperty("large") val large: String?
-    )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class SearchApiResponse(@JsonProperty("items") val items: List<SearchItem>?)
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class SearchItem(
-        @JsonProperty("id") val id: Int?,
-        @JsonProperty("title") val title: String?,
-        @JsonProperty("image") val image: String?
-    )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AnimeInfo(
-        @JsonProperty("id") val id: Int?,
-        @JsonProperty("idMal") val idMal: Int?,
-        @JsonProperty("idAnilist") val idAnilist: Int?,
-        @JsonProperty("title") val title: String?,
-        @JsonProperty("titleEnglish") val titleEnglish: String?,
-        @JsonProperty("titleRomaji") val titleRomaji: String?,
-        @JsonProperty("image") val image: String?,
-        @JsonProperty("description") val description: String?,
-        @JsonProperty("genres") val genres: List<String>?,
-        @JsonProperty("type") val type: String?,
-        @JsonProperty("episodes") val episodes: Int?,
-        @JsonProperty("year") val year: Int?
-    )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class EpisodesResponse(@JsonProperty("data") val data: List<EpData>?)
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class EpData(
-        @JsonProperty("number") val number: Int?,
-        @JsonProperty("title") val title: String?,
-        @JsonProperty("thumbnail") val thumbnail: String?
-    )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class StreamResponse(
-        @JsonProperty("ok") val ok: Boolean?,
-        @JsonProperty("sources") val sources: List<StreamSource>?,
-        @JsonProperty("error") val error: String?
-    )
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class StreamSource(
-        @JsonProperty("provider") val provider: String?,
-        @JsonProperty("url") val url: String?,
-        @JsonProperty("language") val language: String?
-    )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MegaPlaySources(
-        @JsonProperty("sources") val sources: MegaPlayFile?,
-        @JsonProperty("tracks") val tracks: List<MegaPlayTrack>?
-    )
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MegaPlayFile(@JsonProperty("file") val file: String?)
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MegaPlayTrack(
-        @JsonProperty("file") val file: String?,
-        @JsonProperty("label") val label: String?,
-        @JsonProperty("kind") val kind: String?
-    )
 }
-
-
-        
