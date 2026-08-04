@@ -9,7 +9,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.newSubtitleFile
 import java.net.URLEncoder
 
 class KyrenProvider : MainAPI() {
@@ -198,7 +197,6 @@ class KyrenProvider : MainAPI() {
                 type = ExtractorLinkType.M3U8
             ) {
                 this.quality = Qualities.Unknown.value
-                this.referer = "https://megaplay.buzz/"
                 this.headers = mapOf("Referer" to "https://megaplay.buzz/")
             }
             callback.invoke(link)
@@ -206,10 +204,7 @@ class KyrenProvider : MainAPI() {
             sourcesParsed.tracks?.forEach { track ->
                 if (track.kind == "captions" && track.file != null) {
                     val subLang = track.label?.take(2) ?: "en"
-                    val sub = newSubtitleFile(subLang, track.file) {
-                        this.headers = mapOf("Referer" to "https://megaplay.buzz/")
-                    }
-                    subtitleCallback.invoke(sub)
+                    subtitleCallback.invoke(SubtitleFile(subLang, track.file))
                 }
             }
             return true
