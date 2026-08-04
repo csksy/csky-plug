@@ -56,7 +56,7 @@ class KyrenProvider : MainAPI() {
         val res = app.get(url, timeout = 30_000L).text
         val parsed = parseJson<LatestResponse>(res)
         val items = parsed.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
-        return newHomePageResponse(request.name, items, hasNext = parsed.meta?.nextPage != null)
+        return newHomePageResponse(request.name, items)
     }
 
     private fun AnimeData.toSearchResponse(): SearchResponse? {
@@ -99,6 +99,9 @@ class KyrenProvider : MainAPI() {
         val genres = info.genres
         val year = info.year
 
+        // Get the AniList ID - the stream API needs this, not the MAL ID
+        val anilistId = info.idAnilist ?: info.id ?: id
+
         val epRes = app.get("$mainUrl/api/anime/episodes/$id", timeout = 30_000L).text
         val epParsed = parseJson<EpisodesResponse>(epRes)
         val eps = epParsed.data ?: emptyList()
@@ -112,7 +115,8 @@ class KyrenProvider : MainAPI() {
         for (ep in eps) {
             val epNum = ep.number ?: continue
             val epTitle = ep.title ?: "Episode $epNum"
-            val dataStr = "$id|$epNum|$title|$year|$totalEps"
+            // Store anilistId in data string for use in loadLinks
+            val dataStr = "$anilistId|$epNum|$title|$year|$totalEps"
 
             subEpisodes.add(newEpisode("$dataStr|sub") {
                 this.episode = epNum
@@ -156,30 +160,85 @@ class KyrenProvider : MainAPI() {
         val totalEps = parts[4]
         val lang = parts[5]
 
-        val encodedTitle = URLEncoder.encode(title, "UTF-8")
-        val streamUrl = "$mainUrl/api/stream/$id/$epNum?lang=$lang&title=$encodedTitle&server=megaplay&year=$year&episodes=$totalEps"
+        Log.d("Kyren", "loadLinks: id=$id ep=$epNum title=$title lang=$lang")
 
-        val res = app.get(streamUrl, timeout = 30_000L).text
-        val parsed = parseJson<StreamResponse>(res)
+        val servers = listOf("megaplay", "animeverse", "senshi", "vidnest", "tryembed")
+        var found = false
 
-        if (parsed.ok != true || parsed.sources.isNullOrEmpty()) {
-            Log.d("Kyren", "stream api failed: ${parsed.error}")
-            return false
+        for (server in servers) {
+            if (found) break
+            try {
+                val encodedTitle = URLEncoder.encode(title, "UTF-8")
+                var streamUrl = "$mainUrl/api/stream/$id/$epNum?lang=$lang&title=$encodedTitle&server=$server"
+                if (year.isNotBlank() && year != "null") {
+                    streamUrl += "&year=$year"
+                }
+                if (totalEps.isNotBlank() && totalEps != "null") {
+                    streamUrl += "&episodes=$totalEps"
+                }
+
+                Log.d("Kyren", "Trying server=$server")
+
+                val res = app.get(streamUrl, timeout = 30_000L).text
+                val parsed = parseJson<StreamResponse>(res)
+
+                if (parsed.ok == true && !parsed.sources.isNullOrEmpty()) {
+                    val embedUrl = parsed.sources.firstOrNull()?.url ?: continue
+                    Log.d("Kyren", "Found embed: $embedUrl")
+                    if (resolveEmbed(embedUrl, subtitleCallback, callback)) {
+                        found = true
+                    }
+                } else {
+                    Log.d("Kyren", "Server $server: ${parsed.error}")
+                }
+            } catch (e: Exception) {
+                Log.e("Kyren", "Server $server error: ${e.message}")
+            }
         }
 
-        val embedUrl = parsed.sources.firstOrNull()?.url ?: return false
-        return resolveMegaPlay(embedUrl, subtitleCallback, callback)
+        return found
     }
 
-    private suspend fun resolveMegaPlay(
+    private suspend fun resolveEmbed(
         embedUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
             val html = app.get(embedUrl, referer = "$mainUrl/", timeout = 30_000L).text
-            val dataId = Regex("data-id=\"(\\d+)\"").find(html)?.groupValues?.get(1) ?: return false
+            val dataId = Regex("data-id=\"(\\d+)\"").find(html)?.groupValues?.get(1)
 
+            if (dataId != null) {
+                return resolveMegaPlay(dataId, embedUrl, subtitleCallback, callback)
+            }
+
+            // Fallback: try to find m3u8 directly in the HTML
+            val m3u8Match = Regex("https?://[^\"'\\s]+\\.m3u8[^\"'\\s]*").find(html)
+            if (m3u8Match != null) {
+                val m3u8 = m3u8Match.value
+                val link = newExtractorLink("Kyren", "Kyren", m3u8, ExtractorLinkType.M3U8) {
+                    this.quality = Qualities.Unknown.value
+                    this.referer = embedUrl
+                    this.headers = mapOf("Referer" to embedUrl)
+                }
+                callback.invoke(link)
+                return true
+            }
+
+            return false
+        } catch (e: Exception) {
+            Log.e("Kyren", "Embed resolve failed: ${e.message}")
+            return false
+        }
+    }
+
+    private suspend fun resolveMegaPlay(
+        dataId: String,
+        embedUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        try {
             val sourcesUrl = "https://megaplay.buzz/stream/getSourcesNew?id=$dataId"
             val headers = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
@@ -190,26 +249,24 @@ class KyrenProvider : MainAPI() {
 
             val m3u8 = sourcesParsed.sources?.file ?: return false
 
-            val link = newExtractorLink(
-                source = "Kyren",
-                name = "Kyren",
-                url = m3u8,
-                type = ExtractorLinkType.M3U8
-            ) {
+            val link = newExtractorLink("Kyren", "Kyren", m3u8, ExtractorLinkType.M3U8) {
                 this.quality = Qualities.Unknown.value
+                this.referer = "https://megaplay.buzz/"
                 this.headers = mapOf("Referer" to "https://megaplay.buzz/")
             }
             callback.invoke(link)
 
             sourcesParsed.tracks?.forEach { track ->
                 if (track.kind == "captions" && track.file != null) {
-                    val subLang = track.label?.take(2) ?: "en"
-                    subtitleCallback.invoke(SubtitleFile(subLang, track.file))
+                    subtitleCallback.invoke(SubtitleFile(
+                        track.label?.take(2) ?: "en",
+                        track.file
+                    ))
                 }
             }
             return true
         } catch (e: Exception) {
-            Log.e("Kyren", "megaplay resolve failed: ${e.message}")
+            Log.e("Kyren", "MegaPlay resolve failed: ${e.message}")
             return false
         }
     }
@@ -254,6 +311,10 @@ class KyrenProvider : MainAPI() {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AnimeInfo(
+        @JsonProperty("id") val id: Int?,
+        @JsonProperty("idMal") val idMal: Int?,
+        @JsonProperty("idAnilist") val idAnilist: Int?,
+        @JsonProperty("anilistId") val anilistId: Int?,
         @JsonProperty("title") val title: String?,
         @JsonProperty("titleEnglish") val titleEnglish: String?,
         @JsonProperty("titleRomaji") val titleRomaji: String?,
@@ -303,4 +364,4 @@ class KyrenProvider : MainAPI() {
         @JsonProperty("label") val label: String?,
         @JsonProperty("kind") val kind: String?
     )
-}
+}                            
