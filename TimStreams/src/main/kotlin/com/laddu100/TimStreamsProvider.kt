@@ -23,11 +23,11 @@ class TimStreamsProvider : MainAPI() {
     override val hasDownloadSupport = false
     override val supportedTypes = setOf(TvType.Live)
 
-    private val fallbackApiBase = "https://api.timstreams.st"
+    private val fallbackApiBase = "https://timstreams.st"
     private val TAG = "TimStreams"
 
     private suspend fun apiUrl(): String {
-        val domain = FirebaseDomainHelper.getDomain("timstreams_api")
+        val domain = FirebaseDomainHelper.getDomain("timstreams")
         return (domain ?: fallbackApiBase).removeSuffix("/") + "/api"
     }
 
@@ -243,7 +243,7 @@ class TimStreamsProvider : MainAPI() {
 
             try {
                 when {
-                    streamUrl.contains("icelanders.st") -> {
+                    streamUrl.contains("icelanders.st") || streamUrl.contains("hux-giants.shop") || streamUrl.contains("hux-") -> {
                         try {
                             val resolver = WebViewResolver(
                                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
