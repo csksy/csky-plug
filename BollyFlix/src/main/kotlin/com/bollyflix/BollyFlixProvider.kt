@@ -5,10 +5,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -74,14 +72,19 @@ class BollyFlixProvider : MainAPI() {
     }
 
     // Extract audio tag content like {Hindi-English} from heading text.
-    // Uses string ops instead of regex: Android's ICU regex engine rejects
-    // a literal unescaped } which caused PatternSyntaxException on device.
+    // Uses string ops: Android's ICU regex rejects a literal unescaped }.
     private fun extractAudio(text: String): String {
         val start = text.indexOf('{')
         if (start < 0) return ""
         val end = text.indexOf('}', start)
         if (end < 0) return ""
         return text.substring(start + 1, end).trim()
+    }
+
+    // Extract season number from heading text like "Stranger Things (Season 1) ..."
+    private fun extractSeason(text: String): Int? {
+        val m = Regex("""Season\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)
+        return m?.groupValues?.get(1)?.toIntOrNull()
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -129,37 +132,39 @@ class BollyFlixProvider : MainAPI() {
         return doc.select("article.latestPost").mapNotNull { it.toSearchResult() }
     }
 
-    // Parsed download block from an h4/h5 heading and its sibling <p> with <a class="dl"> links
+    // One parsed download block: a quality heading with its sibling <p> of links.
     private data class DownloadBlock(
         val qualityName: String,
         val qualityInt: Int,
         val audio: String,
+        val season: Int?,
         val googleDrive: String?,
         val linksmod: String?,
         val fxlinks: String?,
     )
 
-    // Parse h4 (series) and h5 (movie) headings that contain quality + size bracket
+    // Parse h4 (series) and h5 (movie) headings that contain quality + size bracket.
+    // Series headings carry a season number, e.g. "Stranger Things (Season 1) ... 480p [..]".
     private fun parseDownloadBlocks(doc: org.jsoup.nodes.Document): List<DownloadBlock> {
         val blocks = mutableListOf<DownloadBlock>()
         val headings = doc.select("h4, h5")
         for (heading in headings) {
             val text = heading.text()
-            // Must contain a quality keyword and a size bracket to be a download heading
             if (!Regex("""\b(?:480p|720p|1080p|2160p|4K)\b""", RegexOption.IGNORE_CASE)
                     .containsMatchIn(text)
             ) continue
             if (!text.contains("[")) continue
             val (qName, qInt) = extractQuality(text)
             val audio = extractAudio(text)
+            val season = extractSeason(text)
             var googleDrive: String? = null
             var linksmod: String? = null
             var fxlinks: String? = null
             var sibling = heading.nextElementSibling()
             // Walk consecutive <p> siblings collecting download links.
             // Movie pages use <a class="dl">, series pages use
-            // <a class="maxbutton maxbutton-download-links"> — selecting by
-            // href pattern works for both instead of relying on a class name.
+            // <a class="maxbutton maxbutton-download-links">; selecting by href
+            // pattern works for both instead of relying on a class name.
             while (sibling != null && sibling.tagName() == "p") {
                 sibling.select("a[href]").forEach { a ->
                     val href = a.attr("href")
@@ -172,29 +177,14 @@ class BollyFlixProvider : MainAPI() {
                 sibling = sibling.nextElementSibling()
             }
             if (googleDrive != null || linksmod != null || fxlinks != null) {
-                blocks.add(DownloadBlock(qName, qInt, audio, googleDrive, linksmod, fxlinks))
+                blocks.add(DownloadBlock(qName, qInt, audio, season, googleDrive, linksmod, fxlinks))
             }
         }
         return blocks
     }
 
-    // Resolve a fastdlserver / gdflix URL to the direct R2 Cloudflare MKV link.
-    // The fastdlserver URL 302-redirects to gdflix.dev -> new3.gdflix.io which serves
-    // an HTML page containing the R2 direct link (works with byte-range seeking).
-    private suspend fun resolveGDFlix(fastdlUrl: String): String? {
-        return try {
-            val resp = app.get(fastdlUrl, headers = headers, timeout = 30_000L)
-            val html = resp.text
-            // The R2 URL appears directly in page source; token is optional and not required
-            Regex("""https://pub-[a-f0-9]+\.r2\.dev/[a-f0-9]+(?:\?token=\d+)?""")
-                .find(html)?.value
-        } catch (e: Exception) {
-            Log.d("BollyFlix", "GDFlix resolve failed: ${e.message}")
-            null
-        }
-    }
-
-    // Fetch a fxlinks aggregator page and map episode number -> fastdlserver URL
+    // Fetch a fxlinks aggregator page and map episode number -> fastdlserver URL.
+    // A "Season Zip" entry (no episode number) is returned under key 0.
     private suspend fun fetchFxlinksEpisodes(fxlinksUrl: String): Map<Int, String> {
         return try {
             val doc = app.get(fxlinksUrl, headers = headers, timeout = 30_000L).document
@@ -205,7 +195,13 @@ class BollyFlixProvider : MainAPI() {
                 val label = a.text().trim()
                 val epNum = Regex("""(?:Episode|Ep\.?|E)\s*(\d+)""", RegexOption.IGNORE_CASE)
                     .find(label)?.groupValues?.get(1)?.toIntOrNull()
-                if (epNum != null) map[epNum] = href
+                if (epNum != null) {
+                    map[epNum] = href
+                } else if (label.contains("Season Zip", ignoreCase = true) ||
+                    label.contains("Zip", ignoreCase = true)
+                ) {
+                    map[0] = href
+                }
             }
             map
         } catch (e: Exception) {
@@ -224,13 +220,11 @@ class BollyFlixProvider : MainAPI() {
         val h1 = doc.selectFirst("h1")?.text()?.let { cleanTitle(it) } ?: return null
         val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
         val description = run {
-            // Storyline section: h2 containing "Storyline" followed by a <p>
             val storyHeading = doc.select("h2").firstOrNull {
                 it.text().contains("Storyline", ignoreCase = true)
             }
             storyHeading?.nextElementSibling()?.text()
         } ?: doc.selectFirst("meta[property=og:description]")?.attr("content")
-        val tags = emptyList<String>()
         val blocks = try {
             parseDownloadBlocks(doc)
         } catch (e: Exception) {
@@ -242,67 +236,10 @@ class BollyFlixProvider : MainAPI() {
             blocks.any { it.fxlinks != null }
 
         if (isSeries) {
-            // Gather fxlinks URLs per quality, fetch episode lists in parallel
-            val fxlinksBlocks = blocks.filter { it.fxlinks != null }
-            val epMaps: Map<Int, Map<Int, String>> = coroutineScope {
-                fxlinksBlocks.mapIndexed { idx, block ->
-                    async { idx to fetchFxlinksEpisodes(block.fxlinks!!) }
-                }.awaitAll().toMap()
-            }
-            // Determine total episode count across all qualities
-            val maxEp = epMaps.values.flatMap { it.keys }.maxOrNull() ?: 0
-            val episodes = if (maxEp > 0) {
-                (1..maxEp).map { epNum ->
-                    val links = fxlinksBlocks.mapIndexedNotNull { idx, block ->
-                        val fastUrl = epMaps[idx]?.get(epNum) ?: return@mapIndexedNotNull null
-                        mapOf(
-                            "q" to block.qualityName,
-                            "qi" to block.qualityInt,
-                            "a" to block.audio,
-                            "u" to fastUrl,
-                        )
-                    }
-                    val data = mapOf(
-                        "t" to h1,
-                        "e" to epNum,
-                        "links" to links,
-                    ).toJson()
-                    newEpisode(data) {
-                        this.name = "$h1 - Episode $epNum"
-                        this.episode = epNum
-                    }
-                }
-            } else {
-                // No episode labels found; treat as single complete-pack episode
-                val links = blocks.mapNotNull { block ->
-                    val u = block.googleDrive ?: block.fxlinks ?: return@mapNotNull null
-                    mapOf(
-                        "q" to block.qualityName,
-                        "qi" to block.qualityInt,
-                        "a" to block.audio,
-                        "u" to u,
-                    )
-                }
-                val data = mapOf(
-                    "t" to h1,
-                    "e" to 1,
-                    "links" to links,
-                ).toJson()
-                listOf(
-                    newEpisode(data) {
-                        this.name = h1
-                        this.episode = 1
-                    }
-                )
-            }
-            return newTvSeriesLoadResponse(h1, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
-                this.plot = description
-                this.tags = tags
-            }
+            return buildSeriesLoadResponse(h1, url, poster, description, blocks)
         }
 
-        // Movie: encode download blocks into data for loadLinks
+        // Movie: encode download blocks into data for loadLinks.
         val links = blocks.map { block ->
             mapOf(
                 "q" to block.qualityName,
@@ -316,7 +253,93 @@ class BollyFlixProvider : MainAPI() {
         return newMovieLoadResponse(h1, url, TvType.Movie, data) {
             this.posterUrl = poster
             this.plot = description
-            this.tags = tags
+        }
+    }
+
+    private suspend fun buildSeriesLoadResponse(
+        h1: String,
+        url: String,
+        poster: String?,
+        description: String?,
+        blocks: List<DownloadBlock>,
+    ): LoadResponse? {
+        // Group blocks by season. Headings without a season number default to 1.
+        val bySeason = blocks.groupBy { it.season ?: 1 }.toSortedMap()
+        if (bySeason.isEmpty()) return null
+
+        // Fetch every fxlinks page in parallel (one per quality per season).
+        // Key: (season, qualityName, audio) so we can merge episode maps across qualities.
+        data class FxKey(val season: Int, val qName: String, val qInt: Int, val audio: String)
+        val fxBlocks = blocks.filter { it.fxlinks != null }
+        val fxResults: Map<FxKey, Map<Int, String>> = coroutineScope {
+            fxBlocks.map { block ->
+                val key = FxKey(block.season ?: 1, block.qualityName, block.qualityInt, block.audio)
+                async { key to fetchFxlinksEpisodes(block.fxlinks!!) }
+            }.awaitAll().toMap()
+        }
+
+        val episodes = mutableListOf<Episode>()
+        for ((season, seasonBlocks) in bySeason) {
+            // Determine episode count for this season across all qualities.
+            val maxEp = fxResults.entries
+                .filter { it.key.season == season }
+                .flatMap { it.value.keys }
+                .filter { it > 0 }
+                .maxOrNull() ?: 0
+
+            if (maxEp > 0) {
+                for (epNum in 1..maxEp) {
+                    val links = fxResults.entries
+                        .filter { it.key.season == season && it.value.containsKey(epNum) }
+                        .map { (key, epMap) ->
+                            mapOf(
+                                "q" to key.qName,
+                                "qi" to key.qInt,
+                                "a" to key.audio,
+                                "u" to epMap[epNum]!!,
+                            )
+                        }
+                    if (links.isEmpty()) continue
+                    val data = mapOf(
+                        "t" to h1, "s" to season, "e" to epNum, "links" to links
+                    ).toJson()
+                    episodes.add(
+                        newEpisode(data) {
+                            this.name = "$h1 S${season}E$epNum"
+                            this.season = season
+                            this.episode = epNum
+                        }
+                    )
+                }
+            } else {
+                // No episode labels: treat each quality block as a season-pack episode.
+                val links = seasonBlocks.mapNotNull { block ->
+                    val u = block.googleDrive ?: block.fxlinks ?: return@mapNotNull null
+                    mapOf(
+                        "q" to block.qualityName,
+                        "qi" to block.qualityInt,
+                        "a" to block.audio,
+                        "u" to u,
+                    )
+                }
+                if (links.isEmpty()) continue
+                val data = mapOf(
+                    "t" to h1, "s" to season, "e" to 1, "links" to links
+                ).toJson()
+                episodes.add(
+                    newEpisode(data) {
+                        this.name = "$h1 Season $season"
+                        this.season = season
+                        this.episode = 1
+                    }
+                )
+            }
+        }
+
+        if (episodes.isEmpty()) return null
+        return newTvSeriesLoadResponse(h1, url, TvType.TvSeries, episodes) {
+            this.posterUrl = poster
+            this.plot = description
         }
     }
 
@@ -343,27 +366,25 @@ class BollyFlixProvider : MainAPI() {
                     val qInt = (node["qi"] as? Number)?.toInt() ?: Qualities.Unknown.value
                     val audio = node["a"] as? String ?: ""
                     val audioLabel = if (audio.isNotBlank()) " {$audio}" else ""
-                    // Google Drive (fastdlserver -> GDFlix -> R2 direct MKV)
-                    // Movie links use "g", series links use "u"
+                    // Movie links use "g" (google drive) + "m" (linksmod).
+                    // Series links use "u" (fastdlserver URL per episode).
                     val gUrl = node["g"] as? String ?: ""
                     val uUrl = node["u"] as? String ?: ""
                     val fastUrl = if (gUrl.isNotBlank()) gUrl else uUrl
                     if (fastUrl.isNotBlank() && fastUrl.contains("fastdlserver")) {
-                        val r2 = resolveGDFlix(fastUrl)
-                        if (r2 != null) {
-                            callback(
-                                newExtractorLink(
-                                    source = "BollyFlix",
-                                    name = "Google Drive $qName$audioLabel",
-                                    url = r2,
-                                    type = ExtractorLinkType.VIDEO,
-                                ) {
-                                    this.quality = qInt
-                                }
-                            )
+                        // fastdlserver -> gdflix.* -> multiple direct sources.
+                        // loadExtractor dispatches to the registered FastDlServer extractor
+                        // which follows the redirect to a GDFlix page and surfaces every
+                        // download button (Cloud R2, Instant, Drivebot, Fast Cloud, GoFile).
+                        val collected = mutableListOf<ExtractorLink>()
+                        try {
+                            loadExtractor(fastUrl, "", subtitleCallback) { el -> collected.add(el) }
+                        } catch (e: Exception) {
+                            Log.d("BollyFlix", "fastdlserver link error: ${e.message}")
                         }
+                        for (el in collected) relabelLink(el, audioLabel, qInt, callback)
                     }
-                    // linksmod aggregator: fetch page, extract file host links, use built-in extractors
+                    // linksmod aggregator: fetch page, extract file host links, use built-in extractors.
                     val linksmodUrl = node["m"] as? String ?: ""
                     if (linksmodUrl.isNotBlank()) {
                         try {
@@ -371,27 +392,9 @@ class BollyFlixProvider : MainAPI() {
                             for (a in aggDoc.select("a[href]")) {
                                 val href = a.attr("href")
                                 if (!isFileHost(href)) continue
-                                // Collect extracted links then re-label with quality + audio,
-                                // because newExtractorLink is suspend and can't run inside
-                                // the non-suspend callback that loadExtractor expects.
                                 val collected = mutableListOf<ExtractorLink>()
-                                loadExtractor(href, linksmodUrl, subtitleCallback) { el ->
-                                    collected.add(el)
-                                }
-                                for (el in collected) {
-                                    callback(
-                                        newExtractorLink(
-                                            source = el.source,
-                                            name = "${el.name} $qName$audioLabel".trim(),
-                                            url = el.url,
-                                            type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                        ) {
-                                            this.referer = el.referer
-                                            this.headers = el.headers
-                                            this.quality = if (el.quality <= 0) qInt else el.quality
-                                        }
-                                    )
-                                }
+                                loadExtractor(href, linksmodUrl, subtitleCallback) { el -> collected.add(el) }
+                                for (el in collected) relabelLink(el, " $qName$audioLabel", qInt, callback)
                             }
                         } catch (e: Exception) {
                             Log.d("BollyFlix", "linksmod error: ${e.message}")
@@ -409,7 +412,7 @@ class BollyFlixProvider : MainAPI() {
             "usersdrive", "clicknupload", "ddownload", "filelions", "uploadhaven",
             "turbobit", "rapidgator", "keep2share", "nitroflare", "katfile",
             "hubcloud", "filesgram", "drivebot", "fastcdn", "r2.dev",
-            "gdflix", "fastdlserver", "drop", "uploadmb", "send.cm", "streamtape",
+            "gdflix", "fastdlserver", "send.cm", "streamtape",
             "doodstream", "voe", "vidoza", "upstream", "streamlare", "filemoon",
         )
         return hosts.any { url.contains(it, ignoreCase = true) }

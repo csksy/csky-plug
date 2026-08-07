@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 cloudstream {
     description = "BollyFlix - Download Bollywood, Hollywood, Dual Audio, Multi Audio Movies & Web Series in 480p, 720p, 1080p"
