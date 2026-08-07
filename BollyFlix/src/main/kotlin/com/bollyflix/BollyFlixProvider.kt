@@ -73,10 +73,15 @@ class BollyFlixProvider : MainAPI() {
         }
     }
 
-    // Extract audio tag content like {Hindi-English} from heading text
+    // Extract audio tag content like {Hindi-English} from heading text.
+    // Uses string ops instead of regex: Android's ICU regex engine rejects
+    // a literal unescaped } which caused PatternSyntaxException on device.
     private fun extractAudio(text: String): String {
-        val m = Regex("\\{([^}]+)}").find(text)
-        return m?.groupValues?.get(1)?.trim() ?: ""
+        val start = text.indexOf('{')
+        if (start < 0) return ""
+        val end = text.indexOf('}', start)
+        if (end < 0) return ""
+        return text.substring(start + 1, end).trim()
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -151,9 +156,12 @@ class BollyFlixProvider : MainAPI() {
             var linksmod: String? = null
             var fxlinks: String? = null
             var sibling = heading.nextElementSibling()
-            // Walk consecutive <p> siblings collecting dl links
+            // Walk consecutive <p> siblings collecting download links.
+            // Movie pages use <a class="dl">, series pages use
+            // <a class="maxbutton maxbutton-download-links"> — selecting by
+            // href pattern works for both instead of relying on a class name.
             while (sibling != null && sibling.tagName() == "p") {
-                sibling.select("a.dl").forEach { a ->
+                sibling.select("a[href]").forEach { a ->
                     val href = a.attr("href")
                     when {
                         href.contains("fastdlserver") -> googleDrive = href
@@ -222,8 +230,13 @@ class BollyFlixProvider : MainAPI() {
             }
             storyHeading?.nextElementSibling()?.text()
         } ?: doc.selectFirst("meta[property=og:description]")?.attr("content")
-        val tags = doc.select("a[rel=tag]").map { it.text().trim() }.filter { it.isNotBlank() }
-        val blocks = parseDownloadBlocks(doc)
+        val tags = emptyList<String>()
+        val blocks = try {
+            parseDownloadBlocks(doc)
+        } catch (e: Exception) {
+            Log.d("BollyFlix", "parseDownloadBlocks error: ${e.message}")
+            emptyList()
+        }
         val isSeries = url.contains("web-series") ||
             url.contains("season") ||
             blocks.any { it.fxlinks != null }
