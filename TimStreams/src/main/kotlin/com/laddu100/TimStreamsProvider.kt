@@ -67,13 +67,13 @@ class TimStreamsProvider : MainAPI() {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class LiveUpcomingResponse(
         @JsonProperty("events") val events: List<TimEvent>? = null,
-        @JsonProperty("genres") val genres: Map<String, String>? = null
+        @JsonProperty("genres") val genres: List<Map<String, Any>>? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class ChannelsResponse(
         @JsonProperty("channels") val channels: List<TimChannel>? = null,
-        @JsonProperty("genres") val genres: Map<String, String>? = null
+        @JsonProperty("genres") val genres: List<Map<String, Any>>? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
