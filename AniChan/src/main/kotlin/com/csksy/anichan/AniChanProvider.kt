@@ -271,10 +271,11 @@ class AniChanProvider : MainAPI() {
             val html = app.get(
                 "$mainUrl/anime/$anilistId",
                 headers = mapOf("User-Agent" to browserUA),
-                timeout = 15_000L
+                timeout = 30_000L
             ).text
 
-            val epMetaIdx = html.indexOf("\"epMeta\"")
+            val marker = "\\\"epMeta\\\""
+            val epMetaIdx = html.indexOf(marker)
             if (epMetaIdx < 0) return titles
             val metaStart = html.indexOf('{', epMetaIdx)
             if (metaStart < 0) return titles
@@ -297,11 +298,8 @@ class AniChanProvider : MainAPI() {
             }
 
             val raw = html.substring(metaStart, end)
-            // The page embeds episode metadata as escaped JSON. Literal quotes
-            // inside titles appear as \\\\\" and must be preserved as \" while
-            // structural quotes (\\") become real delimiters.
             val unescaped = raw
-                .replace("\\\\\"", "\u0000")
+                .replace("\\\\\\\"", "\u0000")
                 .replace("\\\"", "\"")
                 .replace("\u0000", "\\\"")
                 .replace("\\/", "/")
