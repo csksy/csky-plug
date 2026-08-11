@@ -116,16 +116,6 @@ def _check_token(x_token: str | None):
         raise HTTPException(401, "missing or wrong X-Bridge-Token")
 
 
-def _fmt_size(b):
-    if not b:
-        return None
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if b < 1024:
-            return f"{b:.1f} {unit}" if unit != "B" else f"{b} B"
-        b /= 1024
-    return f"{b:.1f} PB"
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -144,10 +134,36 @@ def _extract_urls(message) -> list[str]:
     return urls
 
 
+def _is_bot_link(url: str) -> bool:
+    """Only treat links that look like the delivery-bot deep link as payloads.
+    Anything else (header links, channel links, support groups) is noise."""
+    if BOT_USERNAME.lower() in url.lower():
+        return True
+    if "/start" in url and "t.me/" in url:
+        return True
+    if "start=" in url and "t.me/" in url:
+        return True
+    return False
+
+
 def _parse_file_list(message) -> list[dict]:
-    """Parse the '📁 [size] ❗ name' lines + attach payloads from links."""
+    """Parse the '📁 [size] ❗ name' lines + attach payloads from links.
+
+    Payloads come from URL/button entities that point at the delivery bot
+    (deep links like t.me/Movie_world2_bot?start=...).
+    """
     text = message.text or message.message or ""
-    urls = _extract_urls(message)
+    urls = [u for u in _extract_urls(message) if _is_bot_link(u)]
+    try:
+        if message.buttons:
+            for row in message.buttons:
+                for b in row:
+                    u = getattr(b, "url", None)
+                    if u and _is_bot_link(u):
+                        urls.append(u)
+    except Exception:
+        pass
+
     items = []
     for line in text.splitlines():
         m = FILE_RE.search(line)
@@ -158,23 +174,18 @@ def _parse_file_list(message) -> list[dict]:
             "size": m.group(1).strip(),
             "payload": None,
         })
-    if items and urls:
-        # if there are as many links as files, pair them; else attach the first
-        if len(urls) == len(items):
-            for it, u in zip(items, urls):
-                it["payload"] = u
-        else:
-            items[0]["payload"] = urls[0]
-    # also scan inline buttons for URLs
-    try:
-        if message.buttons:
-            for row in message.buttons:
-                for b in row:
-                    if getattr(b, "url", None):
-                        if items:
-                            items[0]["payload"] = items[0]["payload"] or b.url
-    except Exception:
-        pass
+    if not items:
+        return items
+
+    unique_urls = list(dict.fromkeys(urls))
+    if len(unique_urls) == len(items):
+        for it, u in zip(items, unique_urls):
+            it["payload"] = u
+    elif unique_urls:
+        # best effort: attach the first bot deep link to the first entry
+        items[0]["payload"] = unique_urls[0]
+    # fall back to the file name as payload - the plugin uses title if
+    # payload is empty anyway
     return items
 
 
@@ -434,53 +445,72 @@ async def api_select(payload: str, x_bridge_token: str | None = Header(default=N
             raise HTTPException(500, f"select failed: {e}")
 
 
+MAX_RANGE = 8 * 1024 * 1024  # never buffer more than 8MB per request
+
+
 @app.api_route("/api/stream/{file_id}", methods=["GET", "HEAD"])
-async def api_stream(file_id: str, request: Request, x_bridge_token: str | None = Header(default=None)):
-    _check_token(x_bridge_token)
+async def api_stream(file_id: str, request: Request):
+    # Note: intentionally NOT behind BRIDGE_TOKEN - the app player fetches this
+    # URL without custom headers, and the fileId itself is unguessable.
     entry = _index.get(file_id)
     if not entry:
         raise HTTPException(404, "unknown fileId")
     try:
-        msgs = await client.get_messages(entry["chat"], ids=entry["msg_id"])
-        if not msgs:
+        # get_messages with a single int id returns a Message (or None), not a list
+        msg = await client.get_messages(entry["chat"], ids=entry["msg_id"])
+        if not msg:
             raise HTTPException(404, "file message not found")
-        msg = msgs[0]
         if not msg.media:
             raise HTTPException(404, "message has no media")
         media = msg.media
-        size = getattr(msg.file, "size", None) or entry.get("size") or 0
+        size = int(getattr(msg.file, "size", None) or entry.get("size") or 0)
         mime = getattr(msg.file, "mime_type", None) or "video/mp4"
 
-        rng = request.headers.get("range")
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Type": mime,
             "Content-Disposition": 'inline; filename="video.mp4"',
+            "Content-Length": str(size),
         }
         if request.method == "HEAD":
-            headers["Content-Length"] = str(size)
             return Response(status_code=200, headers=headers)
 
-        if rng:
-            m = re.match(r"bytes=(\d*)-(\d*)", rng)
-            if not m:
-                raise HTTPException(416, "bad range")
-            start_s, end_s = m.groups()
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else size - 1
-            end = min(end, size - 1) if size else end
-            length = end - start + 1
-            if start >= size:
-                raise HTTPException(416, "range out of bounds")
-            data = await client.download_file(media, offset=start, limit=length)
-            headers.update({
-                "Content-Range": f"bytes {start}-{end}/{size}",
-                "Content-Length": str(len(data)),
-            })
-            return Response(content=data, status_code=206, headers=headers)
+        rng = request.headers.get("range")
+        if not rng:
+            # No Range header: stream the whole file in capped chunks.
+            async def whole():
+                offset = 0
+                while offset < size:
+                    chunk = await client.download_file(
+                        media, offset=offset, limit=min(MAX_RANGE, size - offset)
+                    )
+                    if not chunk:
+                        break
+                    yield chunk
+                    offset += len(chunk)
 
-        headers["Content-Length"] = str(size)
-        return Response(content=await client.download_file(media), status_code=200, headers=headers)
+            from fastapi.responses import StreamingResponse
+            return StreamingResponse(whole(), status_code=200, headers=headers)
+
+        m = re.match(r"bytes=(\d*)-(\d*)", rng)
+        if not m:
+            raise HTTPException(416, "bad range")
+        start_s, end_s = m.groups()
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else size - 1
+        end = min(end, size - 1) if size else end
+        if start >= size or end < start:
+            raise HTTPException(416, "range out of bounds")
+        # cap each range to MAX_RANGE so huge/open-ended ranges can't OOM
+        end = min(end, start + MAX_RANGE - 1)
+        length = end - start + 1
+
+        data = await client.download_file(media, offset=start, limit=length)
+        headers.update({
+            "Content-Range": f"bytes {start}-{end}/{size}",
+            "Content-Length": str(len(data)),
+        })
+        return Response(content=data, status_code=206, headers=headers)
     except HTTPException:
         raise
     except Exception as e:

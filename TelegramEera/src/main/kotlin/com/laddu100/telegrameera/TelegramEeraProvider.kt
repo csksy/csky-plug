@@ -54,8 +54,16 @@ class TelegramEeraProvider : MainAPI() {
     private val requestTimeout: Long
         get() = TelegramEeraSettings.requestTimeout().toLongOrNull() ?: 90L
 
-    private suspend fun bridgeGet(path: String): String =
-        app.get("$bridge$path", timeout = requestTimeout).text
+    private suspend fun bridgeGet(path: String): String {
+        try {
+            return app.get("$bridge$path", timeout = requestTimeout).text
+        } catch (e: Exception) {
+            throw ErrorLoadingException(
+                "Telegram Eera bridge unreachable ($bridge). " +
+                    "Deploy the bridge and set TelegramEeraProvider.DEFAULT_BRIDGE to its URL."
+            )
+        }
+    }
 
     // ------------------------------------------------------------------
     // Search -> the group bot's "THE RESULTS FOR" file list
@@ -64,9 +72,13 @@ class TelegramEeraProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse>? {
         if (query.isBlank()) return emptyList()
         val json = bridgeGet("/api/search?q=${URLEncoder.encode(query, "UTF-8")}")
-        val results = tryParseJson<List<EeraResult>>(json) ?: emptyList()
-        if (results.isEmpty()) return emptyList()
-        return results.mapNotNull { r ->
+        val response = tryParseJson<EeraSearchResponse>(json)
+            ?: throw ErrorLoadingException("Unexpected reply from the bridge.")
+        if (response.results.isEmpty()) {
+            // Surface the bot's actual reply (or a bridge message) to the user.
+            throw ErrorLoadingException(response.message ?: "No results found on Telegram.")
+        }
+        return response.results.mapNotNull { r ->
             if (r.title.isBlank()) return@mapNotNull null
             newMovieSearchResponse(r.title, r.toJson(), TvType.Movie)
         }
@@ -81,7 +93,7 @@ class TelegramEeraProvider : MainAPI() {
         val title = item.title.ifBlank { return null }
 
         val isSeries = SERIES_RE.containsMatchIn(title)
-        val episode = newEpisode(item.toJson()) {
+        val episode = newEpisode(item) {
             this.name = title
             this.description = item.size?.let { "Size: $it" }
         }
@@ -91,7 +103,7 @@ class TelegramEeraProvider : MainAPI() {
                 this.plot = "Streamed from Telegram (Search Zone / MovieEera)."
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, listOf(episode)) {
+            newMovieLoadResponse(title, url, TvType.Movie, item) {
                 this.plot = "Streamed from Telegram (Search Zone / MovieEera)."
             }
         }
@@ -107,7 +119,9 @@ class TelegramEeraProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val item = resolveItem(data) ?: return false
+        // loadLinks receives the serialized EeraResult (object JSON) both for
+        // movies (dataUrl) and episodes (episode.data).
+        val item = tryParseJson<EeraResult>(data) ?: return false
         val payload = item.payload?.takeIf { it.isNotBlank() } ?: item.title ?: return false
 
         val select = tryParseJson<EeraSelectResponse>(
@@ -134,12 +148,4 @@ class TelegramEeraProvider : MainAPI() {
         )
         return true
     }
-
-    /**
-     * loadLinks receives either a single item JSON (episode case) or a
-     * serialized list (movie case) - normalize both.
-     */
-    private fun resolveItem(data: String): EeraResult? =
-        tryParseJson<EeraResult>(data)
-            ?: tryParseJson<List<EeraResult>>(data)?.firstOrNull()
 }

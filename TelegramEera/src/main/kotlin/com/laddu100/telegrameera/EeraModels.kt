@@ -15,17 +15,16 @@ data class EeraResult(
     val payload: String? = null,
 )
 
+/** Reply from the bridge /api/search endpoint. */
+data class EeraSearchResponse(
+    val results: List<EeraResult> = emptyList(),
+    val message: String? = null,
+)
+
 /** Reply from the bridge /api/select endpoint. */
 data class EeraSelectResponse(
     val fileId: String? = null,
     val fileName: String? = null,
     val size: Long? = null,
     val error: String? = null,
-)
-
-/** Reply from the bridge /api/status endpoint. */
-data class EeraStatus(
-    val ok: Boolean = false,
-    val loggedIn: Boolean = false,
-    val message: String? = null,
 )
