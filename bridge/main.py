@@ -81,7 +81,10 @@ app = FastAPI(title="Eera Telegram Bridge", version="1.0")
 # ---------------------------------------------------------------------------
 
 session = StringSession(SESSION_STRING) if SESSION_STRING else SESSION_NAME
-client = TelegramClient(session, API_ID, API_HASH)
+# Telethon requires non-empty api credentials at construction time; when they
+# are missing (local testing / misconfigured deploy) fall back to placeholders
+# so the web UI can still run and report the problem.
+client = TelegramClient(session, API_ID or 1, API_HASH or "not-set")
 
 _login_lock = asyncio.Lock()
 _op_lock = asyncio.Lock()
@@ -246,6 +249,13 @@ button{width:100%;padding:12px;border:0;border-radius:8px;background:#2f9bff;col
 <div class="card"><h2>Step 2 — code</h2><input id="code" placeholder="12345">
 <input id="pass" placeholder="2FA password (only if enabled)">
 <button onclick="doCode()">Sign in</button></div>
+<div class="card"><h2>Settings</h2><div id="cfg">…</div><p style="font-size:13px;color:#aaa">Group: <code id="cfgGroup">?</code> · Bot: <code id="cfgBot">?</code></p></div>
+<div class="card"><h2>Session persistence (optional)</h2>
+<p style="font-size:13px;color:#aaa">Free hosts wipe their disk on redeploys, which logs you out. Copy the session
+string below and set it as the <code>TG_SESSION_STRING</code> env var on your host, then redeploy —
+you stay logged in forever.</p>
+<button onclick="doSession()">Get session string</button>
+<div id="sess" style="margin-top:8px"></div></div>
 <div class="card"><h2>Test</h2><input id="q" placeholder="Search query, e.g. Inception">
 <button onclick="doSearch()">Test search</button><div id="out"></div></div>
 <script>
@@ -261,7 +271,12 @@ alert(r.message||r.detail||JSON.stringify(r));st()}
 async function doSearch(){const q=document.getElementById('q').value;
 const r=await j('/api/search?q='+encodeURIComponent(q));
 document.getElementById('out').innerHTML='<pre style="text-align:left;font-size:12px;white-space:pre-wrap">'+JSON.stringify(r,null,2)+'</pre>'}
-st()
+async function doSession(){const r=await j('/api/session');
+document.getElementById('sess').innerHTML='<pre style="font-size:11px;white-space:pre-wrap;word-break:break-all">'+(r.session?r.session:JSON.stringify(r))+'</pre>'}
+async function cfg(){const c=await j('/api/config');document.getElementById('cfg').innerHTML=
+'API configured: <span class="'+(c.apiConfigured?'good':'bad')+'">'+(c.apiConfigured?'yes':'NO — set API_ID / API_HASH')+'</span> · persistent session: '+(c.sessionPersistent?'yes':'no');
+document.getElementById('cfgGroup').textContent='@'+c.group;document.getElementById('cfgBot').textContent='@'+c.bot}
+st();cfg()
 </script></body></html>"""
 
 
@@ -297,6 +312,35 @@ async def health(x_bridge_token: str | None = Header(default=None)):
         "userName": me.first_name if me else None,
         "message": "logged in" if me else "not logged in",
     }
+
+
+@app.get("/api/config")
+async def api_config():
+    """Public, safe config info (no secrets) for the web UI / debugging."""
+    return {
+        "group": GROUP_USERNAME,
+        "bot": BOT_USERNAME,
+        "apiConfigured": bool(API_ID and API_HASH),
+        "sessionPersistent": bool(SESSION_STRING),
+    }
+
+
+@app.get("/api/session")
+async def api_session(x_bridge_token: str | None = Header(default=None)):
+    """Return the current Telegram session as a string so it can be stored in
+    the TG_SESSION_STRING env var - this makes the login survive restarts."""
+    _check_token(x_bridge_token)
+    try:
+        if not (client.is_connected() and await client.is_user_authorized()):
+            raise HTTPException(400, "not logged in")
+        s = client.session.save()
+        if not s:
+            raise HTTPException(400, "session could not be serialized")
+        return {"session": s, "hint": "Set TG_SESSION_STRING to this value in your host env to keep the login across restarts."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"could not export session: {e}")
 
 
 @app.post("/api/login")
@@ -448,6 +492,23 @@ async def api_select(payload: str, x_bridge_token: str | None = Header(default=N
 MAX_RANGE = 8 * 1024 * 1024  # never buffer more than 8MB per request
 
 
+def _parse_range_header(rng: str, size: int):
+    """Parse a 'bytes=start-end' header -> (start, end) clamped to [0, size).
+    Returns None when the range is unsatisfiable."""
+    m = re.match(r"bytes=(\d*)-(\d*)", rng or "")
+    if not m:
+        return None
+    start_s, end_s = m.groups()
+    start = int(start_s) if start_s else 0
+    end = int(end_s) if end_s else size - 1
+    end = min(end, size - 1) if size else end
+    if start >= size or end < start:
+        return None
+    # cap each range so huge/open-ended ranges can't OOM the server
+    end = min(end, start + MAX_RANGE - 1)
+    return start, end
+
+
 @app.api_route("/api/stream/{file_id}", methods=["GET", "HEAD"])
 async def api_stream(file_id: str, request: Request):
     # Note: intentionally NOT behind BRIDGE_TOKEN - the app player fetches this
@@ -492,17 +553,10 @@ async def api_stream(file_id: str, request: Request):
             from fastapi.responses import StreamingResponse
             return StreamingResponse(whole(), status_code=200, headers=headers)
 
-        m = re.match(r"bytes=(\d*)-(\d*)", rng)
-        if not m:
-            raise HTTPException(416, "bad range")
-        start_s, end_s = m.groups()
-        start = int(start_s) if start_s else 0
-        end = int(end_s) if end_s else size - 1
-        end = min(end, size - 1) if size else end
-        if start >= size or end < start:
+        parsed = _parse_range_header(rng, size)
+        if parsed is None:
             raise HTTPException(416, "range out of bounds")
-        # cap each range to MAX_RANGE so huge/open-ended ranges can't OOM
-        end = min(end, start + MAX_RANGE - 1)
+        start, end = parsed
         length = end - start + 1
 
         data = await client.download_file(media, offset=start, limit=length)
