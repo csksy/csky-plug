@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.app
+import com.fasterxml.jackson.databind.ObjectMapper
 
 class AniChanProvider : MainAPI() {
     override var mainUrl = "https://anichan.net"
@@ -132,6 +133,8 @@ class AniChanProvider : MainAPI() {
             return null
         }
 
+        val epTitles = fetchEpisodeTitles(anilistId)
+
         var epCount = epData.episodes ?: 0
         if (epCount == 0 && meta?.statusStr == "RELEASING") {
             epCount = (meta?.nextAiringEpisode?.episode ?: 1) - 1
@@ -143,9 +146,10 @@ class AniChanProvider : MainAPI() {
         val isMovie = meta?.formatStr == "MOVIE" || epCount <= 1
 
         if (isMovie) {
+            val movieTitle = epTitles[1] ?: title
             if (dubAvailable) {
-                val subEp = newEpisode(EpisodeData(anilistId, 1, false).toJson()) { this.name = title }
-                val dubEp = newEpisode(EpisodeData(anilistId, 1, true).toJson()) { this.name = title }
+                val subEp = newEpisode(EpisodeData(anilistId, 1, false).toJson()) { this.name = movieTitle }
+                val dubEp = newEpisode(EpisodeData(anilistId, 1, true).toJson()) { this.name = movieTitle }
                 return newAnimeLoadResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
                     this.backgroundPosterUrl = banner
@@ -169,7 +173,7 @@ class AniChanProvider : MainAPI() {
         val subEpisodes = (1..epCount).map { epNum ->
             newEpisode(EpisodeData(anilistId, epNum, false).toJson()) {
                 this.episode = epNum
-                this.name = "Episode $epNum"
+                this.name = epTitles[epNum] ?: "Episode $epNum"
             }
         }
 
@@ -177,7 +181,7 @@ class AniChanProvider : MainAPI() {
             (1..epCount).map { epNum ->
                 newEpisode(EpisodeData(anilistId, epNum, true).toJson()) {
                     this.episode = epNum
-                    this.name = "Episode $epNum"
+                    this.name = epTitles[epNum] ?: "Episode $epNum"
                 }
             }
         } else emptyList()
@@ -261,19 +265,58 @@ class AniChanProvider : MainAPI() {
         }
     }
 
-    private fun extractEpisodeTitles(html: String): Map<Int, String> {
+    private suspend fun fetchEpisodeTitles(anilistId: Int): Map<Int, String> {
         val titles = mutableMapOf<Int, String>()
-        val regex = Regex("""\"(\d+)\":\"([^\"]{3,120})\"""")
-        regex.findAll(html).forEach { match ->
-            val epNum = match.groupValues[1].toIntOrNull() ?: return@forEach
-            val title = match.groupValues[2]
-                .replace("\\u00e2\\u0080\\u0099", "'")
-                .replace("\\u00e2\\u0080\\u009c", "\"")
-                .replace("\\u00e2\\u0080\\u009d", "\"")
-                .replace("\\/", "/")
-            if (title.isNotBlank() && !title.matches(Regex("\\d+"))) {
-                titles[epNum] = title
+        try {
+            val html = app.get(
+                "$mainUrl/anime/$anilistId",
+                headers = mapOf("User-Agent" to browserUA),
+                timeout = 15_000L
+            ).text
+
+            val epMetaIdx = html.indexOf("\"epMeta\"")
+            if (epMetaIdx < 0) return titles
+            val metaStart = html.indexOf('{', epMetaIdx)
+            if (metaStart < 0) return titles
+
+            var depth = 0
+            var inStr = false
+            var end = metaStart
+            var i = metaStart
+            while (i < html.length) {
+                val c = html[i]
+                if (c == '\\' && i + 1 < html.length) { i += 2; continue }
+                if (c == '"') { inStr = !inStr }
+                else if (!inStr) {
+                    when (c) {
+                        '{' -> depth++
+                        '}' -> { depth--; if (depth == 0) { end = i + 1; break } }
+                    }
+                }
+                i++
             }
+
+            val raw = html.substring(metaStart, end)
+            // The page embeds episode metadata as escaped JSON. Literal quotes
+            // inside titles appear as \\\\\" and must be preserved as \" while
+            // structural quotes (\\") become real delimiters.
+            val unescaped = raw
+                .replace("\\\\\"", "\u0000")
+                .replace("\\\"", "\"")
+                .replace("\u0000", "\\\"")
+                .replace("\\/", "/")
+
+            val mapper = ObjectMapper()
+            val node = mapper.readTree(unescaped)
+            val fields = node.fields()
+            while (fields.hasNext()) {
+                val entry = fields.next()
+                val epNum = entry.key.toIntOrNull() ?: continue
+                val title = entry.value.get("title")?.asText()
+                if (!title.isNullOrBlank()) titles[epNum] = title
+            }
+        } catch (e: Exception) {
+            Log.e("AniChan", "fetchEpisodeTitles: ${e.message}")
         }
         return titles
     }
