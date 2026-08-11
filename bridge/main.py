@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -53,7 +54,6 @@ from telethon.tl.types import (
     MessageEntityTextUrl,
     MessageEntityUrl,
     MessageMediaDocument,
-    MessageMediaPhoto,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -448,8 +448,13 @@ async def api_select(payload: str, x_bridge_token: str | None = Header(default=N
                 u = urlparse(payload)
                 qs = parse_qs(u.query)
                 start = (qs.get("start") or [None])[0]
-                if start:
-                    command = f"/start {start}"
+                if not start:
+                    # also accept the path form: t.me/Bot/start -> /start
+                    path = u.path.rstrip("/")
+                    if path.endswith("/start") or path.endswith("start"):
+                        start = ""
+                if start is not None:
+                    command = f"/start {start}".rstrip()
                 else:
                     raise HTTPException(400, f"deep link has no start payload: {payload}")
 
@@ -465,10 +470,27 @@ async def api_select(payload: str, x_bridge_token: str | None = Header(default=N
                         break
                 raise HTTPException(404, "bot did not send a file. " + hint)
 
-            # CRITICAL: beat the 50s self-destruct - keep a permanent copy
-            saved = await client.forward_messages("me", msg)
+            # CRITICAL: beat the 50s self-destruct - keep a permanent copy.
+            # Retry a few times: if the bot already deleted the file the
+            # forward fails and we surface a clear error instead of crashing.
+            saved = None
+            for attempt in range(3):
+                try:
+                    forwarded = await client.forward_messages("me", msg)
+                    # single message in -> single Message out (Telethon)
+                    saved = forwarded if not isinstance(forwarded, list) else (forwarded[0] if forwarded else None)
+                    if saved is not None:
+                        break
+                except Exception as fe:
+                    log.warning("forward attempt %d failed: %s", attempt + 1, fe)
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.5)
+            if saved is None:
+                raise HTTPException(404, "bot file disappeared before it could be saved (50s race lost)")
 
-            file_id = f"m{saved.id}"
+            # random fileId so stream URLs are unguessable (msg_id stays internal)
+            file_id = uuid.uuid4().hex
             _index[file_id] = {
                 "chat": "me",
                 "msg_id": saved.id,
