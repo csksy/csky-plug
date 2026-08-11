@@ -91,6 +91,7 @@ class TheMoviesFlixSettingsFragment(private val plugin: Plugin) : BottomSheetDia
 
         bypassBtn.setOnClickListener {
             val host = TheMoviesFlixPlugin.cfCookieHost.ifBlank { "https://moviesflixhq.com" }
+            val bypassUrl = "$host/?s=movie"
             try {
                 val cm = android.webkit.CookieManager.getInstance()
                 listOf("cf_clearance", "cf_chl_rc_ni", "cf_chl_prog").forEach { name ->
@@ -108,7 +109,7 @@ class TheMoviesFlixSettingsFragment(private val plugin: Plugin) : BottomSheetDia
             bypassBtn.text = "Solving..."
             CoroutineScope(Dispatchers.Main).launch {
                 try {
-                    val success = showTMFCFBypassDialogAndWait(host)
+                    val success = showTMFCFBypassDialogAndWait(bypassUrl)
                     bypassBtn.text = if (success && TheMoviesFlixPlugin.cfCookies.isNotBlank()) {
                         "CF Cookies Saved - Refresh"
                     } else {

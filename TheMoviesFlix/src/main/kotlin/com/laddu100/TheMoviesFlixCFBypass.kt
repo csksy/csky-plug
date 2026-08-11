@@ -607,7 +607,7 @@ suspend fun tmfGet(
         }
 
         TMFCFStore.clear()
-        val bypassSuccess = showTMFCFBypassDialogAndWait(targetHost)
+        val bypassSuccess = showTMFCFBypassDialogAndWait(url)
 
         if (!bypassSuccess) {
             Log.e(TAG, "CF bypass dialog failed/cancelled")
