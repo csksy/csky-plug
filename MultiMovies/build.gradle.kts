@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 cloudstream {
     description = "MultiMovies - Stream Movies, TV Shows & Anime with Multi Audio"

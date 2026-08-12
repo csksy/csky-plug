@@ -248,6 +248,7 @@ class MultiMoviesProvider : MainAPI() {
     private suspend fun resolveCineverse(embedUrl: String, sourceName: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val html = app.get(embedUrl, headers = baseHeaders, timeout = 30_000L).text
+
             val directSrc = Regex("""directSrc\s*=\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
                 ?.replace("&amp;", "&")
@@ -266,21 +267,26 @@ class MultiMoviesProvider : MainAPI() {
                 return true
             }
 
-            val proxySrc = Regex("""src\s*=\s*"[^"]*serve_m3u8=1[^"]*url=([^&"']+)""").find(html)?.groupValues?.get(1)
-                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-                ?.replace("\\/", "/")
+            val proxyUrls = Regex("""url=(https?[^&"'\s]+\.m3u8[^&"'\s]*)""").findAll(html)
+                .map { it.groupValues[1] }
+                .map { java.net.URLDecoder.decode(it, "UTF-8").replace("\\/", "/").replace("&amp;", "&") }
+                .filter { it.contains(".m3u8") }
+                .distinct()
+                .toList()
 
-            if (proxySrc != null && proxySrc.contains(".m3u8")) {
-                callback(
-                    newExtractorLink(
-                        source = "MultiMovies",
-                        name = "$sourceName (Proxy)",
-                        url = proxySrc,
-                        type = ExtractorLinkType.M3U8,
-                    ) {
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
+            if (proxyUrls.isNotEmpty()) {
+                for (m3u8Url in proxyUrls) {
+                    callback(
+                        newExtractorLink(
+                            source = "MultiMovies",
+                            name = "$sourceName",
+                            url = m3u8Url,
+                            type = ExtractorLinkType.M3U8,
+                        ) {
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                }
                 return true
             }
 
@@ -303,7 +309,6 @@ class MultiMoviesProvider : MainAPI() {
                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
                     ) {
                         this.quality = Qualities.Unknown.value
-                        this.referer = embedUrl
                     }
                 )
                 return true
@@ -355,8 +360,6 @@ class MultiMoviesProvider : MainAPI() {
                                     url = el.url,
                                     type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
                                 ) {
-                                    this.referer = el.referer
-                                    this.headers = el.headers
                                     this.quality = el.quality
                                 }
                             )
