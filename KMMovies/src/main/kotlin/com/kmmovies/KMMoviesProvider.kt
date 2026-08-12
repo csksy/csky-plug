@@ -111,18 +111,14 @@ class KMMoviesProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
-        val items = try {
+        val doc = try {
             kmGet(url, headers = headers).document
-                .select("article.movie-card").mapNotNull { it.toSearchResult() }
         } catch (e: Exception) {
             Log.d("KMMovies", "getMainPage: ${e.message}")
-            emptyList()
+            return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
-        val hasNext = try {
-            kmGet(url, headers = headers).document.select("a.next.page-numbers").isNotEmpty()
-        } catch (e: Exception) {
-            false
-        }
+        val items = doc.select("article.movie-card").mapNotNull { it.toSearchResult() }
+        val hasNext = doc.select("a.next.page-numbers").isNotEmpty()
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
@@ -319,8 +315,12 @@ class KMMoviesProvider : MainAPI() {
 
         val title = parsed["t"] as? String ?: ""
 
+        // Whole-season pack links (fallback for seasons without episode-wise pages)
+        val fallback = parsed["fallback"] as? List<*>
+        val hasFallback = fallback != null && fallback.isNotEmpty()
+
         // TV episode: per-episode quality pages (each lists every episode of that quality)
-        val pages = parsed["pages"] as? List<*>?
+        val pages = parsed["pages"] as? List<*>
         if (pages != null && pages.isNotEmpty()) {
             val episodeNum = (parsed["e"] as? Number)?.toInt() ?: 1
             val seasonNum = (parsed["s"] as? Number)?.toInt() ?: 1
@@ -343,9 +343,13 @@ class KMMoviesProvider : MainAPI() {
                 }.awaitAll().any { it }
             }
             if (found) return true
+            if (hasFallback) {
+                return resolvePackLinks(fallback, title, subtitleCallback, callback)
+            }
+            return false
+        }
 
-            // Fallback: whole-season pack links
-            val fallback = parsed["fallback"] as? List<*> ?: return false
+        if (hasFallback) {
             return resolvePackLinks(fallback, title, subtitleCallback, callback)
         }
 
