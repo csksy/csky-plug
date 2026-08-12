@@ -126,6 +126,7 @@ class NewKMMoviesProvider : MainAPI() {
 
     private data class SeasonData(
         val seasonNum: Int,
+        val epCount: Int,
         val episodeLinks: List<DownloadLink>,
         val combinedLinks: List<DownloadLink>,
         val zipLinks: List<DownloadLink>,
@@ -153,6 +154,7 @@ class NewKMMoviesProvider : MainAPI() {
         for (block in seasonBlocks) {
             val titleText = block.selectFirst("span.season-block-title")?.text()?.trim() ?: continue
             val seasonNum = Regex("""Season\s*(\d+)""", RegexOption.IGNORE_CASE).find(titleText)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+            val epCount = Regex("""\((\d+)\s*eps\)""", RegexOption.IGNORE_CASE).find(titleText)?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
             val episodeLinks = mutableListOf<DownloadLink>()
             val combinedLinks = mutableListOf<DownloadLink>()
@@ -179,7 +181,7 @@ class NewKMMoviesProvider : MainAPI() {
                 }
             }
 
-            seasons.add(SeasonData(seasonNum, episodeLinks, combinedLinks, zipLinks))
+            seasons.add(SeasonData(seasonNum, epCount, episodeLinks, combinedLinks, zipLinks))
         }
         return seasons
     }
@@ -261,7 +263,7 @@ class NewKMMoviesProvider : MainAPI() {
 
             val hasEpisodeLinks = season.episodeLinks.any { it.url.contains("episodes.magiclinks.lol") }
             if (hasEpisodeLinks) {
-                val maxEp = 50
+                val maxEp = if (season.epCount > 0) season.epCount else 1
                 val allQualityLinks = (season.episodeLinks + season.combinedLinks + season.zipLinks)
                 for (epNum in 1..maxEp) {
                     val links = allQualityLinks.map { dl ->

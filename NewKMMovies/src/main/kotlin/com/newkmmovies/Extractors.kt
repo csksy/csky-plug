@@ -69,7 +69,6 @@ class SkydropExtractor : ExtractorApi() {
                     type = ExtractorLinkType.VIDEO,
                 ) {
                     this.quality = Qualities.Unknown.value
-                    this.referer = "$mainUrl/"
                 }
             )
         } catch (e: Exception) {
