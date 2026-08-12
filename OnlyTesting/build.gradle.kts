@@ -1,4 +1,4 @@
-version = 48
+version = 1
 
 android {
     buildFeatures {
@@ -12,7 +12,7 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "ONE STOP SOLUTION FOR ANIME(SUB,DUB) - Raghav Aggregated Anime Pluginn )"
+    description = "OnlyTesting - Aggregated Anime Plugin (SUB/DUB)"
     authors = listOf("raghav")
 
     status = 1

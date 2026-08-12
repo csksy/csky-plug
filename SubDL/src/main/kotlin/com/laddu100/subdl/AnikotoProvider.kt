@@ -1,4 +1,4 @@
-package com.laddu100.raghavanime
+package com.laddu100.subdl
 
 import android.util.Base64
 import com.google.gson.JsonParser
@@ -227,16 +227,12 @@ class RaghavAnikoto : MainAPI() {
             serverDoc.select("li[data-link-id]")
         }
 
-        val serverEntries = preferredServers.mapNotNull { el ->
-            val lid = el.attr("data-link-id")
-            if (lid.isBlank()) null
-            else lid to el.text().trim()
-        }.distinctBy { it.first }
-
-        if (serverEntries.isEmpty()) return false
+        val linkIds = preferredServers.map { it.attr("data-link-id") }
+            .filter { it.isNotBlank() }.distinct()
+        if (linkIds.isEmpty()) return false
 
         var found = false
-        for ((linkId, serverName) in serverEntries) {
+        for (linkId in linkIds) {
             try {
                 val encodedLinkId = URLEncoder.encode(linkId, "UTF-8")
                 val serverJson = app.get("$mainUrl/ajax/server?get=$encodedLinkId",
@@ -250,7 +246,7 @@ class RaghavAnikoto : MainAPI() {
                     embedUrl = embedUrl.replace("/dub", "/sub")
                 }
 
-                if (resolveEmbedInline(embedUrl, referer, audioType, serverName, subtitleCallback, callback)) {
+                if (resolveEmbedInline(embedUrl, referer, audioType, subtitleCallback, callback)) {
                     found = true
                 }
             } catch (e: Exception) {
@@ -263,7 +259,6 @@ class RaghavAnikoto : MainAPI() {
         url: String,
         referer: String,
         audioType: String,
-        serverName: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
@@ -275,7 +270,7 @@ class RaghavAnikoto : MainAPI() {
 
         getHashM3u8(normalizedUrl)?.let { m3u8 ->
             callback.invoke(
-                newExtractorLink("AniKoto", "AniKoto $serverName", m3u8, type = ExtractorLinkType.M3U8) {
+                newExtractorLink("AniKoto", "AniKoto M3U8", m3u8, type = ExtractorLinkType.M3U8) {
                     this.referer = normalizedUrl
                     this.headers = mapOf("Referer" to normalizedUrl, "Origin" to "https://mewcdn.online")
                 }
@@ -289,7 +284,7 @@ class RaghavAnikoto : MainAPI() {
                                domain.contains("vidtube", ignoreCase = true)
 
         return if (isMegaPlayDomain) {
-            resolveMegaPlayInline(normalizedUrl, referer, domain, audioType, serverName, subtitleCallback, callback)
+            resolveMegaPlayInline(normalizedUrl, referer, domain, audioType, subtitleCallback, callback)
         } else {
             try {
                 loadExtractor(normalizedUrl, referer, subtitleCallback, callback)
@@ -304,11 +299,15 @@ class RaghavAnikoto : MainAPI() {
         referer: String,
         domain: String,
         audioType: String,
-        serverName: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val host = "https://$domain"
+        val serverName = when {
+            domain.contains("megaplay", ignoreCase = true) -> "MegaPlay"
+            domain.contains("vidwish", ignoreCase = true) -> "Vidwish"
+            else -> "Vidtube"
+        }
         val type = if (url.contains("/dub", ignoreCase = true) || audioType == "dub") "dub" else "sub"
 
         val pageHeaders = mapOf(
