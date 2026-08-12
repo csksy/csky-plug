@@ -25,29 +25,6 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
 
-/**
- * Multimovies — multimovies.motorcycles
- *
- * Dooplay WordPress streaming site. Architecture (verified live):
- *
- * 1. Movie / episode pages expose "player options" (Cineverse, GDMIRROR, ...)
- *    as <li class="dooplay_player_option" data-post data-type data-nume>.
- * 2. POST /wp-admin/admin-ajax.php  action=doo_player_ajax&post=&nume=&type=
- *    -> {"embed_url": "https://...", "type": "iframe"}
- * 3. Cineverse (modiplay.xyz) embeds list sub-sources via
- *    switchServer('<embed>','platform','Name','fileCode','title',this).
- *    Each sub-source plays through /proxy.php?p=&c= which embeds the real
- *    master.m3u8; the player then uses proxy.php?serve_m3u8=1&url=...&ebd=...
- *    so the HLS manifest + audio groups load without CDN 403s. Segment URLs
- *    inside those playlists are direct CDN links (same as the site itself).
- *    The masters carry #EXT-X-MEDIA:TYPE=AUDIO groups (हिन्दी / English) so
- *    ExoPlayer exposes native audio-track switching. Subtitles come from
- *    /api/subtitle_fetch.php (VTT).
- * 4. GDMIRROR (iqsmartgames.com) resolves through /mymovieapi (movie) or
- *    /myseriesapi (tv) which returns file slugs; each slug maps (via
- *    embedhelper2.php -> mresult) to the exact same file codes Cineverse uses,
- *    resolved through the same modiplay proxy.
- */
 class MultimoviesProvider : MainAPI() {
     override var mainUrl = "https://multimovies.motorcycles"
     override var name = "Multimovies"
@@ -72,8 +49,6 @@ class MultimoviesProvider : MainAPI() {
         "/genre/anime-movies/" to "Anime Movies",
         "/genre/bollywood-movies/" to "Bollywood",
     )
-
-    // ------------------------------------------------------------------ utils
 
     private fun abs(base: String, url: String): String {
         val u = url.trim()
@@ -104,9 +79,8 @@ class MultimoviesProvider : MainAPI() {
 
     private data class CineServer(val embed: String, val platform: String, val name: String, val code: String)
 
-    // ------------------------------------------------------- main page & search
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        mainUrl = FirebaseDomainHelper.getDomain("multimovies") ?: mainUrl
         val base = request.data.trimEnd('/')
         val url = if (page <= 1) "$mainUrl$base/" else "$mainUrl$base/page/$page/"
         return try {
@@ -122,6 +96,7 @@ class MultimoviesProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
+        mainUrl = FirebaseDomainHelper.getDomain("multimovies") ?: mainUrl
         return try {
             val doc = app.get("$mainUrl/?s=${query.trim().replace(" ", "+")}", headers = headers).document
             doc.select(".result-item article").mapNotNull { it.toSearchResult() }
@@ -132,11 +107,6 @@ class MultimoviesProvider : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        // jsoup's selectFirst() with a comma-separated list returns the first match in
-        // DOCUMENT order, not the first selector. On the search page the poster link
-        // (.thumbnail a) precedes the title link (.details .title a) and its text is
-        // only the "TV"/"Movie" type badge - so the title anchor must be resolved
-        // separately and preferred, otherwise every result is named "TV" or "Movie".
         val titleA = selectFirst(".details .title a, .data h3 a")
         val a = titleA
             ?: selectFirst(".thumbnail a, a[href*='/movies/'], a[href*='/tvshows/']")
@@ -144,8 +114,6 @@ class MultimoviesProvider : MainAPI() {
         val href = a.attr("href").trim()
         if (href.isBlank()) return null
         var title = titleA?.text()?.trim() ?: ""
-        // Only fall back to the img alt for cards without a real title anchor, and
-        // never surface the "TV"/"Movie" badge as the title.
         if (title.isBlank()) {
             title = selectFirst("img")?.attr("alt")?.trim() ?: ""
         }
@@ -161,9 +129,8 @@ class MultimoviesProvider : MainAPI() {
         }
     }
 
-    // -------------------------------------------------------------------- load
-
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("multimovies") ?: mainUrl
         return try {
             val doc = app.get(url, headers = headers).document
             val title = doc.selectFirst("h1")?.text()?.trim() ?: return null
@@ -234,8 +201,6 @@ class MultimoviesProvider : MainAPI() {
         return episodes.sortedWith(compareBy({ it.season }, { it.episode }))
     }
 
-    // ---------------------------------------------------------------- loadLinks
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -301,8 +266,6 @@ class MultimoviesProvider : MainAPI() {
         }
     }
 
-    // ----------------------------------------------------- Cineverse (modiplay)
-
     private suspend fun resolveModiplay(
         embedUrl: String,
         label: String,
@@ -314,15 +277,13 @@ class MultimoviesProvider : MainAPI() {
         modiplayBase = base
         val html = app.get(embedUrl, headers = headers).text
 
-        // sub-sources: switchServer('<embed>','platform','Name','fileCode','title',this)
         val servers = Regex("switchServer\\('([^']+)','([^']+)','([^']+)','([^']+)','([^']*)'")
             .findAll(html).map { m ->
-                CineServer(m.groupValues.get(1), m.groupValues.get(2), m.groupValues.get(3), m.groupValues.get(4))
+                CineServer(m.groupValues[1], m.groupValues[2], m.groupValues[3], m.groupValues[4])
             }.distinctBy { it.code }.toList()
 
         var any = false
         if (servers.isEmpty()) {
-            // fallback: direct player page — look for m3u8 / proxy refs
             if (extractM3u8Links(html, base, label, callback)) return true
             val iframeCode = Regex("data-code=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
             if (iframeCode != null) {
@@ -331,7 +292,6 @@ class MultimoviesProvider : MainAPI() {
             return false
         }
 
-        // subtitles (once per Cineverse embed)
         loadSubs(base, embedUrl, subtitleCallback)
 
         for (server in servers) {
@@ -357,7 +317,6 @@ class MultimoviesProvider : MainAPI() {
         val proxyUrl = "$base/proxy.php?p=$platform&c=$fileCode&title=&site_ref=&noredirect=1"
         val page = app.get(proxyUrl, referer = base, headers = headers).text
 
-        // the serve_m3u8 URL (already contains ref + url + ebd)
         val src = Regex("var\\s+src\\s*=\\s*\"([^\"]+)\"").find(page)?.groupValues?.get(1)?.let { deEsc(it) }
         val segRef = Regex("var\\s+SEG_REF\\s*=\\s*\"([^\"]+)\"").find(page)?.groupValues?.get(1)?.let { deEsc(it) }
         if (src.isNullOrBlank()) {
@@ -369,17 +328,16 @@ class MultimoviesProvider : MainAPI() {
 
         val audioTracks = Regex("#EXT-X-MEDIA:TYPE=AUDIO,[^\\n]*NAME=\"([^\"]+)\"[^\\n]*LANGUAGE=\"([^\"]+)\"[^\\n]*URI=\"([^\"]+)\"")
             .findAll(master).map { m ->
-                Triple(m.groupValues.get(1), m.groupValues.get(2), m.groupValues.get(3))
+                Triple(m.groupValues[1], m.groupValues[2], m.groupValues[3])
             }.toList()
         val variants = Regex("#EXT-X-STREAM-INF:[^\\n]*RESOLUTION=(\\d+)x(\\d+)[^\\n]*\\n\\s*([^\\n]+)")
             .findAll(master).map { m ->
-                Triple(m.groupValues.get(1).toInt(), m.groupValues.get(2).toInt(), m.groupValues.get(3).trim())
+                Triple(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].trim())
             }.toList()
 
         val refererMap = segRef?.let { mapOf("Referer" to it) } ?: mapOf("Referer" to base)
 
         if (audioTracks.isNotEmpty()) {
-            // audio-specific variants (e.g. index-fN-v1-a1/a2 on vibuxer/acek) -> one link per language
             val audioSpecific = variants.isNotEmpty() &&
                 audioTracks.indices.all { idx -> variants.any { it.third.contains("-a${idx + 1}") } }
             if (audioSpecific) {
@@ -401,7 +359,6 @@ class MultimoviesProvider : MainAPI() {
                 }
                 return true
             }
-            // generic master with #EXT-X-MEDIA audio groups -> ExoPlayer exposes audio switching natively
             callback(
                 newExtractorLink(
                     source = name,
@@ -413,7 +370,6 @@ class MultimoviesProvider : MainAPI() {
             return true
         }
 
-        // single-audio: best variant else master
         val best = variants.maxByOrNull { it.first }
         if (best != null) {
             callback(
@@ -455,7 +411,7 @@ class MultimoviesProvider : MainAPI() {
                     headers = headers,
                 ).text
                 val m = Regex("\"url\"\\s*:\\s*\"([^\"]+)\"").find(resp) ?: continue
-                val url = m.groupValues.get(1).let { deEsc(it) }
+                val url = m.groupValues[1].let { deEsc(it) }
                 val langName = Regex("\"lang\"\\s*:\\s*\"([^\"]+)\"").find(resp)
                     ?.groupValues?.get(1)?.ifBlank { null } ?: "English"
                 val absUrl = abs(base, url)
@@ -466,8 +422,6 @@ class MultimoviesProvider : MainAPI() {
         } catch (e: Exception) {
         }
     }
-
-    // ------------------------------------------------------- GDMIRROR (iqsmart)
 
     private suspend fun resolveGdmirror(
         embedUrl: String,
@@ -499,12 +453,10 @@ class MultimoviesProvider : MainAPI() {
             return false
         }
 
-        val slugs = Regex("\"fileslug\"\\s*:\\s*\"([^\"]+)\"").findAll(json).map { it.groupValues.get(1) }.toList()
-        val names = Regex("\"filename\"\\s*:\\s*\"([^\"]+)\"").findAll(json).map { it.groupValues.get(1) }.toList()
+        val slugs = Regex("\"fileslug\"\\s*:\\s*\"([^\"]+)\"").findAll(json).map { it.groupValues[1] }.toList()
+        val names = Regex("\"filename\"\\s*:\\s*\"([^\"]+)\"").findAll(json).map { it.groupValues[1] }.toList()
         if (slugs.isEmpty() || playerBase.isBlank()) return false
 
-        // GDMIRROR serves the same stream files as Cineverse: embedhelper2.php returns
-        // (in "mresult", base64 JSON) the exact file codes the modiplay proxy resolves.
         val proxyBase = modiplayBase
         val platformMap = mapOf(
             "smwh" to "streamhg", "flls" to "earnvids", "rpmshre" to "rpmshare",
@@ -529,7 +481,7 @@ class MultimoviesProvider : MainAPI() {
                 }
                 val namePart = names.getOrNull(i) ?: slug
                 val pairs = Regex("\"([a-z0-9]+)\"\\s*:\\s*\"([a-z0-9]+)\"").findAll(decoded).map { m ->
-                    platformMap[m.groupValues.get(1)] to m.groupValues.get(2)
+                    platformMap[m.groupValues[1]] to m.groupValues[2]
                 }
                 for ((platform, code) in pairs) {
                     if (platform == null || proxyBase == null) continue
@@ -540,7 +492,6 @@ class MultimoviesProvider : MainAPI() {
                             subtitleCallback, callback,
                         ) || any
                     } catch (e: Exception) {
-                        // keep trying other platforms
                     }
                 }
             } catch (e: Exception) {
@@ -548,8 +499,6 @@ class MultimoviesProvider : MainAPI() {
         }
         return any
     }
-
-    // --------------------------------------------------------------- generic
 
     private suspend fun extractM3u8Links(
         html: String,
@@ -560,7 +509,7 @@ class MultimoviesProvider : MainAPI() {
         val m3u8 = Regex("https?://[^\"'<>\\s\\\\]+\\.m3u8[^\"'<>\\s\\\\]*")
             .findAll(html).map { it.value.replace("\\/", "/") }.toList()
         val relM3u8 = Regex("[\"']([^\"']+\\.m3u8[^\"']*)[\"']").findAll(html)
-            .map { it.groupValues.get(1).replace("\\/", "/") }.toList()
+            .map { it.groupValues[1].replace("\\/", "/") }.toList()
         val all = (m3u8 + relM3u8.map { abs(base, it) }).distinct()
         for (u in all) {
             callback(
