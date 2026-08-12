@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 android {
     buildFeatures {
@@ -11,7 +11,7 @@ dependencies {
 }
 
 cloudstream {
-    description = "KMMovies - Download Movies & TV Series in Multi Audio"
+    description = "KMMovies - Download & stream Movies / TV Series (all episodes & qualities, multi-audio) from kmmovies.online"
     authors = listOf("csksy")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")

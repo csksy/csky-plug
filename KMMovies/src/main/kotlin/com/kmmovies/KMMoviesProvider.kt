@@ -12,9 +12,37 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * KMMovies — kmmovies.online
+ *
+ * Site layout (verified live):
+ *   Homepage / search / category  -> article.movie-card (h3.movie-title, img.poster,
+ *                                   .meta-row first span = "Series" for TV, .badge-audio)
+ *   Detail (#download-links)      -> a.dl-btn  (span.dl-res = quality, span.dl-size = size)
+ *      Movies:  href = https://w3.magiclinks.lol/{id}-2/   (link-protected WP post)
+ *      TV:      .season-block per season; Episode-Wise tab links:
+ *               https://episodes.magiclinks.lol/series/{slug}-{quality}/
+ *               (Combined / Zip tabs = whole-season packs -> intentionally skipped)
+ *   Episodes page                 -> .ep-row  (span.ep-name "Episode N" + a.dl-btn ->
+ *               https://w1.skydrop.sbs/download.php?id={token})
+ *   Movie w3 page                 -> real links live in the WP REST API:
+ *               GET /wp-json/wp/v2/posts?slug={id}-2  -> content.rendered contains
+ *               "Google Photos Link: https://w1.skydrop.sbs/download.php?id=..." and
+ *               "Google Drive Link: https://drive.google.com/file/d/{id}/view"
+ *   skydrop                       -> GET https://w1.skydrop.sbs/api.php?id={token}
+ *               -> {"success":true,"link":"https://video-downloads.googleusercontent.com/..."}
+ *               direct MKV stream (multi-audio: ExoPlayer audio-track selector works natively)
+ *
+ * All primary links resolve to direct Google UserContent URLs the player can stream
+ * without custom headers; Google Drive links are offered as secondary sources through
+ * the built-in loadExtractor.
+ */
 class KMMoviesProvider : MainAPI() {
     override var mainUrl = "https://kmmovies.online"
     override var name = "KMMovies"
@@ -29,273 +57,252 @@ class KMMoviesProvider : MainAPI() {
         "$mainUrl/category/tv-series/" to "TV Series",
         "$mainUrl/category/bollywood/" to "Bollywood",
         "$mainUrl/category/hollywood/" to "Hollywood",
+        "$mainUrl/category/4k/" to "4K",
+        "$mainUrl/category/south/" to "South",
         "$mainUrl/category/dual-audio/" to "Dual Audio",
-        "$mainUrl/category/web-series/" to "Web Series",
+        "$mainUrl/category/kdrama/" to "KDrama",
+        "$mainUrl/category/60fps/" to "60FPS",
+        "$mainUrl/category/anime/" to "Anime",
+        "$mainUrl/category/bluray-remux/" to "BluRay Remux",
     )
 
-    private val baseHeaders = mapOf(
+    private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language" to "en-US,en;q=0.9",
     )
 
-    private val internalDomains = listOf(
-        "kmmovies", "wp-", "w.org", "cloudflare", "googleapi",
-        "googletagmanager", "font-awesome", "gmpg", "jquery", "bootstrap",
-    )
-
-    private fun extractQuality(text: String): Pair<String, Int> {
-        return when {
-            Regex("2160p|4K|4k", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "2160p" to 2160
-            Regex("1080p", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "1080p" to 1080
-            Regex("720p", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "720p" to 720
-            Regex("480p", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "480p" to 480
-            else -> "Unknown" to Qualities.Unknown.value
-        }
+    private fun extractQuality(text: String): Pair<String, Int> = when {
+        Regex("2160p|4K|4k", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "2160p" to Qualities.P2160.value
+        Regex("1080p", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "1080p" to Qualities.P1080.value
+        Regex("720p", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "720p" to Qualities.P720.value
+        Regex("480p", RegexOption.IGNORE_CASE).containsMatchIn(text) -> "480p" to Qualities.P480.value
+        else -> "Unknown" to Qualities.Unknown.value
     }
 
-    private fun extractAudio(text: String): String {
-        val m = Regex("\\{([^}]+)}").find(text)
-        return m?.groupValues?.get(1)?.trim() ?: ""
-    }
-
-    private fun extractSeason(text: String): Int? {
-        val m = Regex("""Season\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)
-        return m?.groupValues?.get(1)?.toIntOrNull()
-    }
-
-    private fun extractEpisode(text: String): Int? {
-        val m = Regex("""Episode\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)
-        return m?.groupValues?.get(1)?.toIntOrNull()
-    }
-
-    private fun cleanTitle(raw: String): String {
-        var t = raw.trim()
-        if (t.startsWith("Download ", ignoreCase = true)) t = t.substring(9).trim()
-        val parenMatch = Regex("""^.+?\((?:Season\s*\d+|\d{4})\)""").find(t)
-        if (parenMatch != null) return parenMatch.value.trim()
-        val cutIdx = Regex("""\s+(?:480p|720p|1080p|2160p|4K)\b""", RegexOption.IGNORE_CASE)
-            .find(t)?.range?.first
-        if (cutIdx != null) t = t.substring(0, cutIdx).trim()
-        t = t.replace(
-            Regex(
-                """\s+(?:Dual\s+Audio|Multi\s+Audio|Hindi\s+Dubbed|Movie|Web\s+Series|WEB\s+Series|K-Drama|Korean\s+Series|Anime)$""",
-                RegexOption.IGNORE_CASE
-            ), ""
-        ).trim()
-        return t
-    }
+    // ------------------------------------------------------------------ cards
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val a = selectFirst("div.thumbnail a, div.image a, a.post-image, h2.title a, h3.title a")
-            ?: selectFirst("a") ?: return null
-        val url = a.attr("href").ifBlank { return null }
-        val title = a.selectFirst("img")?.attr("alt")?.let { cleanTitle(it) }
-            ?: a.attr("title").let { cleanTitle(it) }
-            ?: a.text().let { cleanTitle(it) }
-        if (title.isBlank()) return null
-        val img = a.selectFirst("img")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
+        val a = selectFirst("a[href]") ?: return null
+        val href = a.attr("href").trim()
+        if (href.isBlank() || !href.contains(mainUrl)) return null
+        val title = selectFirst("h3.movie-title")?.text()?.trim()
+            ?: a.attr("aria-label")?.trim()
+            ?: a.attr("title")?.trim()
+            ?: return null
+        val poster = selectFirst("img.poster, img")?.let {
+            it.attr("src").ifBlank { it.attr("data-src") }
         } ?: ""
-        val isSeries = url.contains("series") || url.contains("season") ||
-            title.contains("Season", true) || title.contains("Series", true)
+        val metaText = selectFirst(".meta-row")?.text() ?: ""
+        val isSeries = metaText.contains("Series", true) ||
+            selectFirst(".badge-episodes") != null ||
+            Regex("""\bS\d{1,2}\b""", RegexOption.IGNORE_CASE).containsMatchIn(title) ||
+            title.contains("Season", true)
         return if (isSeries) {
-            newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
-                this.posterUrl = img
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = poster
             }
         } else {
-            newMovieSearchResponse(title, url, TvType.Movie) {
-                this.posterUrl = img
+            newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = poster
             }
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val pageUrl = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
-        val doc = try {
-            kmGet(pageUrl, headers = baseHeaders).document
+        val url = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
+        val items = try {
+            kmGet(url, headers = headers).document
+                .select("article.movie-card").mapNotNull { it.toSearchResult() }
         } catch (e: Exception) {
             Log.d("KMMovies", "getMainPage: ${e.message}")
-            return newHomePageResponse(request.name, emptyList(), hasNext = false)
+            emptyList()
         }
-        val items = doc.select("article, div.result-item, div.item").mapNotNull { it.toSearchResult() }
-        val hasNext = doc.select("a.next.page-numbers, div.navigation a.nextpostslink").isNotEmpty()
+        val hasNext = try {
+            kmGet(url, headers = headers).document.select("a.next.page-numbers").isNotEmpty()
+        } catch (e: Exception) {
+            false
+        }
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val doc = try {
-            kmGet("$mainUrl/?s=$encoded", headers = baseHeaders).document
+        if (query.isBlank()) return emptyList()
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            kmGet("$mainUrl/?s=$encoded", headers = headers).document
+                .select("article.movie-card").mapNotNull { it.toSearchResult() }
         } catch (e: Exception) {
             Log.d("KMMovies", "search: ${e.message}")
-            return emptyList()
+            emptyList()
         }
-        return doc.select("article, div.result-item, div.item").mapNotNull { it.toSearchResult() }
     }
 
-    private data class DownloadBlock(
-        val qualityName: String,
-        val qualityInt: Int,
-        val audio: String,
-        val season: Int?,
-        val links: List<String>,
-    )
-
-    private fun parseDownloadBlocks(doc: org.jsoup.nodes.Document): List<DownloadBlock> {
-        val blocks = mutableListOf<DownloadBlock>()
-        val entry = doc.selectFirst("div.entry-content, div.thecontent, div.post-content")
-            ?: doc.body()
-        val headings = entry.select("h2, h3, h4, h5, p strong, strong")
-        for (heading in headings) {
-            val text = heading.text().trim()
-            if (!Regex("""\b(?:480p|720p|1080p|2160p|4K)\b""", RegexOption.IGNORE_CASE)
-                    .containsMatchIn(text)
-            ) continue
-            val (qName, qInt) = extractQuality(text)
-            val audio = extractAudio(text)
-            val season = extractSeason(text)
-            val links = mutableListOf<String>()
-            var sibling = heading.nextElementSibling()
-            var attempts = 0
-            while (sibling != null && attempts < 5) {
-                for (a in sibling.select("a[href]")) {
-                    val href = a.attr("href").trim()
-                    if (href.isNotBlank() && href.startsWith("http") && !isInternalLink(href)) {
-                        links.add(href)
-                    }
-                }
-                if (links.isNotEmpty()) break
-                sibling = sibling.nextElementSibling()
-                attempts++
-            }
-            if (links.isNotEmpty()) {
-                blocks.add(DownloadBlock(qName, qInt, audio, season, links))
-            }
-        }
-        return blocks
-    }
-
-    private fun isInternalLink(href: String): Boolean = internalDomains.any { href.contains(it) }
+    // ------------------------------------------------------------------ load
 
     override suspend fun load(url: String): LoadResponse? {
         val doc = try {
-            kmGet(url, headers = baseHeaders).document
+            kmGet(url, headers = headers).document
         } catch (e: Exception) {
             Log.d("KMMovies", "load: ${e.message}")
             return null
         }
-        val h1 = doc.selectFirst("h1")?.text()?.let { cleanTitle(it) }
-            ?: doc.selectFirst("title")?.text()?.let { cleanTitle(it) }
+
+        val title = doc.selectFirst("h1.hero-title")?.text()?.trim()
+            ?: doc.selectFirst("h1")?.text()?.trim()
+            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
             ?: return null
-        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: doc.selectFirst("img.wp-post-image")?.attr("src")
-        val description = doc.selectFirst("div.entry-content p, div.thecontent p, div.synopsis")?.text()?.trim()
-            ?: doc.selectFirst("meta[property=og:description]")?.attr("content")
-        val blocks = try {
-            parseDownloadBlocks(doc)
-        } catch (e: Exception) {
-            Log.d("KMMovies", "parseDownloadBlocks: ${e.message}")
-            emptyList()
-        }
-        val isSeries = url.contains("series") || url.contains("season") ||
-            blocks.any { it.season != null } ||
-            h1.contains("Season", true)
 
-        if (isSeries) {
-            return buildSeriesLoadResponse(h1, url, poster, description, blocks)
-        }
+        val poster = doc.selectFirst("img.hero-poster")?.attr("src")
+            ?: doc.selectFirst("meta[property=og:image]")?.attr("content")
+            ?: ""
+        val plot = doc.selectFirst("div.description, div.movie-overview, div.synopsis")?.text()?.trim()
+        val genres = doc.select("a[href*='/genre/']").map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
+        val year = Regex("""\b(20\d{2})\b""").find(title)?.groupValues?.get(1)?.toIntOrNull()
+        val audio = doc.selectFirst(".badge-audio")?.attr("title")?.trim().orEmpty()
 
-        val links = blocks.flatMap { block ->
-            block.links.map { link ->
-                mapOf(
-                    "q" to block.qualityName,
-                    "qi" to block.qualityInt,
-                    "a" to block.audio,
-                    "u" to link,
-                )
-            }
+        val linksSection = doc.selectFirst("#download-links")
+        val isTv = linksSection?.selectFirst(".download-category.tv-series, .season-block") != null
+            || title.contains("Season", true)
+            || Regex("""\bS\d{1,2}\b""", RegexOption.IGNORE_CASE).containsMatchIn(title)
+
+        return if (isTv) {
+            buildSeriesLoadResponse(title, url, poster, plot, genres, year, audio, linksSection)
+        } else {
+            buildMovieLoadResponse(title, url, poster, plot, genres, year, audio, linksSection)
         }
-        val data = mapOf("t" to h1, "u" to url, "links" to links).toJson()
-        return newMovieLoadResponse(h1, url, TvType.Movie, data) {
+    }
+
+    private suspend fun buildMovieLoadResponse(
+        title: String,
+        url: String,
+        poster: String?,
+        plot: String?,
+        genres: List<String>,
+        year: Int?,
+        audio: String,
+        linksSection: Element?,
+    ): LoadResponse? {
+        // Protected links (w3.magiclinks.lol/{id}-2/) — resolved via WP REST API in loadLinks.
+        val links = linksSection?.select("a.dl-btn[href*='magiclinks.lol']")?.mapNotNull { a ->
+            val href = a.attr("href").trim()
+            if (href.isBlank()) return@mapNotNull null
+            val qName = a.selectFirst(".dl-res")?.text()?.trim() ?: "Unknown"
+            val size = a.selectFirst(".dl-size")?.text()?.trim() ?: ""
+            KMMovieLink(href, qName, size, audio)
+        }?.distinctBy { it.url } ?: emptyList()
+
+        // Some movie pages expose direct skydrop links instead of protected ones.
+        val directSkydrop = linksSection?.select("a.dl-btn[href*='skydrop.sbs']")
+            ?.mapNotNull { it.attr("href").trim().takeIf { h -> h.isNotBlank() } }
+            ?.distinct()
+            ?: emptyList()
+
+        if (links.isEmpty() && directSkydrop.isEmpty()) return null
+
+        val data = mapOf(
+            "t" to title,
+            "links" to links,
+            "skydrop" to directSkydrop,
+        ).toJson()
+        return newMovieLoadResponse(title, url, TvType.Movie, data) {
             this.posterUrl = poster
-            this.plot = description
+            this.plot = plot
+            this.tags = genres
+            this.year = year
         }
     }
 
     private suspend fun buildSeriesLoadResponse(
-        h1: String,
+        title: String,
         url: String,
         poster: String?,
-        description: String?,
-        blocks: List<DownloadBlock>,
+        plot: String?,
+        genres: List<String>,
+        year: Int?,
+        audio: String,
+        linksSection: Element?,
     ): LoadResponse? {
-        val bySeason = blocks.groupBy { it.season ?: 1 }.toSortedMap()
-        if (bySeason.isEmpty()) return null
+        val seasons = linksSection?.select("div.season-block") ?: emptyList()
+        if (seasons.isEmpty()) return null
 
         val episodes = mutableListOf<Episode>()
-        for ((season, seasonBlocks) in bySeason) {
-            val allLinks = seasonBlocks.flatMap { block ->
-                block.links.map { link ->
-                    mapOf(
-                        "q" to block.qualityName,
-                        "qi" to block.qualityInt,
-                        "a" to block.audio,
-                        "u" to link,
-                    )
-                }
-            }
-            if (allLinks.isEmpty()) continue
 
-            val hasEpisodeLabels = seasonBlocks.any { block ->
-                block.links.any { link ->
-                    Regex("""Episode\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(link)
-                }
-            }
+        seasons.forEachIndexed { index, seasonBlock ->
+            val header = seasonBlock.selectFirst(".season-block-title")?.text()?.trim() ?: ""
+            val seasonNum = Regex("""Season\s*(\d+)""", RegexOption.IGNORE_CASE)
+                .find(header)?.groupValues?.get(1)?.toIntOrNull()
+                ?: (index + 1)
 
-            if (hasEpisodeLabels) {
-                val episodeLinks = mutableMapOf<Int, MutableList<Map<String, Any>>>()
-                for (block in seasonBlocks) {
-                    for (link in block.links) {
-                        val epNum = extractEpisode(link) ?: 1
-                        episodeLinks.getOrPut(epNum) { mutableListOf() }.add(
-                            mapOf(
-                                "q" to block.qualityName,
-                                "qi" to block.qualityInt,
-                                "a" to block.audio,
-                                "u" to link,
-                            )
-                        )
-                    }
-                }
-                for ((epNum, links) in episodeLinks) {
-                    val data = mapOf("t" to h1, "s" to season, "e" to epNum, "links" to links).toJson()
-                    episodes.add(
-                        newEpisode(data) {
-                            this.name = "$h1 S${season}E$epNum"
-                            this.season = season
-                            this.episode = epNum
-                        }
-                    )
-                }
-            } else {
-                val data = mapOf("t" to h1, "s" to season, "e" to 1, "links" to allLinks).toJson()
+            // Episode-Wise tab only (data-type="episodes-N"). Combined / Zip are
+            // whole-season packs and are intentionally skipped.
+            val episodeWise = seasonBlock.select("div.type-content[data-type^='episodes']")
+            val qualityPages = episodeWise.select("a.dl-btn[href*='episodes.magiclinks.lol']")
+                .mapNotNull { a ->
+                    val href = a.attr("href").trim()
+                    if (href.isBlank()) return@mapNotNull null
+                    val qName = a.selectFirst(".dl-res")?.text()?.trim() ?: "Unknown"
+                    val size = a.selectFirst(".dl-size")?.text()?.trim() ?: ""
+                    KMQualityPage(href, qName, size)
+                }.distinctBy { it.url }
+
+            if (qualityPages.isEmpty()) {
+                // Fallback: season with no episode-wise links -> single pack entry.
+                val packLinks = seasonBlock.select("a.dl-btn[href*='magiclinks.lol']")
+                    .mapNotNull { it.attr("href").trim().takeIf { h -> h.isNotBlank() } }
+                    .distinct()
+                if (packLinks.isEmpty()) return@forEachIndexed
+                val data = mapOf(
+                    "t" to title,
+                    "s" to seasonNum,
+                    "e" to 1,
+                    "fallback" to packLinks,
+                ).toJson()
                 episodes.add(
                     newEpisode(data) {
-                        this.name = "$h1 Season $season"
-                        this.season = season
+                        this.name = "$title Season $seasonNum"
+                        this.season = seasonNum
                         this.episode = 1
+                        this.posterUrl = poster
+                    }
+                )
+                return@forEachIndexed
+            }
+
+            // Episode count from the season header "(N eps)", else resolve from page.
+            val epCount = Regex("""\((\d+)\s*eps?\)""", RegexOption.IGNORE_CASE)
+                .find(header)?.groupValues?.get(1)?.toIntOrNull()
+                ?: qualityPages.firstOrNull()?.let { fetchEpCount(it.url) }
+                ?: 8
+
+            for (epNum in 1..epCount) {
+                val data = mapOf(
+                    "t" to title,
+                    "s" to seasonNum,
+                    "e" to epNum,
+                    "pages" to qualityPages,
+                ).toJson()
+                episodes.add(
+                    newEpisode(data) {
+                        this.name = "Episode $epNum"
+                        this.season = seasonNum
+                        this.episode = epNum
+                        this.posterUrl = poster
                     }
                 )
             }
         }
 
         if (episodes.isEmpty()) return null
-        return newTvSeriesLoadResponse(h1, url, TvType.TvSeries, episodes) {
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
-            this.plot = description
+            this.plot = plot
+            this.tags = genres
+            this.year = year
         }
     }
+
+    // ------------------------------------------------------------------ links
 
     override suspend fun loadLinks(
         data: String,
@@ -309,42 +316,358 @@ class KMMoviesProvider : MainAPI() {
             Log.d("KMMovies", "loadLinks parse: ${e.message}")
             return false
         }
-        @Suppress("UNCHECKED_CAST")
-        val links = (parsed["links"] as? List<*>) ?: return false
 
-        coroutineScope {
+        val title = parsed["t"] as? String ?: ""
+
+        // TV episode: per-episode quality pages (each lists every episode of that quality)
+        val pages = parsed["pages"] as? List<*>?
+        if (pages != null && pages.isNotEmpty()) {
+            val episodeNum = (parsed["e"] as? Number)?.toInt() ?: 1
+            val seasonNum = (parsed["s"] as? Number)?.toInt() ?: 1
+
+            val found = coroutineScope {
+                pages.map { pageRaw ->
+                    async {
+                        val node = pageRaw as? Map<*, *> ?: return@async false
+                        val pageUrl = node["url"] as? String ?: return@async false
+                        val qName = node["quality"] as? String ?: "Unknown"
+                        val size = node["size"] as? String ?: ""
+
+                        val epLinks = fetchEpisodesPage(pageUrl) ?: return@async false
+                        val skydropUrl = epLinks[episodeNum] ?: return@async false
+                        val direct = resolveSkydrop(skydropUrl) ?: return@async false
+
+                        emitDirect(title, qName, size, direct, seasonNum, episodeNum, callback)
+                        true
+                    }
+                }.awaitAll().any { it }
+            }
+            if (found) return true
+
+            // Fallback: whole-season pack links
+            val fallback = parsed["fallback"] as? List<*> ?: return false
+            return resolvePackLinks(fallback, title, subtitleCallback, callback)
+        }
+
+        // Movie: protected w3 links + optional direct skydrop links
+        val links = parsed["links"] as? List<*> ?: emptyList<Any>()
+        val skydrop = parsed["skydrop"] as? List<*> ?: emptyList<Any>()
+        if (links.isEmpty() && skydrop.isEmpty()) return false
+
+        val found = coroutineScope {
             links.map { linkRaw ->
                 async {
-                    val node = linkRaw as? Map<*, *> ?: return@async
-                    val qName = node["q"] as? String ?: "Unknown"
-                    val qInt = (node["qi"] as? Number)?.toInt() ?: Qualities.Unknown.value
-                    val audio = node["a"] as? String ?: ""
-                    val audioLabel = if (audio.isNotBlank()) " {$audio}" else ""
-                    val linkUrl = node["u"] as? String ?: return@async
+                    val node = linkRaw as? Map<*, *> ?: return@async false
+                    val magicUrl = node["url"] as? String ?: return@async false
+                    val qName = node["quality"] as? String ?: "Unknown"
+                    val size = node["size"] as? String ?: ""
+                    val audio = node["audio"] as? String ?: ""
 
-                    val collected = mutableListOf<ExtractorLink>()
-                    try {
-                        loadExtractor(linkUrl, "$mainUrl/", subtitleCallback) { el -> collected.add(el) }
-                    } catch (e: Exception) {
-                        Log.d("KMMovies", "extractor $linkUrl: ${e.message}")
+                    val resolved = resolveW3Movie(magicUrl)
+                    if (resolved.isEmpty()) return@async false
+
+                    emitMovieSources(resolved, qName, size, audio, subtitleCallback, callback)
+                    true
+                }
+            }.awaitAll().any { it }
+        }
+        if (found) return true
+
+        // Direct skydrop links on the detail page
+        return coroutineScope {
+            skydrop.map { raw ->
+                async {
+                    val url = (raw as? String) ?: return@async false
+                    val direct = resolveSkydrop(url) ?: return@async false
+                    callback(
+                        newExtractorLink(
+                            source = "KMMovies",
+                            name = "KMMovies",
+                            url = direct,
+                            type = ExtractorLinkType.VIDEO,
+                        ) {
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    true
+                }
+            }.awaitAll().any { it }
+        }
+    }
+
+    private suspend fun resolvePackLinks(
+        fallback: List<*>,
+        title: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        return coroutineScope {
+            fallback.map { raw ->
+                async {
+                    val magicUrl = raw as? String ?: return@async false
+                    val resolved = resolveW3Movie(magicUrl)
+                    if (resolved.isEmpty()) return@async false
+                    emitMovieSources(resolved, "Unknown", "", "", subtitleCallback, callback)
+                    true
+                }
+            }.awaitAll().any { it }
+        }
+    }
+
+    private suspend fun emitMovieSources(
+        resolved: List<String>,
+        qName: String,
+        size: String,
+        audio: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val (_, qInt) = extractQuality(qName)
+        for (direct in resolved) {
+            if (direct.contains("googleusercontent.com")) {
+                // Direct Google UserContent URL — no headers needed
+                val audioLabel = if (audio.isNotBlank()) " • $audio" else ""
+                val sizeLabel = if (size.isNotBlank()) " ($size)" else ""
+                val name = ("KMMovies $qName$sizeLabel$audioLabel").trim()
+                callback(
+                    newExtractorLink(
+                        source = "KMMovies",
+                        name = name,
+                        url = direct,
+                        type = ExtractorLinkType.VIDEO,
+                    ) {
+                        this.quality = qInt
                     }
-                    for (el in collected) {
-                        callback(
-                            newExtractorLink(
-                                source = el.source,
-                                name = "${el.name} $qName$audioLabel".trim(),
-                                url = el.url,
-                                type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                            ) {
-                                this.referer = el.referer
-                                this.headers = el.headers
-                                this.quality = if (el.quality <= 0) qInt else el.quality
-                            }
-                        )
+                )
+            } else if (direct.startsWith("https://drive.google.com/")) {
+                // Google Drive file view page — let the built-in extractor handle it
+                try {
+                    loadExtractor(direct, "$mainUrl/", subtitleCallback, callback)
+                } catch (e: Exception) {
+                    Log.d("KMMovies", "gdrive extractor: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private suspend fun emitDirect(
+        title: String,
+        qName: String,
+        size: String,
+        direct: String,
+        season: Int,
+        episode: Int,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val (_, qInt) = extractQuality(qName)
+        val name = "KMMovies S${season}E$episode $qName" +
+            if (size.isNotBlank()) " ($size)" else ""
+        callback(
+            newExtractorLink(
+                source = "KMMovies",
+                name = name,
+                url = direct,
+                type = ExtractorLinkType.VIDEO,
+            ) {
+                this.quality = qInt
+            }
+        )
+    }
+
+    // ------------------------------------------------------------------ resolvers
+
+    /**
+     * Fetch one episodes.magiclinks.lol quality page and return episodeNum -> skydrop URL.
+     */
+    private suspend fun fetchEpisodesPage(pageUrl: String): Map<Int, String>? {
+        EpisodesCache.get(pageUrl)?.let { return it }
+        val map = try {
+            val doc = app.get(pageUrl, headers = headers).document
+            val out = mutableMapOf<Int, String>()
+            doc.select("div.ep-row").forEachIndexed { idx, row ->
+                val link = row.selectFirst("a.dl-btn[href*='skydrop']")?.attr("href")?.trim()
+                    ?: return@forEachIndexed
+                val name = row.selectFirst(".ep-name")?.text() ?: ""
+                val epNum = Regex("""(\d+)""").find(name)?.groupValues?.get(1)?.toIntOrNull()
+                    ?: (idx + 1)
+                out[epNum] = link
+            }
+            if (out.isEmpty()) null else out
+        } catch (e: Exception) {
+            Log.d("KMMovies", "fetchEpisodesPage $pageUrl: ${e.message}")
+            null
+        }
+        if (map != null) EpisodesCache.put(pageUrl, map)
+        return map
+    }
+
+    private suspend fun fetchEpCount(pageUrl: String): Int =
+        fetchEpisodesPage(pageUrl)?.size ?: 8
+
+    /**
+     * skydrop download.php?id={token} -> api.php -> direct googleusercontent video URL.
+     * WordPress renders "--" in the encrypted token as an en-dash; the raw token is
+     * tried first, then the en-dash -> "--" fix.
+     */
+    private suspend fun resolveSkydrop(downloadPhpUrl: String): String? {
+        SkydropCache.get(downloadPhpUrl)?.let { return it }
+
+        val token = Regex("""[?&]id=([^&\s]+)""").find(downloadPhpUrl)?.groupValues?.get(1)
+            ?: return null
+
+        val candidates = buildList {
+            add(token)
+            val fixed = token.replace("\u2013", "--")
+            if (fixed != token) add(fixed)
+        }
+
+        var resolved: String? = null
+        // api.php is a shared resolver: it answers {"busy":true} while it is
+        // processing other files, and can transiently return garbage — retry a
+        // few times before giving up on each candidate token.
+        for (cand in candidates) {
+            for (attempt in 1..5) {
+                try {
+                    val body = app.get(
+                        "https://w1.skydrop.sbs/api.php?id=$cand",
+                        headers = headers,
+                    ).text
+                    val resp = parseJson<SkydropResponse>(body)
+                    if (resp.success && !resp.link.isNullOrBlank()) {
+                        resolved = resp.link
+                        break
+                    }
+                    if ((resp.busy || body.isBlank()) && attempt < 5) {
+                        delay(1500)
+                        continue
+                    }
+                } catch (e: Exception) {
+                    Log.d("KMMovies", "skydrop api: ${e.message}")
+                    if (attempt < 5) {
+                        delay(1500)
+                        continue
                     }
                 }
-            }.awaitAll()
+                break
+            }
+            if (resolved != null) break
         }
-        return true
+        if (resolved != null) SkydropCache.put(downloadPhpUrl, resolved)
+        return resolved
+    }
+
+    /**
+     * w3.magiclinks.lol/{id}-2/ is a link-protected WP post. The real links live in the
+     * WP REST API; parse content.rendered for the skydrop / Google Drive links.
+     */
+    private suspend fun resolveW3Movie(magicUrl: String): List<String> {
+        W3Cache.get(magicUrl)?.let { return it }
+
+        val slug = Regex("""w3\.magiclinks\.lol/([^/]+)/?""").find(magicUrl)?.groupValues?.get(1)
+            ?: return emptyList()
+
+        val links = mutableListOf<String>()
+        try {
+            val body = app.get(
+                "https://w3.magiclinks.lol/wp-json/wp/v2/posts?slug=$slug",
+                headers = headers,
+            ).text
+            val posts = parseJson<List<Map<String, Any?>>>(body)
+            val rendered = (posts.firstOrNull()?.get("content") as? Map<*, *>)
+                ?.get("rendered") as? String ?: ""
+            val text = Jsoup.parse(rendered).text()
+
+            // Google Photos Link (skydrop) is the reliable direct source
+            Regex("""Google Photos Link:\s*(https?://\S+)""")
+                .find(text)?.groupValues?.get(1)?.let { skydrop ->
+                    resolveSkydrop(skydrop)?.let { links.add(it) }
+                }
+
+            // Google Drive Link as a secondary source
+            Regex("""Google Drive Link:\s*(https?://\S+)""")
+                .find(text)?.groupValues?.get(1)?.let { links.add(it) }
+        } catch (e: Exception) {
+            Log.d("KMMovies", "resolveW3Movie $magicUrl: ${e.message}")
+        }
+
+        if (links.isNotEmpty()) W3Cache.put(magicUrl, links)
+        return links.distinct()
+    }
+
+    // ------------------------------------------------------------------ data
+
+    data class KMMovieLink(
+        val url: String,
+        val quality: String = "Unknown",
+        val size: String = "",
+        val audio: String = "",
+    )
+
+    data class KMQualityPage(
+        val url: String,
+        val quality: String,
+        val size: String = "",
+    )
+
+    data class SkydropResponse(
+        val success: Boolean = false,
+        val busy: Boolean = false,
+        val link: String? = null,
+    )
+}
+
+// ---------------------------------------------------------------------- caches
+
+private object EpisodesCache {
+    private val map = ConcurrentHashMap<String, Pair<Long, Map<Int, String>>>()
+    private const val TTL = 30 * 60_000L
+
+    fun get(key: String): Map<Int, String>? {
+        val entry = map[key] ?: return null
+        if (System.currentTimeMillis() - entry.first > TTL) {
+            map.remove(key)
+            return null
+        }
+        return entry.second
+    }
+
+    fun put(key: String, value: Map<Int, String>) {
+        map[key] = System.currentTimeMillis() to value
+    }
+}
+
+private object SkydropCache {
+    private val map = ConcurrentHashMap<String, Pair<Long, String>>()
+    private const val TTL = 60 * 60_000L
+
+    fun get(key: String): String? {
+        val entry = map[key] ?: return null
+        if (System.currentTimeMillis() - entry.first > TTL) {
+            map.remove(key)
+            return null
+        }
+        return entry.second
+    }
+
+    fun put(key: String, value: String) {
+        map[key] = System.currentTimeMillis() to value
+    }
+}
+
+private object W3Cache {
+    private val map = ConcurrentHashMap<String, Pair<Long, List<String>>>()
+    private const val TTL = 60 * 60_000L
+
+    fun get(key: String): List<String>? {
+        val entry = map[key] ?: return null
+        if (System.currentTimeMillis() - entry.first > TTL) {
+            map.remove(key)
+            return null
+        }
+        return entry.second
+    }
+
+    fun put(key: String, value: List<String>) {
+        map[key] = System.currentTimeMillis() to value
     }
 }
