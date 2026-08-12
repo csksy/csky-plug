@@ -4,6 +4,34 @@ Tracked plugin updates for this repository.
 
 ---
 
+## 2026-08-12 — KMMovies v3 hotfix (Cloudflare bypass actually wired in)
+
+**Status:** ✅ live (v3, CI build passed)
+
+### What was wrong (logcat: ErrorLoadingException on every load)
+The provider called `kmGet(...)`, which Kotlin resolves to **CloudStream's
+`MainAPI.kmGet` member** (plain OkHttp request) — NOT the plugin's top-level
+Cloudflare-bypass `kmGet`. The entire bypass in `KMMoviesCFBypass.kt` was dead
+code: no `cf_clearance` cookies, no WebView CAPTCHA dialog. The site 403-challenges
+non-browser clients, so in-app requests got a challenge page → no `h1.hero-title`
+→ `load()` returned null → `ErrorLoadingException`. (Logcat showed zero `KM_CF`
+logs, proving the bypass never ran.)
+
+### Fix
+- Renamed the top-level bypass function `kmGet` → `kmCFGet` (unique name, no
+  member shadowing) and added a `referer` param + header.
+- Routed **every** provider request through `kmCFGet`: main page, search, load,
+  episodes pages, skydrop `api.php`, and w3 REST — with proper browser headers.
+- CF cookies are now domain-scoped: only sent to the host they were solved for.
+- Bumped version to 3.
+
+### User impact
+First use after installing v3 may show the **"Cloudflare Bypass"** dialog once
+(solve the CAPTCHA); cookies are saved and reused for 15 hours. A manual
+"Bypass Cloudflare" button also exists in the plugin settings.
+
+---
+
 ## 2026-08-12 — KMMovies v2 rewrite (kmmovies.online)
 
 **Status:** ✅ live (v2, `KMMovies.cs3` on `builds` branch, CI build passed)
@@ -78,5 +106,5 @@ skydrop                    -> GET https://w1.skydrop.sbs/api.php?id={token}
 
 | Plugin | Version | Status |
 |---|---|---|
-| KMMovies | 2 | ✅ working (rewritten 2026-08-12) |
+| KMMovies | 3 | ✅ working (v3 CF-bypass hotfix 2026-08-12; v2 rewrite below) |
 | TheMoviesFlix | 18 | reference implementation |

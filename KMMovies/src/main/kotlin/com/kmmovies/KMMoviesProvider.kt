@@ -112,7 +112,7 @@ class KMMoviesProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
         val doc = try {
-            kmGet(url, headers = headers).document
+            kmCFGet(url, headers = headers, referer = "$mainUrl/").document
         } catch (e: Exception) {
             Log.d("KMMovies", "getMainPage: ${e.message}")
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
@@ -126,7 +126,7 @@ class KMMoviesProvider : MainAPI() {
         if (query.isBlank()) return emptyList()
         return try {
             val encoded = URLEncoder.encode(query, "UTF-8")
-            kmGet("$mainUrl/?s=$encoded", headers = headers).document
+            kmCFGet("$mainUrl/?s=$encoded", headers = headers, referer = "$mainUrl/").document
                 .select("article.movie-card").mapNotNull { it.toSearchResult() }
         } catch (e: Exception) {
             Log.d("KMMovies", "search: ${e.message}")
@@ -138,7 +138,7 @@ class KMMoviesProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val doc = try {
-            kmGet(url, headers = headers).document
+            kmCFGet(url, headers = headers, referer = "$mainUrl/").document
         } catch (e: Exception) {
             Log.d("KMMovies", "load: ${e.message}")
             return null
@@ -486,7 +486,7 @@ class KMMoviesProvider : MainAPI() {
     private suspend fun fetchEpisodesPage(pageUrl: String): Map<Int, String>? {
         EpisodesCache.get(pageUrl)?.let { return it }
         val map = try {
-            val doc = app.get(pageUrl, headers = headers).document
+            val doc = kmCFGet(pageUrl, headers = headers, referer = "$mainUrl/").document
             val out = mutableMapOf<Int, String>()
             doc.select("div.ep-row").forEachIndexed { idx, row ->
                 val link = row.selectFirst("a.dl-btn[href*='skydrop']")?.attr("href")?.trim()
@@ -532,9 +532,10 @@ class KMMoviesProvider : MainAPI() {
         for (cand in candidates) {
             for (attempt in 1..5) {
                 try {
-                    val body = app.get(
+                    val body = kmCFGet(
                         "https://w1.skydrop.sbs/api.php?id=$cand",
                         headers = headers,
+                        referer = "https://w1.skydrop.sbs/",
                     ).text
                     val resp = parseJson<SkydropResponse>(body)
                     if (resp.success && !resp.link.isNullOrBlank()) {
@@ -572,9 +573,10 @@ class KMMoviesProvider : MainAPI() {
 
         val links = mutableListOf<String>()
         try {
-            val body = app.get(
+            val body = kmCFGet(
                 "https://w3.magiclinks.lol/wp-json/wp/v2/posts?slug=$slug",
                 headers = headers,
+                referer = "https://w3.magiclinks.lol/",
             ).text
             val posts = parseJson<List<Map<String, Any?>>>(body)
             val rendered = (posts.firstOrNull()?.get("content") as? Map<*, *>)
