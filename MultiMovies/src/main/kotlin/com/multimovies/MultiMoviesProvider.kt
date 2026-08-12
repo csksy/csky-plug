@@ -45,21 +45,26 @@ class MultiMoviesProvider : MainAPI() {
         "$mainUrl/genre/dual-audio" to "Dual Audio",
         "$mainUrl/genre/action" to "Action",
         "$mainUrl/genre/comedy" to "Comedy",
-        "$mainUrl/genre/thriller" to "Thriller",
         "$mainUrl/genre/science-fiction" to "Sci-Fi",
     )
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val a = selectFirst("div.thumbnail a") ?: selectFirst("div.image a") ?: selectFirst("a")
-            ?: return null
+        val a = selectFirst("div.poster a") ?: selectFirst("div.thumbnail a")
+            ?: selectFirst("div.image a") ?: selectFirst("div.title a")
+            ?: selectFirst("a[href]") ?: return null
         val url = a.attr("href").ifBlank { return null }
-        val img = a.selectFirst("img")?.let { it.attr("data-src").ifBlank { it.attr("src") } } ?: ""
-        val title = a.selectFirst("img")?.attr("alt")?.trim()
+        val img = selectFirst("div.poster img")?.attr("src")
+            ?: selectFirst("img")?.attr("src")
+            ?: ""
+        val title = selectFirst("div.poster img")?.attr("alt")?.trim()
+            ?: selectFirst("img")?.attr("alt")?.trim()
             ?: selectFirst("div.title a")?.text()?.trim()
-            ?: a.attr("title")?.trim()
+            ?: selectFirst("h3 a")?.text()?.trim()
+            ?: selectFirst("h2 a")?.text()?.trim()
             ?: return null
         val isSeries = url.contains("/tvshows/") || url.contains("/episodes/")
         val year = selectFirst("span.year")?.text()?.toIntOrNull()
+            ?: selectFirst("span")?.text()?.trim()?.toIntOrNull()
         return if (isSeries) {
             newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
                 this.posterUrl = img
@@ -74,15 +79,15 @@ class MultiMoviesProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val pageUrl = if (page <= 1) request.data else "${request.data}/page/$page/"
+        val pageUrl = if (page <= 1) "${request.data}/" else "${request.data}/page/$page/"
         val doc = try {
             app.get(pageUrl, headers = baseHeaders, timeout = 30_000L).document
         } catch (e: Exception) {
             Log.d("MM", "getMainPage: ${e.message}")
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
-        val items = doc.select("div.result-item").mapNotNull { it.toSearchResult() }
-        val hasNext = doc.select("div.pagination a.next, a.nextpostslink").isNotEmpty()
+        val items = doc.select("article.item").mapNotNull { it.toSearchResult() }
+        val hasNext = doc.select("div.pagination a.next, a.nextpostslink, a.next.page-numbers").isNotEmpty()
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
@@ -94,7 +99,7 @@ class MultiMoviesProvider : MainAPI() {
             Log.d("MM", "search: ${e.message}")
             return emptyList()
         }
-        return doc.select("div.result-item").mapNotNull { it.toSearchResult() }
+        return doc.select("div.result-item, article.item").mapNotNull { it.toSearchResult() }
     }
 
     private data class ServerOption(
@@ -113,7 +118,10 @@ class MultiMoviesProvider : MainAPI() {
             val type = li.attr("data-type").ifBlank { defaultType }
             val title = li.selectFirst("span.title")?.text()?.trim() ?: continue
             if (nume == "trailer") continue
-            options.add(ServerOption(nume, title, postId, type))
+            val lower = title.lowercase()
+            if (lower.contains("gdmirror") || lower.contains("cineverse")) {
+                options.add(ServerOption(nume, title, postId, type))
+            }
         }
         return options
     }
@@ -133,7 +141,7 @@ class MultiMoviesProvider : MainAPI() {
                 timeout = 15_000L,
             ).text
             val json = parseJson<MutableMap<String, Any?>>(resp)
-            json["embed_url"] as? String
+            (json["embed_url"] as? String)?.replace("&amp;", "&")
         } catch (e: Exception) {
             Log.d("MM", "fetchEmbedUrl: ${e.message}")
             null
@@ -171,7 +179,7 @@ class MultiMoviesProvider : MainAPI() {
 
         val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
             ?: doc.selectFirst("img.wp-post-image")?.attr("src")
-        val plot = doc.selectFirst("div synopsis, div.description, p.description")?.text()?.trim()
+        val plot = doc.selectFirst("div.synopsis, div.description, p.description")?.text()?.trim()
             ?: doc.selectFirst("div#info p, div.entry-content p")?.text()?.trim()
         val year = doc.selectFirst("span.date")?.text()?.substringBefore("-")?.trim()?.toIntOrNull()
         val genres = doc.select("div.genres a, #info a[href*=genre]").map { it.text().trim() }.filter { it.isNotBlank() }
@@ -237,6 +245,76 @@ class MultiMoviesProvider : MainAPI() {
         }
     }
 
+    private suspend fun resolveCineverse(embedUrl: String, sourceName: String, callback: (ExtractorLink) -> Unit): Boolean {
+        return try {
+            val html = app.get(embedUrl, headers = baseHeaders, timeout = 30_000L).text
+            val directSrc = Regex("""directSrc\s*=\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
+                ?.replace("\\/", "/")
+                ?.replace("&amp;", "&")
+
+            if (directSrc != null && directSrc.contains(".m3u8")) {
+                callback(
+                    newExtractorLink(
+                        source = "MultiMovies",
+                        name = "$sourceName (Direct)",
+                        url = directSrc,
+                        type = ExtractorLinkType.M3U8,
+                    ) {
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+                return true
+            }
+
+            val proxySrc = Regex("""src\s*=\s*"[^"]*serve_m3u8=1[^"]*url=([^&"']+)""").find(html)?.groupValues?.get(1)
+                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                ?.replace("\\/", "/")
+
+            if (proxySrc != null && proxySrc.contains(".m3u8")) {
+                callback(
+                    newExtractorLink(
+                        source = "MultiMovies",
+                        name = "$sourceName (Proxy)",
+                        url = proxySrc,
+                        type = ExtractorLinkType.M3U8,
+                    ) {
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+                return true
+            }
+
+            val resolver = WebViewResolver(
+                interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
+                additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
+                script = """document.querySelector('video,button,.play-button,[role=button]')?.click();""",
+                useOkhttp = false,
+                timeout = 30_000L,
+            )
+            val resolvedUrl = app.get(embedUrl, referer = "$mainUrl/", interceptor = resolver).url
+
+            if (resolvedUrl.contains(".m3u8", true) || resolvedUrl.contains(".mp4", true)) {
+                val isM3u8 = resolvedUrl.contains(".m3u8", true)
+                callback(
+                    newExtractorLink(
+                        source = "MultiMovies",
+                        name = sourceName,
+                        url = resolvedUrl,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                    ) {
+                        this.quality = Qualities.Unknown.value
+                        this.referer = embedUrl
+                    }
+                )
+                return true
+            }
+            false
+        } catch (e: Exception) {
+            Log.d("MM", "resolveCineverse: ${e.message}")
+            false
+        }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -262,57 +340,34 @@ class MultiMoviesProvider : MainAPI() {
 
                     val embedUrl = fetchEmbedUrl(postId, nume, type) ?: return@async
 
-                    val collected = mutableListOf<ExtractorLink>()
-                    try {
-                        loadExtractor(embedUrl, "$mainUrl/", subtitleCallback) { el -> collected.add(el) }
-                    } catch (e: Exception) {
-                        Log.d("MM", "loadExtractor $embedUrl: ${e.message}")
-                    }
-
-                    if (collected.isEmpty() && embedUrl.contains(Regex("vidlink|vixsrc|nxsha|vidzee|vidlux|zxcstream|cinemaos|nhdapi|peachify|screenscape|iqsmart"))) {
+                    if (embedUrl.contains("gdmirrorbot.nl")) {
+                        val collected = mutableListOf<ExtractorLink>()
                         try {
-                            val resolver = WebViewResolver(
-                                interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
-                                additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
-                                script = """document.querySelector('video,button,.play-button,[role=button]')?.click();""",
-                                useOkhttp = false,
-                                timeout = 30_000L,
-                            )
-                            val resolvedUrl = app.get(embedUrl, referer = "$mainUrl/", interceptor = resolver).url
-
-                            if (resolvedUrl.contains(".m3u8", true) || resolvedUrl.contains(".mp4", true)) {
-                                val isM3u8 = resolvedUrl.contains(".m3u8", true)
-                                collected.add(
-                                    newExtractorLink(
-                                        source = "MultiMovies",
-                                        name = "$title",
-                                        url = resolvedUrl,
-                                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                    ) {
-                                        this.quality = Qualities.Unknown.value
-                                        this.referer = embedUrl
-                                    }
-                                )
-                            }
+                            loadExtractor(embedUrl, "$mainUrl/", subtitleCallback) { el -> collected.add(el) }
                         } catch (e: Exception) {
-                            Log.d("MM", "WebViewResolver $embedUrl: ${e.message}")
+                            Log.d("MM", "GDMirror loadExtractor: ${e.message}")
                         }
-                    }
+                        for (el in collected) {
+                            callback(
+                                newExtractorLink(
+                                    source = el.source,
+                                    name = "$title - ${el.name}".trim(),
+                                    url = el.url,
+                                    type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                ) {
+                                    this.referer = el.referer
+                                    this.headers = el.headers
+                                    this.quality = el.quality
+                                }
+                            )
+                            found = true
+                        }
 
-                    for (el in collected) {
-                        callback(
-                            newExtractorLink(
-                                source = el.source,
-                                name = "$title - ${el.name}".trim(),
-                                url = el.url,
-                                type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                            ) {
-                                this.referer = el.referer
-                                this.headers = el.headers
-                                this.quality = el.quality
-                            }
-                        )
-                        found = true
+                        if (collected.isEmpty()) {
+                            if (resolveCineverse(embedUrl, title, callback)) found = true
+                        }
+                    } else if (embedUrl.contains("modiplay") || embedUrl.contains("cineverse")) {
+                        if (resolveCineverse(embedUrl, title, callback)) found = true
                     }
                 }
             }.awaitAll()
