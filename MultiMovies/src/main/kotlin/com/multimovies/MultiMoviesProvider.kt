@@ -247,7 +247,7 @@ class MultiMoviesProvider : MainAPI() {
 
     private suspend fun resolveCineverse(embedUrl: String, sourceName: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
-            val html = app.get(embedUrl, headers = baseHeaders, timeout = 30_000L).text
+            val html = app.get(embedUrl, headers = baseHeaders, timeout = 15_000L).text
 
             val directSrc = Regex("""directSrc\s*=\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
@@ -257,7 +257,7 @@ class MultiMoviesProvider : MainAPI() {
                 callback(
                     newExtractorLink(
                         source = "MultiMovies",
-                        name = "$sourceName (Direct)",
+                        name = "$sourceName",
                         url = directSrc,
                         type = ExtractorLinkType.M3U8,
                     ) {
@@ -290,29 +290,94 @@ class MultiMoviesProvider : MainAPI() {
                 return true
             }
 
-            val resolver = WebViewResolver(
-                interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
-                additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
-                script = """document.querySelector('video,button,.play-button,[role=button]')?.click();""",
-                useOkhttp = false,
-                timeout = 30_000L,
-            )
-            val resolvedUrl = app.get(embedUrl, referer = "$mainUrl/", interceptor = resolver).url
+            val switchCalls = Regex("""switchServer\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']*)'""").findAll(html).toList()
 
-            if (resolvedUrl.contains(".m3u8", true) || resolvedUrl.contains(".mp4", true)) {
-                val isM3u8 = resolvedUrl.contains(".m3u8", true)
-                callback(
-                    newExtractorLink(
-                        source = "MultiMovies",
-                        name = sourceName,
-                        url = resolvedUrl,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                    ) {
-                        this.quality = Qualities.Unknown.value
+            if (switchCalls.isNotEmpty()) {
+                val baseUrl = Regex("""https?://[^/]+""").find(embedUrl)?.value ?: ""
+                var anyFound = false
+
+                for (call in switchCalls) {
+                    val (_, platform, name, code, title) = call.destructured
+                    val titleEncoded = URLEncoder.encode(title.ifBlank { "Video" }, "UTF-8")
+                    val proxyUrl = "$baseUrl/proxy.php?p=$platform&c=$code&title=$titleEncoded&site_ref=&noredirect=1"
+
+                    try {
+                        val proxyHtml = app.get(proxyUrl, headers = baseHeaders, timeout = 15_000L).text
+
+                        val proxyDirectSrc = Regex("""directSrc\s*=\s*"([^"]+)"""").find(proxyHtml)?.groupValues?.get(1)
+                            ?.replace("\\/", "/")
+                            ?.replace("&amp;", "&")
+
+                        if (proxyDirectSrc != null && proxyDirectSrc.contains(".m3u8")) {
+                            callback(
+                                newExtractorLink(
+                                    source = "MultiMovies",
+                                    name = "$sourceName - $name",
+                                    url = proxyDirectSrc,
+                                    type = ExtractorLinkType.M3U8,
+                                ) {
+                                    this.quality = Qualities.Unknown.value
+                                }
+                            )
+                            anyFound = true
+                            continue
+                        }
+
+                        val m3u8FromProxy = Regex("""url=(https?[^&"'\s]+\.m3u8[^&"'\s]*)""").findAll(proxyHtml)
+                            .map { it.groupValues[1] }
+                            .map { java.net.URLDecoder.decode(it, "UTF-8").replace("\\/", "/").replace("&amp;", "&") }
+                            .filter { it.contains(".m3u8") }
+                            .distinct()
+                            .toList()
+
+                        for (m3u8Url in m3u8FromProxy) {
+                            callback(
+                                newExtractorLink(
+                                    source = "MultiMovies",
+                                    name = "$sourceName - $name",
+                                    url = m3u8Url,
+                                    type = ExtractorLinkType.M3U8,
+                                ) {
+                                    this.quality = Qualities.Unknown.value
+                                }
+                            )
+                            anyFound = true
+                        }
+                    } catch (e: Exception) {
+                        Log.d("MM", "proxy fetch $platform: ${e.message}")
                     }
-                )
-                return true
+                }
+
+                if (anyFound) return true
             }
+
+            val srcVar = Regex("""var\s+src\s*=\s*"([^"]*serve_m3u8[^"]*)"""").find(html)?.groupValues?.get(1)
+                ?.replace("\\/", "/")
+                ?.replace("&amp;", "&")
+
+            if (srcVar != null) {
+                val m3u8FromSrc = Regex("""url=(https?[^&"'\s]+\.m3u8[^&"'\s]*)""").findAll(srcVar)
+                    .map { it.groupValues[1] }
+                    .map { java.net.URLDecoder.decode(it, "UTF-8").replace("\\/", "/") }
+                    .filter { it.contains(".m3u8") }
+                    .distinct()
+                    .toList()
+
+                for (m3u8Url in m3u8FromSrc) {
+                    callback(
+                        newExtractorLink(
+                            source = "MultiMovies",
+                            name = "$sourceName",
+                            url = m3u8Url,
+                            type = ExtractorLinkType.M3U8,
+                        ) {
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    return true
+                }
+            }
+
             false
         } catch (e: Exception) {
             Log.d("MM", "resolveCineverse: ${e.message}")
