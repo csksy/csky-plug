@@ -16,6 +16,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.nicehttp.RequestBodyTypes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -154,37 +155,13 @@ fun translateEpisodeId(encodedId: String): String {
     }
 }
 
-/**
- * Default fallback domain. The actual domain is fetched from Firebase RTDB
- * via FirebaseDomainHelper.getDomain("miruro") and kept in sync via
- * MiruroCloudflare.setWorkingDomain() — see Miruro.kt getMainPage/search/load.
- * To change the domain, update the "miruro_url" key in Firebase, NOT this constant.
- */
 const val MIRURO_DEFAULT_DOMAIN = "https://www.miruro.to"
 
 const val CF_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
-/**
- * Persistent WebView session for Cloudflare-protected pipe API.
- *
- * miruro.to uses Cloudflare "challenge" mode (cf-mitigated: challenge) which
- * returns 403 to ALL direct HTTP requests — okhttp, curl, everything. The
- * cf_clearance cookie obtained via WebView is bound to the browser's TLS
- * fingerprint and CANNOT be reused by okhttp. Therefore the ONLY working path
- * is a real WebView that executes fetch() from within the page's JS context.
- *
- * This object maintains a SINGLE long-lived WebView that:
- *   1. Loads the homepage once and solves the CF challenge
- *   2. Stays alive for all subsequent pipe requests (no page reload)
- *   3. Each pipe request just injects a fetch() call and polls for the result
- *
- * This is dramatically faster (5-15s → <1s for subsequent requests) and more
- * reliable than creating a new WebView per request, because:
- *   - No homepage reload per request
- *   - No CF re-challenge per request
- *   - No concurrent WebView resource contention (requests are serialized via mutex)
- */
+private const val CF_CHALLENGE_MARKER = "__CF_CHALLENGE__"
+
 object MiruroCloudflare {
     private const val TAG = "MiruroCF"
     private val workingDomain = AtomicReference<String?>(MIRURO_DEFAULT_DOMAIN)
@@ -193,17 +170,16 @@ object MiruroCloudflare {
     @Volatile private var sessionDomain: String? = null
     @Volatile private var sessionReady: Boolean = false
     @Volatile private var sessionReadyTime: Long = 0L
-    private val SESSION_TTL = 5 * 60 * 1000L  // re-warmup after 5 min idle
+    private val SESSION_TTL = 3 * 60 * 1000L
 
-    /** Serialize all pipe fetch calls — WebView JS is single-threaded anyway. */
-    private val fetchMutex = kotlinx.coroutines.sync.Mutex()
-    private val warmupMutex = kotlinx.coroutines.sync.Mutex()
+    private val pipeMutex = Mutex()
+    private val warmupMutex = Mutex()
 
     fun getWorkingDomain(): String = workingDomain.get() ?: MIRURO_DEFAULT_DOMAIN
+
     fun setWorkingDomain(d: String) {
         val old = workingDomain.get()
         workingDomain.set(d)
-        // Reset the WebView session if the domain changed
         if (old != null && old != d) {
             destroySession()
         }
@@ -221,30 +197,37 @@ object MiruroCloudflare {
                    lower.contains("enable cookies")
         }
         val lower = text.lowercase()
-        if (lower.contains("just a moment") && lower.contains("challenge")) return true
-        return false
+        return lower.contains("just a moment") && lower.contains("challenge")
     }
 
-    /**
-     * Ensure the persistent WebView session is loaded and CF-solved for the given domain.
-     * If the session is stale (different domain or TTL expired), it reloads.
-     */
+    private fun hasCfClearance(domain: String): Boolean {
+        return try {
+            val cookies = CookieManager.getInstance().getCookie(domain) ?: ""
+            cookies.contains("cf_clearance")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private suspend fun ensureSession(context: Context, domain: String) {
         val now = System.currentTimeMillis()
         val current = sessionWebView
         val currentDomain = sessionDomain
         val isStale = current == null ||
                       currentDomain != domain ||
-                      sessionReady.not() ||
+                      !sessionReady ||
                       (now - sessionReadyTime) > SESSION_TTL
 
         if (!isStale && current != null) {
-            // Check if WebView is still alive
             try {
                 val alive = withContext(Dispatchers.Main) {
                     suspendCancellableCoroutine<String?> { cont ->
-                        current.evaluateJavascript("document.title") { res ->
-                            cont.resume(res)
+                        try {
+                            current.evaluateJavascript("document.title") { res ->
+                                if (cont.isActive) cont.resume(res)
+                            }
+                        } catch (_: Exception) {
+                            if (cont.isActive) cont.resume(null)
                         }
                         Handler(Looper.getMainLooper()).postDelayed({
                             if (cont.isActive) cont.resume(null)
@@ -252,16 +235,12 @@ object MiruroCloudflare {
                     }
                 }
                 if (alive != null && alive != "null" && alive.isNotBlank()) {
-                    return  // session is alive and fresh
+                    return
                 }
-            } catch (e: Exception) {
-                Log.d(TAG, "session liveness check failed: ${e.message} — will rewarm")
-            }
+            } catch (_: Exception) {}
         }
 
-        // Need to (re)create the session — acquire warmup lock so only one coroutine does it
         warmupMutex.withLock {
-            // Double-check after acquiring lock
             if (sessionWebView != null && sessionDomain == domain && sessionReady &&
                 (System.currentTimeMillis() - sessionReadyTime) <= SESSION_TTL) {
                 return
@@ -272,7 +251,7 @@ object MiruroCloudflare {
     }
 
     private suspend fun warmupSession(context: Context, domain: String) {
-        Log.d(TAG, "warmupSession: loading $domain, waiting for CF solve...")
+        Log.d(TAG, "warming up: $domain")
         val start = System.currentTimeMillis()
         try {
             withContext(Dispatchers.Main) {
@@ -286,9 +265,9 @@ object MiruroCloudflare {
                             sessionReady = success
                             if (success) {
                                 sessionReadyTime = System.currentTimeMillis()
-                                Log.d(TAG, "warmupSession: CF solved in ${System.currentTimeMillis() - start}ms")
+                                Log.d(TAG, "warmup done in ${System.currentTimeMillis() - start}ms")
                             } else {
-                                Log.d(TAG, "warmupSession: FAILED after ${System.currentTimeMillis() - start}ms")
+                                Log.d(TAG, "warmup failed after ${System.currentTimeMillis() - start}ms")
                                 try { webView?.destroy() } catch (_: Exception) {}
                                 sessionWebView = null
                             }
@@ -298,28 +277,25 @@ object MiruroCloudflare {
 
                     fun checkSolved(view: WebView?) {
                         if (done.get() || solved.get()) return
-                        view?.evaluateJavascript("document.title") { titleResult ->
-                            if (done.get() || solved.get()) return@evaluateJavascript
-                            val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
-                            val isChallenge = title.lowercase().contains("just a moment") ||
-                                              title.lowercase().contains("attention required") ||
-                                              title.lowercase().contains("cloudflare") ||
-                                              title.lowercase().contains("blocked") ||
-                                              title.isBlank()
-                            if (!isChallenge) {
-                                if (solved.compareAndSet(false, true)) {
-                                    sessionWebView = view
-                                    sessionDomain = domain
-                                    try {
-                                        val cookies = CookieManager.getInstance().getCookie(domain) ?: ""
-                                        if (cookies.isNotEmpty()) {
-                                            Log.d(TAG, "warmupSession: cookies cached (${cookies.length} chars)")
-                                        }
-                                    } catch (_: Exception) {}
-                                    finish(true)
+                        if (view == null) return
+                        try {
+                            view.evaluateJavascript("document.title") { titleResult ->
+                                if (done.get() || solved.get()) return@evaluateJavascript
+                                val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
+                                val isChallenge = title.lowercase().contains("just a moment") ||
+                                                  title.lowercase().contains("attention required") ||
+                                                  title.lowercase().contains("cloudflare") ||
+                                                  title.lowercase().contains("blocked") ||
+                                                  title.isBlank()
+                                if (!isChallenge && hasCfClearance(domain)) {
+                                    if (solved.compareAndSet(false, true)) {
+                                        sessionWebView = view
+                                        sessionDomain = domain
+                                        finish(true)
+                                    }
                                 }
                             }
-                        }
+                        } catch (_: Exception) {}
                     }
 
                     try {
@@ -335,18 +311,17 @@ object MiruroCloudflare {
                                     super.onPageFinished(view, pageUrl)
                                     Handler(Looper.getMainLooper()).postDelayed({
                                         checkSolved(view)
-                                    }, 500)
+                                    }, 800)
                                 }
                             }
                         }
                         webView?.loadUrl(domain)
 
-                        // Periodic CF-solve check every 1s
                         val cfHandler = Handler(Looper.getMainLooper())
                         val cfRunnable = object : Runnable {
                             var checkCount = 0
                             override fun run() {
-                                if (done.get() || checkCount >= 25) return
+                                if (done.get() || checkCount >= 30) return
                                 checkCount++
                                 checkSolved(webView)
                                 if (!done.get()) cfHandler.postDelayed(this, 1000)
@@ -354,26 +329,95 @@ object MiruroCloudflare {
                         }
                         cfHandler.postDelayed(cfRunnable, 1000)
 
-                        // Overall warmup timeout: 25s
                         Handler(Looper.getMainLooper()).postDelayed({
                             finish(false)
-                        }, 25000)
+                        }, 30000)
                     } catch (e: Exception) {
-                        Log.d(TAG, "warmupSession: exception: ${e.message}")
+                        Log.d(TAG, "warmup exception: ${e.message}")
                         finish(false)
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "warmupSession: outer exception: ${e.message}")
+            Log.d(TAG, "warmup outer exception: ${e.message}")
             sessionReady = false
+        }
+    }
+
+    private suspend fun reloadAndWait(context: Context, domain: String) {
+        val wv = sessionWebView ?: return
+        sessionReady = false
+        val solved = AtomicBoolean(false)
+
+        withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val done = AtomicBoolean(false)
+
+                fun finish() {
+                    if (done.compareAndSet(false, true)) {
+                        cont.resume(Unit)
+                    }
+                }
+
+                fun checkSolved(view: WebView?) {
+                    if (done.get() || solved.get()) return
+                    if (view == null) return
+                    try {
+                        view.evaluateJavascript("document.title") { titleResult ->
+                            if (done.get() || solved.get()) return@evaluateJavascript
+                            val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
+                            val isChallenge = title.lowercase().contains("just a moment") ||
+                                              title.lowercase().contains("attention required") ||
+                                              title.lowercase().contains("cloudflare") ||
+                                              title.lowercase().contains("blocked") ||
+                                              title.isBlank()
+                            if (!isChallenge && hasCfClearance(domain)) {
+                                if (solved.compareAndSet(false, true)) {
+                                    sessionReady = true
+                                    sessionReadyTime = System.currentTimeMillis()
+                                    finish()
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                try {
+                    wv.webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, pageUrl: String?) {
+                            super.onPageFinished(view, pageUrl)
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                checkSolved(view)
+                            }, 800)
+                        }
+                    }
+                    wv.loadUrl(domain)
+
+                    val handler = Handler(Looper.getMainLooper())
+                    val runnable = object : Runnable {
+                        var count = 0
+                        override fun run() {
+                            if (done.get() || count >= 20) return
+                            count++
+                            checkSolved(wv)
+                            if (!done.get()) handler.postDelayed(this, 1000)
+                        }
+                    }
+                    handler.postDelayed(runnable, 1000)
+
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        finish()
+                    }, 20000)
+                } catch (_: Exception) {
+                    finish()
+                }
+            }
         }
     }
 
     private fun destroySession() {
         try {
             sessionWebView?.let { wv ->
-                // Must destroy on main thread
                 Handler(Looper.getMainLooper()).post {
                     try { wv.destroy() } catch (_: Exception) {}
                 }
@@ -384,164 +428,161 @@ object MiruroCloudflare {
         sessionReady = false
     }
 
-    /**
-     * Fetch a pipe URL via the persistent WebView session.
-     * Must be called after ensureSession() has confirmed the session is ready.
-     * Uses fetchMutex to serialize — only one fetch at a time through the single WebView.
-     */
     private suspend fun fetchViaSession(pipeUrl: String, domain: String): String? {
         val wv = sessionWebView ?: return null
         val relativeUrl = pipeUrl.substringAfter(domain)
 
-        return fetchMutex.withLock {
-            withContext(Dispatchers.Main) {
-                suspendCancellableCoroutine<String?> { cont ->
-                    val done = AtomicBoolean(false)
+        return withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine<String?> { cont ->
+                val done = AtomicBoolean(false)
 
-                    fun finish(result: String?) {
-                        if (done.compareAndSet(false, true)) {
-                            cont.resume(result)
-                        }
+                fun finish(result: String?) {
+                    if (done.compareAndSet(false, true)) {
+                        cont.resume(result)
                     }
-
-                    val js = """
-                        (function() {
-                            window.__pipe_result = null;
-                            window.__pipe_error = null;
-                            try {
-                                fetch("$relativeUrl", {
-                                    method: "GET",
-                                    credentials: "include",
-                                    headers: { "Accept": "*/*" }
-                                }).then(function(r) {
-                                    return r.text();
-                                }).then(function(text) {
-                                    window.__pipe_result = text;
-                                }).catch(function(e) {
-                                    window.__pipe_error = e.message;
-                                });
-                            } catch(e) {
-                                window.__pipe_error = e.message;
-                            }
-                        })();
-                    """.trimIndent()
-
-                    try {
-                        wv.evaluateJavascript(js) {}
-                    } catch (e: Exception) {
-                        Log.d(TAG, "fetchViaSession: inject failed: ${e.message}")
-                        finish(null)
-                        return@suspendCancellableCoroutine
-                    }
-
-                    // Poll every 300ms for up to 15s
-                    val pollHandler = Handler(Looper.getMainLooper())
-                    val pollRunnable = object : Runnable {
-                        var pollCount = 0
-                        override fun run() {
-                            if (done.get() || pollCount >= 50) {
-                                if (!done.get()) {
-                                    Log.d(TAG, "fetchViaSession: poll timeout (15s)")
-                                    finish(null)
-                                }
-                                return
-                            }
-                            pollCount++
-                            try {
-                                wv.evaluateJavascript(
-                                    "(function(){ if(window.__pipe_result !== null) return window.__pipe_result; if(window.__pipe_error) return 'ERROR:' + window.__pipe_error; return null; })()"
-                                ) { result ->
-                                    if (done.get()) return@evaluateJavascript
-                                    if (result != null && result != "null") {
-                                        val text = result.trim().removeSurrounding("\"")
-                                            .replace("\\n", "\n")
-                                            .replace("\\\"", "\"")
-                                            .replace("\\\\", "\\")
-                                        if (text.startsWith("ERROR:")) {
-                                            Log.d(TAG, "fetchViaSession: JS error: ${text.removePrefix("ERROR:")}")
-                                            finish(null)
-                                        } else if (text.isNotEmpty() && text.length > 10) {
-                                            finish(text)
-                                        } else {
-                                            pollHandler.postDelayed(this, 300)
-                                        }
-                                    } else {
-                                        pollHandler.postDelayed(this, 300)
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Log.d(TAG, "fetchViaSession: poll exception: ${e.message}")
-                                finish(null)
-                            }
-                        }
-                    }
-                    pollHandler.postDelayed(pollRunnable, 300)
-
-                    // Overall fetch timeout: 15s
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        finish(null)
-                    }, 15000)
                 }
+
+                val js = """
+                    (function() {
+                        window.__pipe_result = null;
+                        window.__pipe_error = null;
+                        try {
+                            fetch("$relativeUrl", {
+                                method: "GET",
+                                credentials: "include",
+                                headers: { "Accept": "*/*" }
+                            }).then(function(r) {
+                                if (!r.ok) {
+                                    window.__pipe_error = 'HTTP_' + r.status;
+                                    return null;
+                                }
+                                return r.text();
+                            }).then(function(text) {
+                                if (!text) return;
+                                if (text.charAt(0) === '<' || text.substring(0, 9) === '<!DOCTYPE') {
+                                    window.__pipe_result = '$CF_CHALLENGE_MARKER';
+                                    return;
+                                }
+                                window.__pipe_result = text;
+                            }).catch(function(e) {
+                                window.__pipe_error = e.message;
+                            });
+                        } catch(e) {
+                            window.__pipe_error = e.message;
+                        }
+                    })();
+                """.trimIndent()
+
+                try {
+                    wv.evaluateJavascript(js) {}
+                } catch (_: Exception) {
+                    finish(null)
+                    return@suspendCancellableCoroutine
+                }
+
+                val pollHandler = Handler(Looper.getMainLooper())
+                val pollRunnable = object : Runnable {
+                    var pollCount = 0
+                    override fun run() {
+                        if (done.get() || pollCount >= 40) {
+                            if (!done.get()) finish(null)
+                            return
+                        }
+                        pollCount++
+                        try {
+                            wv.evaluateJavascript(
+                                "(function(){ if(window.__pipe_result !== null) return window.__pipe_result; if(window.__pipe_error) return 'ERROR:' + window.__pipe_error; return null; })()"
+                            ) { result ->
+                                if (done.get()) return@evaluateJavascript
+                                if (result != null && result != "null") {
+                                    val text = result.trim().removeSurrounding("\"")
+                                        .replace("\\n", "\n")
+                                        .replace("\\\"", "\"")
+                                        .replace("\\\\", "\\")
+                                    if (text.startsWith("ERROR:")) {
+                                        finish(null)
+                                    } else if (text.isNotEmpty()) {
+                                        finish(text)
+                                    } else {
+                                        pollHandler.postDelayed(this, 400)
+                                    }
+                                } else {
+                                    pollHandler.postDelayed(this, 400)
+                                }
+                            }
+                        } catch (_: Exception) {
+                            finish(null)
+                        }
+                    }
+                }
+                pollHandler.postDelayed(pollRunnable, 400)
+
+                Handler(Looper.getMainLooper()).postDelayed({
+                    finish(null)
+                }, 16000)
             }
         }
     }
 
-    /**
-     * Public entry: fetch a pipe URL via the persistent WebView session.
-     * Ensures the session is warm, then injects the fetch() call.
-     * If the session fetch fails, invalidates and retries once with a fresh warmup.
-     */
     suspend fun fetchPipe(context: Context?, domain: String, pipeUrl: String): String? {
         if (context == null) return null
-        try {
-            ensureSession(context, domain)
-        } catch (e: Exception) {
-            Log.d(TAG, "fetchPipe: ensureSession failed: ${e.message}")
-            return null
-        }
-        if (!sessionReady) {
-            Log.d(TAG, "fetchPipe: session not ready, aborting")
-            return null
-        }
 
-        val result = fetchViaSession(pipeUrl, domain)
-        if (result != null && result.isNotEmpty()) {
-            return result
-        }
-
-        // Retry once: invalidate session and rewarm
-        Log.d(TAG, "fetchPipe: first attempt failed, rewarming session and retrying")
-        destroySession()
-        try {
-            ensureSession(context, domain)
-            if (sessionReady) {
-                return fetchViaSession(pipeUrl, domain)
+        return pipeMutex.withLock {
+            try {
+                ensureSession(context, domain)
+            } catch (e: Exception) {
+                Log.d(TAG, "ensureSession failed: ${e.message}")
+                return@withLock null
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "fetchPipe: retry ensureSession failed: ${e.message}")
+            if (!sessionReady) return@withLock null
+
+            val result = fetchViaSession(pipeUrl, domain)
+            if (result != null && result != CF_CHALLENGE_MARKER) {
+                return@withLock result
+            }
+
+            if (result == CF_CHALLENGE_MARKER) {
+                Log.d(TAG, "CF challenge in fetch response, reloading page")
+            } else {
+                Log.d(TAG, "fetch returned null, reloading page")
+            }
+
+            try {
+                reloadAndWait(context, domain)
+            } catch (_: Exception) {}
+
+            if (sessionReady) {
+                val retry = fetchViaSession(pipeUrl, domain)
+                if (retry != null && retry != CF_CHALLENGE_MARKER) {
+                    return@withLock retry
+                }
+            }
+
+            Log.d(TAG, "reload retry failed, full session rebuild")
+            destroySession()
+            try {
+                ensureSession(context, domain)
+                if (sessionReady) {
+                    val final = fetchViaSession(pipeUrl, domain)
+                    if (final != null && final != CF_CHALLENGE_MARKER) {
+                        return@withLock final
+                    }
+                }
+            } catch (_: Exception) {}
+
+            null
         }
-        return null
     }
 
-    /** Force a session reset (e.g. if the domain changed). */
     fun resetSession() {
         destroySession()
     }
 }
 
-/**
- * Single-domain pipe request using the persistent WebView session.
- * The domain comes from Firebase RTDB (synced in Miruro.kt).
- *
- * Note: direct HTTP (app.get) is NOT attempted because miruro.to uses
- * Cloudflare "challenge" mode which returns 403 to ALL non-browser clients.
- * The cf_clearance cookie is TLS-fingerprint-bound and cannot be reused by okhttp.
- * The WebView is the only working path — see MiruroCloudflare for details.
- */
 suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
     val enrichedQuery = query.toMutableMap()
     enrichedQuery["live"] = "true"
-    enrichedQuery["_t"] = System.currentTimeMillis()
+    enrichedQuery["_t"] = System.currentTimeMillis() / 600000 * 600000
 
     val payload = mapOf(
         "path" to path,
@@ -553,20 +594,12 @@ suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
 
     val domain = MiruroCloudflare.getWorkingDomain()
     val pipeUrl = "$domain/api/secure/pipe?e=$encoded"
-    val start = System.currentTimeMillis()
 
-    try {
-        val webBody = MiruroCloudflare.fetchPipe(Miruro.context, domain, pipeUrl)
-        if (webBody != null && webBody.isNotEmpty()) {
-            val decoded = decodePipeResponseAuto(webBody)
-            Log.d("MiruroPipe", "/$path OK in ${System.currentTimeMillis() - start}ms via $domain")
-            return decoded
-        }
-    } catch (e: Exception) {
-        Log.d("MiruroPipe", "/$path decode failed in ${System.currentTimeMillis() - start}ms: ${e.message}")
+    val webBody = MiruroCloudflare.fetchPipe(Miruro.context, domain, pipeUrl)
+    if (webBody != null && webBody.isNotEmpty()) {
+        return decodePipeResponseAuto(webBody)
     }
 
-    Log.d("MiruroPipe", "/$path FAILED in ${System.currentTimeMillis() - start}ms via $domain")
     throw Exception("Failed on $domain for /$path")
 }
 
