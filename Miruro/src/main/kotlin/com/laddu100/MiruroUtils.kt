@@ -426,7 +426,6 @@ object MiruroCloudflare {
 
     private suspend fun fetchViaSession(pipeUrl: String, domain: String): String? {
         val wv = sessionWebView ?: return null
-        val relativeUrl = pipeUrl.substringAfter(domain)
 
         return withContext(Dispatchers.Main) {
             suspendCancellableCoroutine<String?> { cont ->
@@ -438,75 +437,74 @@ object MiruroCloudflare {
                     }
                 }
 
-                val js = """
-                    (function() {
-                        window.__pipe_result = null;
-                        window.__pipe_error = null;
-                        try {
-                            fetch("$relativeUrl", {
-                                method: "GET",
-                                credentials: "include",
-                                headers: { "Accept": "*/*" }
-                            }).then(function(r) {
-                                return r.text();
-                            }).then(function(text) {
-                                window.__pipe_result = text;
-                            }).catch(function(e) {
-                                window.__pipe_error = e.message;
-                            });
-                        } catch(e) {
-                            window.__pipe_error = e.message;
-                        }
-                    })();
-                """.trimIndent()
-
-                try {
-                    wv.evaluateJavascript(js) {}
-                } catch (_: Exception) {
-                    finish(null)
-                    return@suspendCancellableCoroutine
-                }
-
-                val pollHandler = Handler(Looper.getMainLooper())
-                val pollRunnable = object : Runnable {
-                    var pollCount = 0
-                    override fun run() {
-                        if (done.get() || pollCount >= 40) {
-                            if (!done.get()) finish(null)
-                            return
-                        }
-                        pollCount++
-                        try {
-                            wv.evaluateJavascript(
-                                "(function(){ if(window.__pipe_result !== null) return window.__pipe_result; if(window.__pipe_error) return 'ERROR:' + window.__pipe_error; return null; })()"
-                            ) { result ->
+                fun extractBody(view: WebView?) {
+                    if (done.get() || view == null) return
+                    try {
+                        view.evaluateJavascript("(document.documentElement.textContent || document.body.innerText || '').substring(0, 50)") { prefixResult ->
+                            if (done.get()) return@evaluateJavascript
+                            val prefix = prefixResult?.trim()?.removeSurrounding("\"") ?: ""
+                            if (prefix.isEmpty() || prefix == "null") {
+                                return@evaluateJavascript
+                            }
+                            val lower = prefix.lowercase()
+                            val isChallenge = lower.contains("just a moment") ||
+                                              lower.contains("attention required") ||
+                                              lower.contains("cloudflare") ||
+                                              lower.contains("enable javascript") ||
+                                              lower.contains("<!doctype") ||
+                                              lower.contains("<html")
+                            if (isChallenge) {
+                                return@evaluateJavascript
+                            }
+                            view.evaluateJavascript("document.documentElement.textContent || document.body.innerText || ''") { bodyResult ->
                                 if (done.get()) return@evaluateJavascript
-                                if (result != null && result != "null") {
-                                    val text = result.trim().removeSurrounding("\"")
+                                if (bodyResult != null && bodyResult != "null" && bodyResult != "\"\"") {
+                                    val text = bodyResult.trim().removeSurrounding("\"")
                                         .replace("\\n", "\n")
                                         .replace("\\\"", "\"")
                                         .replace("\\\\", "\\")
-                                    if (text.startsWith("ERROR:")) {
-                                        finish(null)
-                                    } else if (text.isNotEmpty() && text.length > 10) {
+                                        .replace("\\t", "\t")
+                                    if (text.isNotEmpty() && text.length > 10) {
                                         finish(text)
-                                    } else {
-                                        pollHandler.postDelayed(this, 400)
                                     }
-                                } else {
-                                    pollHandler.postDelayed(this, 400)
                                 }
                             }
-                        } catch (_: Exception) {
-                            finish(null)
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                try {
+                    wv.webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, pageUrl: String?) {
+                            super.onPageFinished(view, pageUrl)
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                extractBody(view)
+                            }, 500)
                         }
                     }
-                }
-                pollHandler.postDelayed(pollRunnable, 400)
+                    wv.loadUrl(pipeUrl)
 
-                Handler(Looper.getMainLooper()).postDelayed({
+                    val pollHandler = Handler(Looper.getMainLooper())
+                    val pollRunnable = object : Runnable {
+                        var pollCount = 0
+                        override fun run() {
+                            if (done.get() || pollCount >= 30) {
+                                if (!done.get()) finish(null)
+                                return
+                            }
+                            pollCount++
+                            extractBody(wv)
+                            if (!done.get()) pollHandler.postDelayed(this, 500)
+                        }
+                    }
+                    pollHandler.postDelayed(pollRunnable, 1500)
+
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        finish(null)
+                    }, 16000)
+                } catch (_: Exception) {
                     finish(null)
-                }, 16000)
+                }
             }
         }
     }
@@ -531,39 +529,27 @@ object MiruroCloudflare {
                 if (decoded != null) {
                     return@withLock result
                 }
+                Log.d(TAG, "first attempt: decode failed (len=${result.length})")
+            } else {
+                Log.d(TAG, "first attempt: null response")
             }
 
-            Log.d(TAG, "first attempt failed, reloading page")
-
-            try {
-                reloadAndWait(context, domain)
-            } catch (_: Exception) {}
-
-            if (sessionReady) {
-                val retry = fetchViaSession(pipeUrl, domain)
-                if (retry != null) {
-                    val decoded = try {
-                        decodePipeResponseAuto(retry)
-                    } catch (_: Exception) { null }
-                    if (decoded != null) {
-                        return@withLock retry
-                    }
-                }
-            }
-
-            Log.d(TAG, "reload retry failed, full session rebuild")
+            Log.d(TAG, "rebuilding session for retry")
             destroySession()
             try {
                 ensureSession(context, domain)
                 if (sessionReady) {
-                    val final = fetchViaSession(pipeUrl, domain)
-                    if (final != null) {
+                    val retry = fetchViaSession(pipeUrl, domain)
+                    if (retry != null) {
                         val decoded = try {
-                            decodePipeResponseAuto(final)
+                            decodePipeResponseAuto(retry)
                         } catch (_: Exception) { null }
                         if (decoded != null) {
-                            return@withLock final
+                            return@withLock retry
                         }
+                        Log.d(TAG, "retry: decode failed (len=${retry.length})")
+                    } else {
+                        Log.d(TAG, "retry: null response")
                     }
                 }
             } catch (_: Exception) {}
