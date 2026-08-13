@@ -200,15 +200,6 @@ object MiruroCloudflare {
         return lower.contains("just a moment") && lower.contains("challenge")
     }
 
-    private fun hasCfClearance(domain: String): Boolean {
-        return try {
-            val cookies = CookieManager.getInstance().getCookie(domain) ?: ""
-            cookies.contains("cf_clearance")
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     private suspend fun ensureSession(context: Context, domain: String) {
         val now = System.currentTimeMillis()
         val current = sessionWebView
@@ -235,7 +226,13 @@ object MiruroCloudflare {
                     }
                 }
                 if (alive != null && alive != "null" && alive.isNotBlank()) {
-                    return
+                    val titleStr = alive.removeSurrounding("\"").lowercase()
+                    if (!titleStr.contains("just a moment") &&
+                        !titleStr.contains("attention required") &&
+                        !titleStr.contains("cloudflare") &&
+                        !titleStr.contains("blocked")) {
+                        return
+                    }
                 }
             } catch (_: Exception) {}
         }
@@ -287,7 +284,7 @@ object MiruroCloudflare {
                                                   title.lowercase().contains("cloudflare") ||
                                                   title.lowercase().contains("blocked") ||
                                                   title.isBlank()
-                                if (!isChallenge && hasCfClearance(domain)) {
+                                if (!isChallenge) {
                                     if (solved.compareAndSet(false, true)) {
                                         sessionWebView = view
                                         sessionDomain = domain
@@ -371,7 +368,7 @@ object MiruroCloudflare {
                                               title.lowercase().contains("cloudflare") ||
                                               title.lowercase().contains("blocked") ||
                                               title.isBlank()
-                            if (!isChallenge && hasCfClearance(domain)) {
+                            if (!isChallenge) {
                                 if (solved.compareAndSet(false, true)) {
                                     sessionReady = true
                                     sessionReadyTime = System.currentTimeMillis()
