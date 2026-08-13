@@ -1,5 +1,5 @@
 package com.laddu100
-import android.util.Log
+import com.lagradost.api.Log
 
 import android.content.Context
 import com.lagradost.cloudstream3.DubStatus
@@ -27,6 +27,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.Score
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.ConcurrentHashMap
 
 class Miruro : MainAPI() {
@@ -46,7 +49,7 @@ class Miruro : MainAPI() {
         private val EPS_CACHE_TTL = 300_000L // 5 minutes
     }
 
-    override var mainUrl = "https://www.miruro.ru"
+    override var mainUrl = MIRURO_DEFAULT_DOMAIN
     override var name = "Miruro"
     override val hasMainPage = true
     override var lang = "en"
@@ -93,6 +96,7 @@ class Miruro : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("miruro") ?: mainUrl
+        MiruroCloudflare.setWorkingDomain(mainUrl)
         val query = when (request.data) {
             "TRENDING" -> TRENDING_QUERY
             "POPULAR" -> POPULAR_QUERY
@@ -118,6 +122,7 @@ class Miruro : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("miruro") ?: mainUrl
+        MiruroCloudflare.setWorkingDomain(mainUrl)
         val variables = mapOf<String, Any?>("search" to query, "page" to 1, "perPage" to 20)
         val responseText = anilistQuery(SEARCH_QUERY, variables)
         val response = parseJson<AniListResponse>(responseText)
@@ -136,6 +141,7 @@ class Miruro : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("miruro") ?: mainUrl
+        MiruroCloudflare.setWorkingDomain(mainUrl)
         val anilistId = Regex("""/info/(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull() ?: return null
 
         val infoText = anilistQuery(INFO_QUERY, mapOf("id" to anilistId))
@@ -322,34 +328,35 @@ class Miruro : MainAPI() {
         val anilistId = parts[1].toIntOrNull()
         val providerEntries = parts.drop(2)  // ["prov1:id1:cat", "prov2:id2:cat", ...]
 
-        var foundAnySources = false
-        val seenUrls = mutableSetOf<String>()
+        // Thread-safe set for dedup across parallel providers
+        val seenUrls = ConcurrentHashMap.newKeySet<String>()
 
-        for (entry in providerEntries) {
+        // Parse all entries first, then resolve in parallel
+        val tasks = providerEntries.mapNotNull { entry ->
             val colonParts = entry.split(":")
             if (colonParts.size < 3) {
                 // Backward compat: old format "provider:episodeId" without category
                 if (colonParts.size == 2) {
-                    val provider = colonParts[0]
-                    val episodeId = colonParts[1]
-                    val category = dubOrSub
-                    processProvider(provider, episodeId, category, anilistId, seenUrls, subtitleCallback, callback)?.let {
-                        foundAnySources = true
-                    }
-                }
-                continue
-            }
-            val provider = colonParts[0]
-            val category = colonParts.last()
-            val episodeId = colonParts.drop(1).dropLast(1).joinToString(":")
-
-            if (provider.isEmpty() || episodeId.isEmpty() || category.isEmpty()) continue
-
-            processProvider(provider, episodeId, category, anilistId, seenUrls, subtitleCallback, callback)?.let {
-                foundAnySources = true
+                    Triple(colonParts[0], colonParts[1], dubOrSub)
+                } else null
+            } else {
+                val provider = colonParts[0]
+                val category = colonParts.last()
+                val episodeId = colonParts.drop(1).dropLast(1).joinToString(":")
+                if (provider.isEmpty() || episodeId.isEmpty() || category.isEmpty()) null
+                else Triple(provider, episodeId, category)
             }
         }
-        return foundAnySources
+
+        // Resolve all providers in parallel — much faster than sequential
+        val results = coroutineScope {
+            tasks.map { (provider, episodeId, category) ->
+                async {
+                    processProvider(provider, episodeId, category, anilistId, seenUrls, subtitleCallback, callback)
+                }
+            }.awaitAll()
+        }
+        return results.any { it != null }
     }
 
     private suspend fun processProvider(
@@ -457,7 +464,7 @@ class Miruro : MainAPI() {
                             }
                         }
                     }
-                } catch (e: Exception) { e.message?.let { Log.d("Plugin", it) } }
+                } catch (e: Exception) { Log.d("MiruroEmbed", "embed extract failed for $embedUrl: ${e.message}") }
             }
 
             // Subtitles

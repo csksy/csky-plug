@@ -9,6 +9,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
@@ -153,12 +154,13 @@ fun translateEpisodeId(encodedId: String): String {
     }
 }
 
-val MIRURO_DOMAINS = listOf(
-    "https://www.miruro.ru",
-    "https://www.miruro.tv",
-    "https://www.miruro.to",
-    "https://www.miruro.bz"
-)
+/**
+ * Default fallback domain. The actual domain is fetched from Firebase RTDB
+ * via FirebaseDomainHelper.getDomain("miruro") and kept in sync via
+ * MiruroCloudflare.setWorkingDomain() — see Miruro.kt getMainPage/search/load.
+ * To change the domain, update the "miruro_url" key in Firebase, NOT this constant.
+ */
+const val MIRURO_DEFAULT_DOMAIN = "https://www.miruro.to"
 
 const val CF_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
@@ -169,10 +171,10 @@ const val CF_USER_AGENT =
 object MiruroCloudflare {
     private val cookieCache = ConcurrentHashMap<String, String>()
     private val cookieTimestamp = ConcurrentHashMap<String, Long>()
-    private val workingDomain = AtomicReference<String?>(MIRURO_DOMAINS[0])
+    private val workingDomain = AtomicReference<String?>(MIRURO_DEFAULT_DOMAIN)
     private val COOKIE_TTL = 10 * 60 * 1000L
 
-    fun getWorkingDomain(): String = workingDomain.get() ?: MIRURO_DOMAINS[0]
+    fun getWorkingDomain(): String = workingDomain.get() ?: MIRURO_DEFAULT_DOMAIN
     fun setWorkingDomain(d: String) { workingDomain.set(d) }
 
     fun getCookies(baseUrl: String): String? {
@@ -353,8 +355,9 @@ object MiruroCloudflare {
                     cfHandler.postDelayed(cfRunnable, 1000)
 
                     Handler(Looper.getMainLooper()).postDelayed({
+                        Log.d("MiruroCF", "fetchPipeViaWebView: overall timeout (20s) reached for $domain")
                         finish(null)
-                    }, 30000)
+                    }, 20000)
                 } catch (e: Exception) {
                     finish(null)
                 }
@@ -363,6 +366,11 @@ object MiruroCloudflare {
     }
 }
 
+/**
+ * Single-domain pipe request. The domain comes from Firebase RTDB
+ * (via MiruroCloudflare.getWorkingDomain() which is synced in Miruro.kt).
+ * No multi-domain retry — if the firebase domain is correct, one attempt is enough.
+ */
 suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
     val enrichedQuery = query.toMutableMap()
     enrichedQuery["live"] = "true"
@@ -376,25 +384,16 @@ suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
     )
     val encoded = encodePipeRequest(payload)
 
-    val working = MiruroCloudflare.getWorkingDomain()
-    val domainsToTry = mutableListOf(working)
-    for (d in MIRURO_DOMAINS) {
-        if (d != working) {
-            domainsToTry.add(d)
-        }
+    val domain = MiruroCloudflare.getWorkingDomain()
+    val start = System.currentTimeMillis()
+    try {
+        val result = miruroPipeRequestForDomain(domain, encoded, path)
+        Log.d("MiruroPipe", "/$path OK in ${System.currentTimeMillis() - start}ms via $domain")
+        return result
+    } catch (e: Exception) {
+        Log.d("MiruroPipe", "/$path FAILED in ${System.currentTimeMillis() - start}ms via $domain: ${e.message}")
+        throw e
     }
-
-    var lastError: Exception? = null
-    for (domain in domainsToTry) {
-        try {
-            val result = miruroPipeRequestForDomain(domain, encoded, path)
-            MiruroCloudflare.setWorkingDomain(domain)
-            return result
-        } catch (e: Exception) {
-            lastError = e
-        }
-    }
-    throw lastError ?: Exception("All Miruro domains failed for /$path")
 }
 
 private suspend fun miruroPipeRequestForDomain(
@@ -412,19 +411,26 @@ private suspend fun miruroPipeRequestForDomain(
     MiruroCloudflare.getCookies(domain)?.let { headers["Cookie"] = it }
 
     try {
-        val response = app.get(pipeUrl, headers = headers, timeout = 15)
+        val response = app.get(pipeUrl, headers = headers, timeout = 30_000L)
         if (response.code == 200) {
             val body = response.text
             if (!MiruroCloudflare.isCloudflareBlock(body, 200)) {
                 val obfHeader = response.headers["x-obfuscated"]
                 try {
                     return decodePipeResponseWithHeader(body, obfHeader)
-                } catch (_: Exception) {
-                    try { return decodePipeResponseAuto(body) } catch (_: Exception) {}
+                } catch (e1: Exception) {
+                    try { return decodePipeResponseAuto(body) } catch (e2: Exception) {
+                        Log.d("MiruroPipe", "decode failed both methods: ${e2.message}")
+                    }
                 }
+            } else {
+                Log.d("MiruroPipe", "CF block detected (code 200) on $domain/$path — falling back to WebView")
             }
+        } else {
+            Log.d("MiruroPipe", "HTTP ${response.code} on $domain/$path — falling back to WebView")
         }
     } catch (e: Exception) {
+        Log.d("MiruroPipe", "direct HTTP failed on $domain/$path: ${e.message} — falling back to WebView")
     }
 
     val webBody = MiruroCloudflare.fetchPipeViaWebView(
@@ -434,8 +440,8 @@ private suspend fun miruroPipeRequestForDomain(
         try {
             return decodePipeResponseAuto(webBody)
         } catch (e: Exception) {
+            Log.d("MiruroPipe", "WebView response decode failed: ${e.message}")
         }
-    } else {
     }
 
     throw Exception("Failed on $domain for /$path")
