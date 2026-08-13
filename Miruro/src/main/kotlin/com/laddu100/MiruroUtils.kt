@@ -160,7 +160,6 @@ const val MIRURO_DEFAULT_DOMAIN = "https://www.miruro.to"
 const val CF_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
-private const val CF_CHALLENGE_MARKER = "__CF_CHALLENGE__"
 
 object MiruroCloudflare {
     private const val TAG = "MiruroCF"
@@ -449,17 +448,8 @@ object MiruroCloudflare {
                                 credentials: "include",
                                 headers: { "Accept": "*/*" }
                             }).then(function(r) {
-                                if (!r.ok) {
-                                    window.__pipe_error = 'HTTP_' + r.status;
-                                    return null;
-                                }
                                 return r.text();
                             }).then(function(text) {
-                                if (!text) return;
-                                if (text.charAt(0) === '<' || text.substring(0, 9) === '<!DOCTYPE') {
-                                    window.__pipe_result = '$CF_CHALLENGE_MARKER';
-                                    return;
-                                }
                                 window.__pipe_result = text;
                             }).catch(function(e) {
                                 window.__pipe_error = e.message;
@@ -498,7 +488,7 @@ object MiruroCloudflare {
                                         .replace("\\\\", "\\")
                                     if (text.startsWith("ERROR:")) {
                                         finish(null)
-                                    } else if (text.isNotEmpty()) {
+                                    } else if (text.isNotEmpty() && text.length > 10) {
                                         finish(text)
                                     } else {
                                         pollHandler.postDelayed(this, 400)
@@ -534,15 +524,16 @@ object MiruroCloudflare {
             if (!sessionReady) return@withLock null
 
             val result = fetchViaSession(pipeUrl, domain)
-            if (result != null && result != CF_CHALLENGE_MARKER) {
-                return@withLock result
+            if (result != null) {
+                val decoded = try {
+                    decodePipeResponseAuto(result)
+                } catch (_: Exception) { null }
+                if (decoded != null) {
+                    return@withLock result
+                }
             }
 
-            if (result == CF_CHALLENGE_MARKER) {
-                Log.d(TAG, "CF challenge in fetch response, reloading page")
-            } else {
-                Log.d(TAG, "fetch returned null, reloading page")
-            }
+            Log.d(TAG, "first attempt failed, reloading page")
 
             try {
                 reloadAndWait(context, domain)
@@ -550,8 +541,13 @@ object MiruroCloudflare {
 
             if (sessionReady) {
                 val retry = fetchViaSession(pipeUrl, domain)
-                if (retry != null && retry != CF_CHALLENGE_MARKER) {
-                    return@withLock retry
+                if (retry != null) {
+                    val decoded = try {
+                        decodePipeResponseAuto(retry)
+                    } catch (_: Exception) { null }
+                    if (decoded != null) {
+                        return@withLock retry
+                    }
                 }
             }
 
@@ -561,8 +557,13 @@ object MiruroCloudflare {
                 ensureSession(context, domain)
                 if (sessionReady) {
                     val final = fetchViaSession(pipeUrl, domain)
-                    if (final != null && final != CF_CHALLENGE_MARKER) {
-                        return@withLock final
+                    if (final != null) {
+                        val decoded = try {
+                            decodePipeResponseAuto(final)
+                        } catch (_: Exception) { null }
+                        if (decoded != null) {
+                            return@withLock final
+                        }
                     }
                 }
             } catch (_: Exception) {}
