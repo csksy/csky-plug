@@ -423,7 +423,7 @@ class VideasyProvider : MainAPI() {
         }
     }
 
-    private fun emitSources(sources: List<VideasySource>, label: String, callback: (ExtractorLink) -> Unit) {
+    private suspend fun emitSources(sources: List<VideasySource>, label: String, callback: (ExtractorLink) -> Unit) {
         for (source in sources) {
             val url = source.url ?: continue
             val quality = source.quality ?: "Unknown"

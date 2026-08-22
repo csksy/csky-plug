@@ -1,7 +1,6 @@
 package com.videasy
 
 import android.util.Base64
-import java.math.BigInteger
 
 object VideasyCrypto {
     private val f = intArrayOf(
@@ -9,14 +8,14 @@ object VideasyCrypto {
         -1841140236, -1423663819, -720594547, 310598401, 607225278, 1426881987,
         1925078388, -2162078106, -2614888103, -3248222580
     )
-    private val h = byteArrayOf(109, 118, 109, 49) // "mvm1"
+    private val h = byteArrayOf(109, 118, 109, 49)
 
     private fun w(e: Int): Int {
         var x = e
         x = x xor (x ushr 16)
-        x = x * 2246822507
+        x = (x * 2246822507).toInt()
         x = x xor (x ushr 13)
-        x = x * 3266489909
+        x = (x * 3266489909).toInt()
         x = x xor (x ushr 16)
         return x
     }
@@ -29,17 +28,19 @@ object VideasyCrypto {
     private fun I(len: Int): Boolean = (len * (len + 1) and 1) == 1
     private fun b(e: Int): Boolean = (e * (e + 1) and 1) == 0
 
+    private fun imul(a: Int, b: Int): Int = (a * b)
+
     private fun fnvHash(seed: String): Int {
         var hash = 2166136261
         for (i in seed.indices) {
-            hash = (hash xor seed[i].code) * 16777619
+            hash = imul(hash xor seed[i].code, 16777619)
         }
         return w(hash)
     }
 
-    private data class CipherState(
-        val S: MutableMap<Int, Int>,
-        var acc: Int
+    private class CipherState(
+        val S: MutableMap<Int, Int> = mutableMapOf(),
+        var acc: Int = 0
     )
 
     private fun buildCipher(seed: String, mediaId: Int): CipherState {
@@ -52,7 +53,7 @@ object VideasyCrypto {
             }
             var acc = 1732584193
             for (i in seed.indices) {
-                acc = v(acc xor (seed[i].code * f[15 and i]), 5)
+                acc = v(acc xor imul(seed[i].code, f[15 and i]), 5)
             }
             acc = w(acc)
             val Smap = mutableMapOf<Int, Int>()
@@ -66,7 +67,7 @@ object VideasyCrypto {
                 if (b(i)) {
                     val tIdx = aa % 61
                     aa = v(aa + 2654435769, 7 + (7 and i))
-                    S[tIdx] = (aa xor w(aa))
+                    S[tIdx] = aa xor w(aa)
                     aa = w(aa + (S[tIdx] ?: 0))
                 } else {
                     S[i] = f[15 and i]
@@ -78,11 +79,11 @@ object VideasyCrypto {
 
     private fun prga(state: CipherState, t: Int): Int {
         val S = state.S
-        var acc = state.acc
+        val acc = state.acc
         val n = acc % 61
         val nInS = S.containsKey(n)
         val d = S[n] ?: 0
-        val xorVal = 2654435769 * (t + 1)
+        val xorVal = imul(2654435769, t + 1)
         val aVal = d xor xorVal
 
         val l = if (nInS) {
@@ -91,7 +92,7 @@ object VideasyCrypto {
             acc xor aVal
         }
 
-        val newAcc = w((v(l + acc, 31 and n) xor v(acc, 31 and (n * 7))) + 2654435769)
+        val newAcc = w(v(l + acc, 31 and n) xor v(acc, 31 and imul(n, 7)) + 2654435769)
         S[n] = newAcc
         state.acc = newAcc
         return newAcc
@@ -119,7 +120,7 @@ object VideasyCrypto {
 
         val result = ByteArray(data.size)
         for (j in data.indices) {
-            result[j] = (data[j] xor keystream[j]).toByte()
+            result[j] = (data[j].toInt() xor keystream[j].toInt()).toByte()
         }
 
         for (j in h.indices) {
