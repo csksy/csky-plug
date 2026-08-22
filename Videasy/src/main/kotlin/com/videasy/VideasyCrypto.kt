@@ -31,7 +31,7 @@ object VideasyCrypto {
     private fun imul(a: Int, b: Int): Int = (a.toLong() * b.toLong()).toInt()
 
     private fun fnvHash(seed: String): Int {
-        var hash = 2166136261
+        var hash = -2128831035 // 2166136261 as signed Int
         for (i in seed.indices) {
             hash = imul(hash xor seed[i].code, 16777619)
         }
@@ -60,20 +60,20 @@ object VideasyCrypto {
             for (i in 0 until 256) Smap[i] = S[i]
             return CipherState(Smap, acc)
         } else {
-            val a = w(fnvHash(seed) xor w(mediaId xor 2654435769))
+            val a = w(fnvHash(seed) xor w(mediaId xor -1639481527))
             val S = mutableMapOf<Int, Int>()
             var aa = a
             for (i in 0 until 8) {
                 if (b(i)) {
                     val tIdx = aa % 61
-                    aa = v(aa + 2654435769, 7 + (7 and i))
+                    aa = v(aa + -1639481527, 7 + (7 and i))
                     S[tIdx] = aa xor w(aa)
                     aa = w(aa + (S[tIdx] ?: 0))
                 } else {
                     S[i] = f[15 and i]
                 }
             }
-            return CipherState(S, w(2779096485 xor aa))
+            return CipherState(S, w(-1515870811 xor aa))
         }
     }
 
@@ -83,7 +83,7 @@ object VideasyCrypto {
         val n = acc % 61
         val nInS = S.containsKey(n)
         val d = S[n] ?: 0
-        val xorVal = imul(2654435769, t + 1)
+        val xorVal = imul(-1639481527, t + 1)
         val aVal = d xor xorVal
 
         val l = if (nInS) {
@@ -92,7 +92,7 @@ object VideasyCrypto {
             acc xor aVal
         }
 
-        val newAcc = w(v(l + acc, 31 and n) xor v(acc, 31 and imul(n, 7)) + 2654435769)
+        val newAcc = w(v(l + acc, 31 and n) xor v(acc, 31 and imul(n, 7)) + -1639481527)
         S[n] = newAcc
         state.acc = newAcc
         return newAcc
