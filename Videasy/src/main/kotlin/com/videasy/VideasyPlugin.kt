@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class VideasyPlugin : Plugin() {
     override fun load(context: Context) {
+        VideasyProvider.context = context
         registerMainAPI(VideasyProvider())
     }
 }
