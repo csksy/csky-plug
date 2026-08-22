@@ -35,38 +35,57 @@ class SkydropExtractor : ExtractorApi() {
                 "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
                 "Referer" to pageUrl,
                 "Accept" to "application/json, text/plain, */*",
+                "X-Requested-With" to "XMLHttpRequest",
             )
 
             var directUrl: String? = null
-            for (attempt in 1..15) {
+            var attempt = 0
+            while (attempt < 10 && directUrl == null) {
+                attempt++
                 try {
-                    val resp = app.get(apiUrl, headers = apiHeaders, timeout = 15_000L).text
+                    val respText = app.get(apiUrl, headers = apiHeaders, timeout = 15_000L).text
                     val mapper = ObjectMapper()
-                    val node = mapper.readTree(resp)
+                    val node = mapper.readTree(respText)
                     val success = node.get("success")?.asBoolean() ?: false
+
                     if (success) {
-                        directUrl = node.get("link")?.asText()
+                        val link = node.get("link")?.asText()
                             ?: node.get("direct_download_url")?.asText()
                             ?: node.get("download_url")?.asText()
+                        if (!link.isNullOrBlank()) {
+                            directUrl = link
+                            break
+                        }
+                        val pending = node.get("pending")?.asBoolean() ?: false
+                        if (pending) {
+                            val pollAfter = node.get("poll_after_ms")?.asLong() ?: 3000L
+                            delay(minOf(maxOf(pollAfter, 3000), 10000))
+                            continue
+                        }
+                    }
+
+                    val busy = node.get("busy")?.asBoolean() ?: false
+                    if (busy) {
+                        delay(2000)
+                        continue
+                    }
+
+                    val errorMsg = node.get("error")?.asText() ?: ""
+                    if (errorMsg.contains("Invalid", true) ||
+                        errorMsg.contains("expired", true) ||
+                        errorMsg.contains("corrupted", true) ||
+                        errorMsg.contains("not found", true)) {
+                        Log.d(TAG, "Skydrop: $errorMsg for $url")
                         break
                     }
-                    val busy = node.get("busy")?.asBoolean() ?: false
-                    val pending = node.get("pending")?.asBoolean() ?: false
-                    if (busy || pending) {
-                        val pollAfter = node.get("poll_after_ms")?.asLong() ?: 3000L
-                        delay(minOf(maxOf(pollAfter, 2000), 5000))
-                    } else {
-                        val errorMsg = node.get("error")?.asText() ?: ""
-                        if (errorMsg.contains("Invalid", true) || errorMsg.contains("expired", true)) break
-                        delay(2000)
-                    }
+                    delay(2000)
                 } catch (e: Exception) {
                     delay(2000)
                 }
             }
 
             if (directUrl.isNullOrBlank()) {
-                Log.d(TAG, "Skydrop: no link after retries for $url")
+                Log.d(TAG, "Skydrop: no link after $attempt attempts for $url")
                 return
             }
 
