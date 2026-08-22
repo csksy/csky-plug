@@ -16,7 +16,7 @@ import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
 class NewKMMoviesProvider : MainAPI() {
-    override var mainUrl = "https://kmmovies.online"
+    override var mainUrl = "https://kmmovies.pics"
     override var name = "NewKMMovies"
     override var lang = "hi"
     override val hasMainPage = true
@@ -44,7 +44,7 @@ class NewKMMoviesProvider : MainAPI() {
 
     private fun extractQuality(text: String): Pair<String, Int> {
         return when {
-            text.contains("2160p", true) || text.contains("4K", true) || text.contains("4k", true) -> "2160p" to 2160
+            text.contains("2160p", true) || text.contains("4K", true) -> "2160p" to 2160
             text.contains("1080p", true) -> "1080p" to 1080
             text.contains("720p", true) -> "720p" to 720
             text.contains("480p", true) -> "480p" to 480
@@ -186,6 +186,26 @@ class NewKMMoviesProvider : MainAPI() {
         return seasons
     }
 
+    private suspend fun fetchEpisodeLinks(episodesUrl: String): List<Pair<String, String>> {
+        val result = mutableListOf<Pair<String, String>>()
+        try {
+            val resp = app.get(episodesUrl, headers = baseHeaders, timeout = 30_000L)
+            val doc = resp.document
+            val epRows = doc.select("div.ep-row, .ep-list .ep-row")
+            for (row in epRows) {
+                val epName = row.selectFirst("span.ep-name")?.text()?.trim() ?: continue
+                val dlBtn = row.selectFirst("a.dl-btn") ?: row.selectFirst("a[href*='skydrop']")
+                val href = dlBtn?.attr("href")?.trim() ?: continue
+                if (href.isNotBlank() && href.startsWith("http")) {
+                    result.add(epName to href)
+                }
+            }
+        } catch (e: Exception) {
+            Log.d("NKM", "fetchEpisodeLinks: ${e.message}")
+        }
+        return result
+    }
+
     override suspend fun load(url: String): LoadResponse? {
         val doc = try {
             kmGet(url, headers = baseHeaders).document
@@ -261,33 +281,64 @@ class NewKMMoviesProvider : MainAPI() {
         for (season in seasons) {
             if (season.episodeLinks.isEmpty() && season.combinedLinks.isEmpty() && season.zipLinks.isEmpty()) continue
 
-            val hasEpisodeLinks = season.episodeLinks.any { it.url.contains("episodes.magiclinks.lol") }
-            if (hasEpisodeLinks) {
-                val maxEp = if (season.epCount > 0) season.epCount else 1
-                val allQualityLinks = (season.episodeLinks + season.combinedLinks + season.zipLinks)
-                for (epNum in 1..maxEp) {
-                    val links = allQualityLinks.map { dl ->
-                        mapOf(
-                            "q" to dl.qualityName,
-                            "qi" to dl.qualityInt,
-                            "s" to dl.size,
-                            "u" to dl.url,
-                            "a" to audio,
-                            "e" to epNum,
+            if (season.episodeLinks.isNotEmpty()) {
+                val episodeDataMap = mutableMapOf<Int, MutableList<Map<String, Any>>>()
+                for (epLink in season.episodeLinks) {
+                    val epList = fetchEpisodeLinks(epLink.url)
+                    if (epList.isEmpty()) continue
+                    for ((epName, skydropUrl) in epList) {
+                        val epNum = Regex("""(\d+)""").find(epName)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+                        episodeDataMap.getOrPut(epNum) { mutableListOf() }.add(
+                            mapOf(
+                                "q" to epLink.qualityName,
+                                "qi" to epLink.qualityInt,
+                                "s" to epLink.size,
+                                "u" to skydropUrl,
+                                "a" to audio,
+                            )
                         )
                     }
-                    val data = mapOf("t" to h1, "s" to season.seasonNum, "e" to epNum, "links" to links).toJson()
-                    episodes.add(
-                        newEpisode(data) {
-                            this.name = "$h1 S${season.seasonNum}E$epNum"
-                            this.season = season.seasonNum
-                            this.episode = epNum
-                        }
-                    )
                 }
-            } else {
-                val allLinks = (season.episodeLinks + season.combinedLinks + season.zipLinks)
-                val links = allLinks.map { dl ->
+
+                if (episodeDataMap.isNotEmpty()) {
+                    for (epNum in episodeDataMap.keys.sorted()) {
+                        val links = episodeDataMap[epNum] ?: continue
+                        val data = mapOf("t" to h1, "s" to season.seasonNum, "e" to epNum, "links" to links).toJson()
+                        episodes.add(
+                            newEpisode(data) {
+                                this.name = "$h1 S${season.seasonNum}E$epNum"
+                                this.season = season.seasonNum
+                                this.episode = epNum
+                            }
+                        )
+                    }
+                } else {
+                    val maxEp = if (season.epCount > 0) season.epCount else 1
+                    for (epNum in 1..maxEp) {
+                        val links = season.episodeLinks.map { dl ->
+                            mapOf(
+                                "q" to dl.qualityName,
+                                "qi" to dl.qualityInt,
+                                "s" to dl.size,
+                                "u" to dl.url,
+                                "a" to audio,
+                                "e" to epNum,
+                            )
+                        }
+                        val data = mapOf("t" to h1, "s" to season.seasonNum, "e" to epNum, "links" to links).toJson()
+                        episodes.add(
+                            newEpisode(data) {
+                                this.name = "$h1 S${season.seasonNum}E$epNum"
+                                this.season = season.seasonNum
+                                this.episode = epNum
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (season.combinedLinks.isNotEmpty()) {
+                val links = season.combinedLinks.map { dl ->
                     mapOf(
                         "q" to dl.qualityName,
                         "qi" to dl.qualityInt,
@@ -296,12 +347,32 @@ class NewKMMoviesProvider : MainAPI() {
                         "a" to audio,
                     )
                 }
-                val data = mapOf("t" to h1, "s" to season.seasonNum, "e" to 1, "links" to links).toJson()
+                val data = mapOf("t" to h1, "s" to season.seasonNum, "e" to 0, "links" to links, "complete" to true).toJson()
                 episodes.add(
                     newEpisode(data) {
-                        this.name = "$h1 Season ${season.seasonNum}"
+                        this.name = "$h1 Season ${season.seasonNum} Complete"
                         this.season = season.seasonNum
-                        this.episode = 1
+                        this.episode = 0
+                    }
+                )
+            }
+
+            if (season.zipLinks.isNotEmpty()) {
+                val links = season.zipLinks.map { dl ->
+                    mapOf(
+                        "q" to dl.qualityName,
+                        "qi" to dl.qualityInt,
+                        "s" to dl.size,
+                        "u" to dl.url,
+                        "a" to audio,
+                    )
+                }
+                val data = mapOf("t" to h1, "s" to season.seasonNum, "e" to 0, "links" to links, "complete" to true).toJson()
+                episodes.add(
+                    newEpisode(data) {
+                        this.name = "$h1 Season ${season.seasonNum} Complete (ZIP)"
+                        this.season = season.seasonNum
+                        this.episode = 0
                     }
                 )
             }
@@ -332,6 +403,7 @@ class NewKMMoviesProvider : MainAPI() {
         @Suppress("UNCHECKED_CAST")
         val links = (parsed["links"] as? List<*>) ?: return false
         val epNum = (parsed["e"] as? Number)?.toInt()
+        val isComplete = (parsed["complete"] as? Boolean) ?: false
 
         coroutineScope {
             links.map { linkRaw ->
@@ -344,7 +416,7 @@ class NewKMMoviesProvider : MainAPI() {
                     val linkUrl = node["u"] as? String ?: return@async
                     val size = node["s"] as? String ?: ""
                     val sizeLabel = if (size.isNotBlank()) " [$size]" else ""
-                    val epLabel = if (epNum != null && epNum > 1) " E$epNum" else ""
+                    val epLabel = if (epNum != null && epNum > 0) " E$epNum" else ""
 
                     val collected = mutableListOf<ExtractorLink>()
                     try {
@@ -352,6 +424,57 @@ class NewKMMoviesProvider : MainAPI() {
                     } catch (e: Exception) {
                         Log.d("NKM", "extractor $linkUrl: ${e.message}")
                     }
+                    if (collected.isEmpty()) {
+                        try {
+                            resolveMagicLinks(linkUrl, qName, qInt, audioLabel, sizeLabel, epLabel, callback)
+                        } catch (e: Exception) {
+                            Log.d("NKM", "resolveMagicLinks $linkUrl: ${e.message}")
+                        }
+                    } else {
+                        for (el in collected) {
+                            callback(
+                                newExtractorLink(
+                                    source = el.source,
+                                    name = "${el.name}$epLabel $qName$audioLabel$sizeLabel".trim(),
+                                    url = el.url,
+                                    type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                ) {
+                                    this.referer = el.referer
+                                    this.headers = el.headers
+                                    this.quality = if (el.quality <= 0) qInt else el.quality
+                                }
+                            )
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return true
+    }
+
+    private suspend fun resolveMagicLinks(
+        url: String,
+        qName: String,
+        qInt: Int,
+        audioLabel: String,
+        sizeLabel: String,
+        epLabel: String,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        try {
+            val resp = app.get(url, allowRedirects = true, timeout = 30_000L, headers = baseHeaders)
+            val doc = resp.document
+            val mirrorLinks = doc.select("a.download-button, .download-buttons a")
+            if (mirrorLinks.isEmpty()) return
+
+            for (mirror in mirrorLinks) {
+                val href = mirror.attr("href").trim()
+                if (href.isBlank() || !href.startsWith("http")) continue
+                val label = mirror.text().trim().ifBlank { mirror.attr("title").trim() }
+
+                try {
+                    val collected = mutableListOf<ExtractorLink>()
+                    loadExtractor(href, url) { el -> collected.add(el) }
                     for (el in collected) {
                         callback(
                             newExtractorLink(
@@ -366,9 +489,12 @@ class NewKMMoviesProvider : MainAPI() {
                             }
                         )
                     }
+                } catch (e: Exception) {
+                    Log.d("NKM", "mirror $href: ${e.message}")
                 }
-            }.awaitAll()
+            }
+        } catch (e: Exception) {
+            Log.d("NKM", "resolveMagicLinks error: ${e.message}")
         }
-        return true
     }
 }

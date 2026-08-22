@@ -10,7 +10,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import java.net.URLEncoder
+import kotlinx.coroutines.delay
 
 private const val TAG = "NKM_EXT"
 
@@ -26,16 +26,21 @@ class SkydropExtractor : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            val id = url.substringAfter("id=", "")
+            val id = url.substringAfter("id=", "").substringBefore("&")
             if (id.isBlank()) return
 
+            val pageUrl = "$mainUrl/download.php?id=$id"
             val apiUrl = "$mainUrl/api.php?id=$id"
-            var retryCount = 0
-            var directUrl: String? = null
+            val apiHeaders = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                "Referer" to pageUrl,
+                "Accept" to "application/json, text/plain, */*",
+            )
 
-            while (retryCount < 5 && directUrl == null) {
+            var directUrl: String? = null
+            for (attempt in 1..15) {
                 try {
-                    val resp = app.get(apiUrl, timeout = 15_000L).text
+                    val resp = app.get(apiUrl, headers = apiHeaders, timeout = 15_000L).text
                     val mapper = ObjectMapper()
                     val node = mapper.readTree(resp)
                     val success = node.get("success")?.asBoolean() ?: false
@@ -43,21 +48,25 @@ class SkydropExtractor : ExtractorApi() {
                         directUrl = node.get("link")?.asText()
                             ?: node.get("direct_download_url")?.asText()
                             ?: node.get("download_url")?.asText()
+                        break
+                    }
+                    val busy = node.get("busy")?.asBoolean() ?: false
+                    val pending = node.get("pending")?.asBoolean() ?: false
+                    if (busy || pending) {
+                        val pollAfter = node.get("poll_after_ms")?.asLong() ?: 3000L
+                        delay(minOf(maxOf(pollAfter, 2000), 5000))
                     } else {
-                        val pending = node.get("pending")?.asBoolean() ?: false
-                        if (pending) {
-                            val pollAfter = node.get("poll_after_ms")?.asLong() ?: 3000L
-                            Thread.sleep(minOf(maxOf(pollAfter, 3000), 10000))
-                        }
+                        val errorMsg = node.get("error")?.asText() ?: ""
+                        if (errorMsg.contains("Invalid", true) || errorMsg.contains("expired", true)) break
+                        delay(2000)
                     }
                 } catch (e: Exception) {
-                    Thread.sleep(2000)
+                    delay(2000)
                 }
-                retryCount++
             }
 
             if (directUrl.isNullOrBlank()) {
-                Log.d(TAG, "Skydrop: no link after $retryCount retries for $url")
+                Log.d(TAG, "Skydrop: no link after retries for $url")
                 return
             }
 
@@ -89,63 +98,55 @@ class MagicLinksExtractor : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            val resp = app.get(url, allowRedirects = true, timeout = 30_000L)
-            val html = resp.text
-
-            val links = Regex("""<a[^>]*href="(https?://[^"]*)"[^>]*>(.*?)</a>""").findAll(html).toList()
-            for (match in links) {
-                val href = match.groupValues[1]
-                val linkText = match.groupValues[2]
-                val textClean = Regex("<[^>]+>").replace(linkText, "").trim()
-
-                when {
-                    href.contains("skydrop.sbs") || href.contains("flexplayer") -> {
-                        try { loadExtractor(href, url, subtitleCallback, callback) } catch (_: Exception) {}
-                    }
-                    href.contains("hubcloud") -> {
-                        try { loadExtractor(href, url, subtitleCallback, callback) } catch (_: Exception) {}
-                    }
-                    href.contains("gdtot") -> {
-                        try { loadExtractor(href, url, subtitleCallback, callback) } catch (_: Exception) {}
-                    }
-                    href.contains("kmphotos") && href.contains("download") -> {
-                        try {
-                            val dlResp = app.get(href, allowRedirects = true, timeout = 30_000L)
-                            val finalUrl = dlResp.url
-                            if (finalUrl != href && !finalUrl.contains("cloudflare")) {
-                                callback(
-                                    newExtractorLink(
-                                        source = "KMPhotos",
-                                        name = "KMPhotos $textClean",
-                                        url = finalUrl,
-                                        type = ExtractorLinkType.VIDEO,
-                                    ) { this.quality = Qualities.Unknown.value }
-                                )
-                            }
-                        } catch (_: Exception) {}
-                    }
-                    href.contains("skytech.works") -> {
-                        val videoUrl = Regex("videoUrl=([^&\"']+)").find(href)?.groupValues?.get(1)
-                        if (videoUrl != null) {
-                            val decoded = java.net.URLDecoder.decode(videoUrl, "UTF-8")
-                            try {
-                                val dlResp = app.get(decoded, allowRedirects = true, timeout = 30_000L)
-                                val finalUrl = dlResp.url
-                                callback(
-                                    newExtractorLink(
-                                        source = "KMPhotos",
-                                        name = "Watch Online",
-                                        url = finalUrl,
-                                        type = ExtractorLinkType.VIDEO,
-                                    ) { this.quality = Qualities.Unknown.value }
-                                )
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
+            val resp = app.get(url, allowRedirects = true, timeout = 30_000L, headers = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                "Referer" to "https://kmmovies.pics/",
+            ))
+            val doc = resp.document
+            val mirrorLinks = doc.select("a.download-button, .download-buttons a[href]")
+            for (mirror in mirrorLinks) {
+                val href = mirror.attr("href").trim()
+                if (href.isBlank() || !href.startsWith("http")) continue
+                try {
+                    loadExtractor(href, url, subtitleCallback, callback)
+                } catch (_: Exception) {}
             }
         } catch (e: Exception) {
             Log.d(TAG, "MagicLinks error: ${e.message}")
+        }
+    }
+}
+
+class EpisodesMagicLinksExtractor : ExtractorApi() {
+    override val name = "EpisodesML"
+    override val mainUrl = "https://episodes.magiclinks.lol"
+    override val requiresReferer = false
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val resp = app.get(url, timeout = 30_000L, headers = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                "Referer" to "https://kmmovies.pics/",
+            ))
+            val doc = resp.document
+            val epRows = doc.select(".ep-row, .ep-list .ep-row")
+            for (row in epRows) {
+                val epName = row.selectFirst(".ep-name")?.text()?.trim() ?: continue
+                val dlBtn = row.selectFirst("a.dl-btn") ?: row.selectFirst("a[href*='skydrop']")
+                val href = dlBtn?.attr("href")?.trim() ?: continue
+                if (href.isNotBlank() && href.startsWith("http")) {
+                    try {
+                        loadExtractor(href, url, subtitleCallback, callback)
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "EpisodesML error: ${e.message}")
         }
     }
 }
@@ -186,34 +187,6 @@ class GDTOTExtractor : ExtractorApi() {
             }
         } catch (e: Exception) {
             Log.d(TAG, "GDTOT error: ${e.message}")
-        }
-    }
-}
-
-class EpisodesMagicLinksExtractor : ExtractorApi() {
-    override val name = "EpisodesML"
-    override val mainUrl = "https://episodes.magiclinks.lol"
-    override val requiresReferer = false
-
-    override suspend fun getUrl(
-        url: String,
-        referer: String?,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        try {
-            val html = app.get(url, timeout = 30_000L).text
-            val epRows = Regex("""<div class="ep-row">.*?<span class="ep-name">([^<]*)</span>.*?<a[^>]*href="([^"]*)"[^>]*class="dl-btn""", RegexOption.DOT_MATCHES_ALL).findAll(html).toList()
-
-            for (ep in epRows) {
-                val epName = ep.groupValues[1].trim()
-                val dlUrl = ep.groupValues[2].trim()
-                if (dlUrl.contains("skydrop")) {
-                    try { loadExtractor(dlUrl, url, subtitleCallback, callback) } catch (_: Exception) {}
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "EpisodesML error: ${e.message}")
         }
     }
 }
