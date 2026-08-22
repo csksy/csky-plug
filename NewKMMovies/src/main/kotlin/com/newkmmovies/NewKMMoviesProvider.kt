@@ -426,7 +426,7 @@ class NewKMMoviesProvider : MainAPI() {
                     }
                     if (collected.isEmpty()) {
                         try {
-                            resolveMagicLinks(linkUrl, qName, qInt, audioLabel, sizeLabel, epLabel, callback)
+                            resolveMagicLinks(linkUrl, qName, qInt, audioLabel, sizeLabel, epLabel, subtitleCallback, callback)
                         } catch (e: Exception) {
                             Log.d("NKM", "resolveMagicLinks $linkUrl: ${e.message}")
                         }
@@ -459,6 +459,7 @@ class NewKMMoviesProvider : MainAPI() {
         audioLabel: String,
         sizeLabel: String,
         epLabel: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ) {
         try {
@@ -470,11 +471,10 @@ class NewKMMoviesProvider : MainAPI() {
             for (mirror in mirrorLinks) {
                 val href = mirror.attr("href").trim()
                 if (href.isBlank() || !href.startsWith("http")) continue
-                val label = mirror.text().trim().ifBlank { mirror.attr("title").trim() }
 
                 try {
                     val collected = mutableListOf<ExtractorLink>()
-                    loadExtractor(href, url) { el -> collected.add(el) }
+                    loadExtractor(href, url, subtitleCallback) { el -> collected.add(el) }
                     for (el in collected) {
                         callback(
                             newExtractorLink(
