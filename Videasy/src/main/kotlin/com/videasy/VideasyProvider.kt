@@ -6,7 +6,6 @@ import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTmdbId
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
@@ -130,7 +129,7 @@ class VideasyProvider : MainAPI() {
         val plot = details.overview
         val year = details.releaseDate?.substring(0, 4)?.toIntOrNull()
         val genres = details.genres?.mapNotNull { it.name } ?: emptyList()
-        val rating = details.voteAverage?.toFloatOrNull()?.let { it / 2 }
+        val rating = details.voteAverage?.let { (it / 2).toFloat() }
         val duration = details.runtime
         val imdbId = details.imdbId
 
@@ -151,7 +150,6 @@ class VideasyProvider : MainAPI() {
             this.duration = duration
             this.score = rating?.let { Score.from10(it.toString()) }
             if (imdbId != null) addImdbId(imdbId)
-            addTmdbId(tmdbId)
         }
     }
 
@@ -171,7 +169,7 @@ class VideasyProvider : MainAPI() {
         val plot = details.overview
         val year = details.firstAirDate?.substring(0, 4)?.toIntOrNull()
         val genres = details.genres?.mapNotNull { it.name } ?: emptyList()
-        val rating = details.voteAverage?.toFloatOrNull()?.let { it / 2 }
+        val rating = details.voteAverage?.let { (it / 2).toFloat() }
         val imdbId = details.externalIds?.imdbId
         val seasonsList = details.seasons ?: emptyList()
 
@@ -214,7 +212,6 @@ class VideasyProvider : MainAPI() {
             this.tags = genres
             this.score = rating?.let { Score.from10(it.toString()) }
             if (imdbId != null) addImdbId(imdbId)
-            addTmdbId(tmdbId)
         }
     }
 
