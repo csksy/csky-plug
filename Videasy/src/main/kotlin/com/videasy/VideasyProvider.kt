@@ -6,7 +6,6 @@ import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
-import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -18,6 +17,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.RequestBodyTypes
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URLEncoder
+import java.math.BigInteger
 
 class VideasyProvider : MainAPI() {
     override var mainUrl = "https://player.videasy.to"
@@ -27,9 +28,12 @@ class VideasyProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
     private val tmdbApi = "https://db.speedracelight.com/3"
-    private val tmdbHeaders = mapOf(
+    private val sourceApi = "https://api.speedracelight.com"
+    private val apiHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "Accept" to "application/json",
+        "Origin" to "https://player.videasy.to",
+        "Referer" to "https://player.videasy.to/",
     )
 
     private val imageBase = "https://image.tmdb.org/t/p"
@@ -72,7 +76,7 @@ class VideasyProvider : MainAPI() {
         val pageParam = if (request.data.contains("?")) "&page=$page" else "?page=$page"
         val url = request.data + pageParam
         val home = try {
-            val responseText = app.get(url, headers = tmdbHeaders, timeout = 15_000L).text
+            val responseText = app.get(url, headers = apiHeaders, timeout = 15_000L).text
             val response = parseJson<TMDBResponse>(responseText)
             val mediaType = if (request.data.contains("/movie")) "movie" else "tv"
             response.results?.mapNotNull { mediaToSearchResponse(it, mediaType) } ?: emptyList()
@@ -84,10 +88,10 @@ class VideasyProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        val encoded = URLEncoder.encode(query, "UTF-8")
         return try {
             val url = "$tmdbApi/search/multi?query=$encoded"
-            val responseText = app.get(url, headers = tmdbHeaders, timeout = 15_000L).text
+            val responseText = app.get(url, headers = apiHeaders, timeout = 15_000L).text
             val response = parseJson<TMDBResponse>(responseText)
             response.results?.mapNotNull { item ->
                 val mediaType = item.mediaType ?: return@mapNotNull null
@@ -116,7 +120,7 @@ class VideasyProvider : MainAPI() {
     private suspend fun loadMovie(tmdbId: Int, url: String): LoadResponse? {
         val detailsUrl = "$tmdbApi/movie/$tmdbId?append_to_response=credits,external_ids,videos,recommendations"
         val details = try {
-            val responseText = app.get(detailsUrl, headers = tmdbHeaders, timeout = 15_000L).text
+            val responseText = app.get(detailsUrl, headers = apiHeaders, timeout = 15_000L).text
             parseJson<TMDBMovieDetails>(responseText)
         } catch (e: Exception) {
             Log.d("Videasy", "loadMovie: ${e.message}")
@@ -156,7 +160,7 @@ class VideasyProvider : MainAPI() {
     private suspend fun loadTV(tmdbId: Int, url: String): LoadResponse? {
         val detailsUrl = "$tmdbApi/tv/$tmdbId?append_to_response=credits,external_ids,videos,recommendations"
         val details = try {
-            val responseText = app.get(detailsUrl, headers = tmdbHeaders, timeout = 15_000L).text
+            val responseText = app.get(detailsUrl, headers = apiHeaders, timeout = 15_000L).text
             parseJson<TMDBTVDetails>(responseText)
         } catch (e: Exception) {
             Log.d("Videasy", "loadTV: ${e.message}")
@@ -179,7 +183,7 @@ class VideasyProvider : MainAPI() {
             if (seasonNum == 0) continue
             val seasonDetails = try {
                 val seasonUrl = "$tmdbApi/tv/$tmdbId/season/$seasonNum"
-                val seasonText = app.get(seasonUrl, headers = tmdbHeaders, timeout = 15_000L).text
+                val seasonText = app.get(seasonUrl, headers = apiHeaders, timeout = 15_000L).text
                 parseJson<TMDBSeasonDetails>(seasonText)
             } catch (e: Exception) { null } ?: continue
 
@@ -293,6 +297,17 @@ class VideasyProvider : MainAPI() {
         }
     }
 
+    private val providers = listOf(
+        "cdn" to "Videasy",
+        "vsrc" to "Neon",
+        "m4uhd" to "Breach",
+        "downloader2" to "Cypher",
+        "hdmovie" to "Vyse",
+        "superflix" to "Raze",
+        "lamovie" to "Omen",
+        "meine" to "Killjoy",
+    )
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -315,76 +330,176 @@ class VideasyProvider : MainAPI() {
         val season = (parsed["season"] as? Number)?.toInt()
         val episode = (parsed["episode"] as? Number)?.toInt() ?: 1
 
-        val playerUrl = when (type) {
-            "movie" -> "$mainUrl/movie/$tmdbId"
-            "tv" -> "$mainUrl/tv/$tmdbId/$season/$episode"
-            "anime" -> "$mainUrl/anime/$anilistId/$episode"
-            else -> return false
-        }
-
-        Log.d("Videasy", "Resolving: $playerUrl")
-
-        try {
-            val resolver = WebViewResolver(
-                interceptUrl = Regex("""\.m3u8|\.mpd|\.mp4|googleusercontent|speedrace|videasy"""),
-                additionalUrls = listOf(Regex("""\.m3u8|\.mpd|\.mp4|googleusercontent|speedrace|videasy""")),
-                script = """window.__videasy_sources = null;
-                    try {
-                        let origFetch = window.fetch;
-                        window.fetch = function(...args) {
-                            return origFetch.apply(this, args).then(res => {
-                                if (args[0] && (args[0].toString().includes('sources-with-title') || args[0].toString().includes('m3u8') || args[0].toString().includes('mpd'))) {
-                                    res.clone().text().then(t => {
-                                        window.__videasy_sources = window.__videasy_sources || [];
-                                        window.__videasy_sources.push({url: args[0].toString(), body: t});
-                                    }).catch(() => {});
-                                }
-                                return res;
-                            });
-                        };
-                    } catch(e) {}
-                """,
-                useOkhttp = false,
-                timeout = 30_000L
-            )
-            val resolved = app.get(playerUrl, referer = mainUrl, interceptor = resolver).url
-            if (resolved.isNotBlank() && !resolved.contains("videasy.to")) {
-                if (resolved.contains(".m3u8", ignoreCase = true)) {
-                    generateM3u8(name, resolved, mainUrl).forEach(callback)
-                } else if (resolved.contains(".mpd", ignoreCase = true)) {
-                    callback(
-                        newExtractorLink(
-                            source = name,
-                            name = "$name - $title",
-                            url = resolved,
-                            type = ExtractorLinkType.DASH
-                        ) {
-                            this.quality = Qualities.Unknown.value
-                            this.referer = mainUrl
-                        }
-                    )
-                } else if (resolved.contains(".mp4", ignoreCase = true) ||
-                           resolved.contains("googleusercontent", ignoreCase = true)) {
-                    callback(
-                        newExtractorLink(
-                            source = name,
-                            name = "$name - $title",
-                            url = resolved,
-                            type = ExtractorLinkType.VIDEO
-                        ) {
-                            this.quality = Qualities.Unknown.value
-                            this.referer = mainUrl
-                        }
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            Log.d("Videasy", "resolver error: ${e.message}")
+        when (type) {
+            "movie" -> resolveMovieSources(tmdbId ?: return false, title, year, imdbId, callback)
+            "tv" -> resolveTVSources(tmdbId ?: return false, title, year, imdbId, season ?: 1, episode, callback)
+            "anime" -> resolveAnimeSources(anilistId ?: return false, title, year, episode, callback)
         }
 
         return true
     }
+
+    private suspend fun resolveMovieSources(tmdbId: Int, title: String, year: Int?, imdbId: String?, callback: (ExtractorLink) -> Unit) {
+        val params = mutableMapOf(
+            "title" to title,
+            "mediaType" to "Movie",
+            "tmdbId" to tmdbId.toString(),
+        )
+        if (year != null) params["year"] = year.toString()
+        if (imdbId != null) params["imdbId"] = imdbId
+
+        for ((provider, label) in providers) {
+            try {
+                val sources = fetchAndDecryptSources(provider, params, tmdbId)
+                if (sources != null) {
+                    emitSources(sources, label, callback)
+                }
+            } catch (e: Exception) {
+                Log.d("Videasy", "Provider $provider failed: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun resolveTVSources(tmdbId: Int, title: String, year: Int?, imdbId: String?, season: Int, episode: Int, callback: (ExtractorLink) -> Unit) {
+        val params = mutableMapOf(
+            "title" to title,
+            "mediaType" to "TV",
+            "tmdbId" to tmdbId.toString(),
+            "seasonId" to season.toString(),
+            "episodeId" to episode.toString(),
+        )
+        if (year != null) params["year"] = year.toString()
+        if (imdbId != null) params["imdbId"] = imdbId
+
+        for ((provider, label) in providers) {
+            try {
+                val sources = fetchAndDecryptSources(provider, params, tmdbId)
+                if (sources != null) {
+                    emitSources(sources, "$label S${season}E$episode", callback)
+                }
+            } catch (e: Exception) {
+                Log.d("Videasy", "Provider $provider failed: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun resolveAnimeSources(anilistId: Int, title: String, year: Int?, episode: Int, callback: (ExtractorLink) -> Unit) {
+        try {
+            val encodedTitle = URLEncoder.encode(title, "UTF-8")
+            val yearStr = year?.toString() ?: ""
+            val url = "$sourceApi/hianime/sources-with-title?title=$encodedTitle&year=$yearStr&episodeId=$episode"
+            val responseText = app.get(url, headers = apiHeaders, timeout = 15_000L).text
+            val response = parseJson<HianimeResponse>(responseText)
+            val sources = response.mediaSources?.sources ?: emptyList()
+            emitSources(sources, "Anime E$episode", callback)
+        } catch (e: Exception) {
+            Log.d("Videasy", "Anime sources failed: ${e.message}")
+        }
+    }
+
+    private suspend fun fetchAndDecryptSources(provider: String, params: Map<String, String>, mediaId: Int): List<VideasySource>? {
+        return try {
+            val seedUrl = "$sourceApi/seed?mediaId=$mediaId"
+            val seedResponse = app.get(seedUrl, headers = apiHeaders, timeout = 10_000L)
+            val seedData = parseJson<SeedResponse>(seedResponse.text)
+            val seed = seedData.seed ?: return null
+
+            val encodedParams = params.map { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }.joinToString("&")
+            val sourcesUrl = "$sourceApi/$provider/sources-with-title?$encodedParams&enc=2&seed=${URLEncoder.encode(seed, "UTF-8")}"
+            val encryptedResponse = app.get(sourcesUrl, headers = apiHeaders, cookies = seedResponse.cookies, timeout = 15_000L)
+            val encrypted = encryptedResponse.text
+
+            if (encrypted.contains("error") || encrypted.length < 20) {
+                Log.d("Videasy", "Provider $provider: error response")
+                return null
+            }
+
+            val decrypted = VideasyCrypto.decrypt(encrypted, seed, mediaId)
+            val sourcesResponse = parseJson<SourcesResponse>(decrypted)
+            sourcesResponse.sources
+        } catch (e: Exception) {
+            Log.d("Videasy", "fetchAndDecrypt $provider: ${e.message}")
+            null
+        }
+    }
+
+    private fun emitSources(sources: List<VideasySource>, label: String, callback: (ExtractorLink) -> Unit) {
+        for (source in sources) {
+            val url = source.url ?: continue
+            val quality = source.quality ?: "Unknown"
+            val qualityInt = when {
+                quality.contains("2160") || quality.contains("4K", true) -> 2160
+                quality.contains("1080") -> 1080
+                quality.contains("720") -> 720
+                quality.contains("480") -> 480
+                else -> Qualities.Unknown.value
+            }
+            val type = when {
+                url.contains(".m3u8", true) || source.type == "m3u8" -> ExtractorLinkType.M3U8
+                url.contains(".mpd", true) || source.type == "dash" || source.type == "mpd" -> ExtractorLinkType.DASH
+                else -> ExtractorLinkType.VIDEO
+            }
+
+            callback(
+                newExtractorLink(
+                    source = "Videasy",
+                    name = "$label - $quality",
+                    url = url,
+                    type = type
+                ) {
+                    this.quality = qualityInt
+                    this.headers = mapOf("Referer" to "https://player.videasy.to/")
+                }
+            )
+        }
+    }
 }
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class SeedResponse(
+    @JsonProperty("seed") val seed: String? = null,
+    @JsonProperty("ttlMs") val ttlMs: Long? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class SourcesResponse(
+    @JsonProperty("sources") val sources: List<VideasySource>? = null,
+    @JsonProperty("subtitles") val subtitles: List<VideasySubtitle>? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class VideasySource(
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("quality") val quality: String? = null,
+    @JsonProperty("type") val type: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class VideasySubtitle(
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("language") val language: String? = null,
+    @JsonProperty("lang") val lang: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class HianimeResponse(
+    @JsonProperty("mediaSources") val mediaSources: SourcesResponse? = null,
+    @JsonProperty("details") val details: HianimeDetails? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class HianimeDetails(
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("episodes") val episodes: List<HianimeEpisode>? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class HianimeEpisode(
+    @JsonProperty("episode") val episode: Int? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("thumbnail") val thumbnail: String? = null
+)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBResponse(
