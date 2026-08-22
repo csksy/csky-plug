@@ -13,9 +13,9 @@ object VideasyCrypto {
     private fun w(e: Int): Int {
         var x = e
         x = x xor (x ushr 16)
-        x = (x * 2246822507).toInt()
+        x = (x.toLong() * 2246822507L).toInt()
         x = x xor (x ushr 13)
-        x = (x * 3266489909).toInt()
+        x = (x.toLong() * 3266489909L).toInt()
         x = x xor (x ushr 16)
         return x
     }
@@ -28,7 +28,7 @@ object VideasyCrypto {
     private fun I(len: Int): Boolean = (len * (len + 1) and 1) == 1
     private fun b(e: Int): Boolean = (e * (e + 1) and 1) == 0
 
-    private fun imul(a: Int, b: Int): Int = (a * b)
+    private fun imul(a: Int, b: Int): Int = (a.toLong() * b.toLong()).toInt()
 
     private fun fnvHash(seed: String): Int {
         var hash = 2166136261
