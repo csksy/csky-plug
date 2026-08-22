@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.app
@@ -18,7 +17,6 @@ import com.lagradost.nicehttp.RequestBodyTypes
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
-import java.math.BigInteger
 
 class VideasyProvider : MainAPI() {
     override var mainUrl = "https://player.videasy.to"
@@ -45,7 +43,6 @@ class VideasyProvider : MainAPI() {
         "$tmdbApi/discover/tv?sort_by=popularity.desc" to "Popular TV Shows",
         "$tmdbApi/movie/top_rated" to "Top Rated Movies",
         "$tmdbApi/tv/top_rated" to "Top Rated TV Shows",
-        "$tmdbApi/discover/movie?with_genres=16&sort_by=popularity.desc" to "Popular Animation",
     )
 
     private fun imageUrl(path: String?, size: String = "w500"): String? {
@@ -81,7 +78,6 @@ class VideasyProvider : MainAPI() {
             val mediaType = if (request.data.contains("/movie")) "movie" else "tv"
             response.results?.mapNotNull { mediaToSearchResponse(it, mediaType) } ?: emptyList()
         } catch (e: Exception) {
-            Log.d("Videasy", "getMainPage: ${e.message}")
             emptyList()
         }
         return newHomePageResponse(request.name, home)
@@ -99,7 +95,6 @@ class VideasyProvider : MainAPI() {
                 mediaToSearchResponse(item, mediaType)
             } ?: emptyList()
         } catch (e: Exception) {
-            Log.d("Videasy", "search: ${e.message}")
             emptyList()
         }
     }
@@ -118,73 +113,47 @@ class VideasyProvider : MainAPI() {
     }
 
     private suspend fun loadMovie(tmdbId: Int, url: String): LoadResponse? {
-        val detailsUrl = "$tmdbApi/movie/$tmdbId?append_to_response=credits,external_ids,videos,recommendations"
+        val detailsUrl = "$tmdbApi/movie/$tmdbId?append_to_response=external_ids"
         val details = try {
-            val responseText = app.get(detailsUrl, headers = apiHeaders, timeout = 15_000L).text
-            parseJson<TMDBMovieDetails>(responseText)
-        } catch (e: Exception) {
-            Log.d("Videasy", "loadMovie: ${e.message}")
-            return null
-        }
+            parseJson<TMDBMovieDetails>(app.get(detailsUrl, headers = apiHeaders, timeout = 15_000L).text)
+        } catch (e: Exception) { return null }
 
         val title = details.title ?: details.originalTitle ?: "Unknown"
-        val poster = imageUrl(details.posterPath, "w500")
-        val bgPoster = imageUrl(details.backdropPath, "original")
-        val plot = details.overview
-        val year = details.releaseDate?.substring(0, 4)?.toIntOrNull()
-        val genres = details.genres?.mapNotNull { it.name } ?: emptyList()
-        val rating = details.voteAverage?.let { (it / 2).toFloat() }
-        val duration = details.runtime
-        val imdbId = details.imdbId
-
         val data = mapOf(
             "type" to "movie",
             "tmdbId" to tmdbId,
             "title" to title,
-            "year" to year,
-            "imdbId" to imdbId,
+            "year" to details.releaseDate?.substring(0, 4)?.toIntOrNull(),
+            "imdbId" to details.imdbId,
         ).toJson()
 
         return newMovieLoadResponse(title, url, TvType.Movie, data) {
-            this.posterUrl = poster
-            this.backgroundPosterUrl = bgPoster
-            this.year = year
-            this.plot = plot
-            this.tags = genres
-            this.duration = duration
-            this.score = rating?.let { Score.from10(it.toString()) }
-            if (imdbId != null) addImdbId(imdbId)
+            this.posterUrl = imageUrl(details.posterPath)
+            this.backgroundPosterUrl = imageUrl(details.backdropPath, "original")
+            this.year = details.releaseDate?.substring(0, 4)?.toIntOrNull()
+            this.plot = details.overview
+            this.tags = details.genres?.mapNotNull { it.name } ?: emptyList()
+            this.duration = details.runtime
+            this.score = details.voteAverage?.let { Score.from10((it / 2).toString()) }
+            if (details.imdbId != null) addImdbId(details.imdbId)
         }
     }
 
     private suspend fun loadTV(tmdbId: Int, url: String): LoadResponse? {
-        val detailsUrl = "$tmdbApi/tv/$tmdbId?append_to_response=credits,external_ids,videos,recommendations"
+        val detailsUrl = "$tmdbApi/tv/$tmdbId?append_to_response=external_ids"
         val details = try {
-            val responseText = app.get(detailsUrl, headers = apiHeaders, timeout = 15_000L).text
-            parseJson<TMDBTVDetails>(responseText)
-        } catch (e: Exception) {
-            Log.d("Videasy", "loadTV: ${e.message}")
-            return null
-        }
+            parseJson<TMDBTVDetails>(app.get(detailsUrl, headers = apiHeaders, timeout = 15_000L).text)
+        } catch (e: Exception) { return null }
 
         val title = details.name ?: details.originalName ?: "Unknown"
-        val poster = imageUrl(details.posterPath, "w500")
-        val bgPoster = imageUrl(details.backdropPath, "original")
-        val plot = details.overview
-        val year = details.firstAirDate?.substring(0, 4)?.toIntOrNull()
-        val genres = details.genres?.mapNotNull { it.name } ?: emptyList()
-        val rating = details.voteAverage?.let { (it / 2).toFloat() }
         val imdbId = details.externalIds?.imdbId
-        val seasonsList = details.seasons ?: emptyList()
-
         val episodes = mutableListOf<Episode>()
-        for (season in seasonsList) {
+
+        for (season in details.seasons ?: emptyList()) {
             val seasonNum = season.seasonNumber ?: continue
             if (seasonNum == 0) continue
             val seasonDetails = try {
-                val seasonUrl = "$tmdbApi/tv/$tmdbId/season/$seasonNum"
-                val seasonText = app.get(seasonUrl, headers = apiHeaders, timeout = 15_000L).text
-                parseJson<TMDBSeasonDetails>(seasonText)
+                parseJson<TMDBSeasonDetails>(app.get("$tmdbApi/tv/$tmdbId/season/$seasonNum", headers = apiHeaders, timeout = 15_000L).text)
             } catch (e: Exception) { null } ?: continue
 
             for (ep in seasonDetails.episodes ?: emptyList()) {
@@ -193,7 +162,7 @@ class VideasyProvider : MainAPI() {
                     "type" to "tv",
                     "tmdbId" to tmdbId,
                     "title" to title,
-                    "year" to year,
+                    "year" to details.firstAirDate?.substring(0, 4)?.toIntOrNull(),
                     "imdbId" to imdbId,
                     "season" to seasonNum,
                     "episode" to epNum,
@@ -202,19 +171,19 @@ class VideasyProvider : MainAPI() {
                     this.name = ep.name ?: "S${seasonNum}E$epNum"
                     this.season = seasonNum
                     this.episode = epNum
-                    this.posterUrl = imageUrl(ep.stillPath, "w500")
+                    this.posterUrl = imageUrl(ep.stillPath)
                     this.description = ep.overview
                 })
             }
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-            this.posterUrl = poster
-            this.backgroundPosterUrl = bgPoster
-            this.year = year
-            this.plot = plot
-            this.tags = genres
-            this.score = rating?.let { Score.from10(it.toString()) }
+            this.posterUrl = imageUrl(details.posterPath)
+            this.backgroundPosterUrl = imageUrl(details.backdropPath, "original")
+            this.year = details.firstAirDate?.substring(0, 4)?.toIntOrNull()
+            this.plot = details.overview
+            this.tags = details.genres?.mapNotNull { it.name } ?: emptyList()
+            this.score = details.voteAverage?.let { Score.from10((it / 2).toString()) }
             if (imdbId != null) addImdbId(imdbId)
         }
     }
@@ -233,7 +202,6 @@ class VideasyProvider : MainAPI() {
                     seasonYear
                     averageScore
                     genres
-                    startDate { year }
                 }
             }
         """.trimIndent()
@@ -242,57 +210,37 @@ class VideasyProvider : MainAPI() {
             .toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
 
         val responseText = try {
-            app.post(
-                "https://graphql.anilist.co",
+            app.post("https://graphql.anilist.co",
                 headers = mapOf("Accept" to "application/json", "Content-Type" to "application/json"),
-                requestBody = requestData,
-                timeout = 15_000L
-            ).text
-        } catch (e: Exception) {
-            Log.d("Videasy", "loadAnime: ${e.message}")
-            return null
-        }
+                requestBody = requestData, timeout = 15_000L).text
+        } catch (e: Exception) { return null }
 
-        val response = parseJson<AniListResponse>(responseText)
-        val media = response.data?.Media ?: return null
+        val media = parseJson<AniListResponse>(responseText).data?.Media ?: return null
         val title = media.title?.english ?: media.title?.romaji ?: "Unknown"
-        val poster = media.coverImage?.extraLarge ?: media.coverImage?.large
-        val bgPoster = media.bannerImage
-        val plot = media.description?.replace(Regex("<[^>]*>"), "")
-        val year = media.seasonYear ?: media.startDate?.year
-        val genres = media.genres ?: emptyList()
-        val rating = media.averageScore?.let { it / 10 }
         val totalEps = media.episodes ?: 1
 
         val episodes = mutableListOf<Episode>()
         for (i in 1..totalEps) {
-            val data = mapOf(
-                "type" to "anime",
-                "anilistId" to anilistId,
-                "title" to title,
-                "year" to year,
-                "episode" to i,
-            ).toJson()
+            val data = mapOf("type" to "anime", "anilistId" to anilistId, "title" to title,
+                "year" to media.seasonYear, "episode" to i).toJson()
             episodes.add(newEpisode(data) {
                 this.name = "Episode $i"
                 this.episode = i
             })
         }
 
-        val showStatus = when (media.status) {
-            "RELEASING" -> ShowStatus.Ongoing
-            "FINISHED" -> ShowStatus.Completed
-            else -> null
-        }
-
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            this.posterUrl = poster
-            this.backgroundPosterUrl = bgPoster
-            this.year = year
-            this.plot = plot
-            this.tags = genres
-            this.score = rating?.let { Score.from10(it.toString()) }
-            this.showStatus = showStatus
+            this.posterUrl = media.coverImage?.extraLarge ?: media.coverImage?.large
+            this.backgroundPosterUrl = media.bannerImage
+            this.year = media.seasonYear
+            this.plot = media.description?.replace(Regex("<[^>]*>"), "")
+            this.tags = media.genres ?: emptyList()
+            this.score = media.averageScore?.let { Score.from10((it / 10).toString()) }
+            this.showStatus = when (media.status) {
+                "RELEASING" -> ShowStatus.Ongoing
+                "FINISHED" -> ShowStatus.Completed
+                else -> null
+            }
             addAniListId(anilistId)
         }
     }
@@ -314,12 +262,7 @@ class VideasyProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val parsed = try {
-            parseJson<Map<String, Any?>>(data)
-        } catch (e: Exception) {
-            Log.d("Videasy", "loadLinks parse: ${e.message}")
-            return false
-        }
+        val parsed = try { parseJson<Map<String, Any?>>(data) } catch (e: Exception) { return false }
 
         val type = parsed["type"] as? String ?: return false
         val tmdbId = (parsed["tmdbId"] as? Number)?.toInt()
@@ -350,12 +293,13 @@ class VideasyProvider : MainAPI() {
 
         for ((provider, label) in providers) {
             try {
-                val sources = fetchAndDecryptSources(provider, params, tmdbId)
+                val sources = fetchSourcesWithSeed(provider, params, tmdbId)
                 if (sources != null) {
+                    Log.d("Videasy", "Provider $provider: ${sources.size} sources")
                     emitSources(sources, label, callback)
                 }
             } catch (e: Exception) {
-                Log.d("Videasy", "Provider $provider failed: ${e.message}")
+                Log.d("Videasy", "Provider $provider: ${e.message}")
             }
         }
     }
@@ -373,12 +317,12 @@ class VideasyProvider : MainAPI() {
 
         for ((provider, label) in providers) {
             try {
-                val sources = fetchAndDecryptSources(provider, params, tmdbId)
+                val sources = fetchSourcesWithSeed(provider, params, tmdbId)
                 if (sources != null) {
                     emitSources(sources, "$label S${season}E$episode", callback)
                 }
             } catch (e: Exception) {
-                Log.d("Videasy", "Provider $provider failed: ${e.message}")
+                Log.d("Videasy", "Provider $provider: ${e.message}")
             }
         }
     }
@@ -386,41 +330,63 @@ class VideasyProvider : MainAPI() {
     private suspend fun resolveAnimeSources(anilistId: Int, title: String, year: Int?, episode: Int, callback: (ExtractorLink) -> Unit) {
         try {
             val encodedTitle = URLEncoder.encode(title, "UTF-8")
-            val yearStr = year?.toString() ?: ""
-            val url = "$sourceApi/hianime/sources-with-title?title=$encodedTitle&year=$yearStr&episodeId=$episode"
+            val url = "$sourceApi/hianime/sources-with-title?title=$encodedTitle&year=${year ?: ""}&episodeId=$episode"
             val responseText = app.get(url, headers = apiHeaders, timeout = 15_000L).text
             val response = parseJson<HianimeResponse>(responseText)
             val sources = response.mediaSources?.sources ?: emptyList()
             emitSources(sources, "Anime E$episode", callback)
         } catch (e: Exception) {
-            Log.d("Videasy", "Anime sources failed: ${e.message}")
+            Log.d("Videasy", "Anime: ${e.message}")
         }
     }
 
-    private suspend fun fetchAndDecryptSources(provider: String, params: Map<String, String>, mediaId: Int): List<VideasySource>? {
+    private suspend fun fetchSourcesWithSeed(provider: String, params: Map<String, String>, mediaId: Int): List<VideasySource>? {
         return try {
             val seedUrl = "$sourceApi/seed?mediaId=$mediaId"
-            val seedResponse = app.get(seedUrl, headers = apiHeaders, timeout = 10_000L)
-            val seedData = parseJson<SeedResponse>(seedResponse.text)
+            val seedResp = app.get(seedUrl, headers = apiHeaders, timeout = 10_000L)
+            val seedText = seedResp.text
+            val seedData = parseJson<SeedResponse>(seedText)
             val seed = seedData.seed ?: return null
 
-            val encodedParams = params.map { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }.joinToString("&")
-            val sourcesUrl = "$sourceApi/$provider/sources-with-title?$encodedParams&enc=2&seed=${URLEncoder.encode(seed, "UTF-8")}"
-            val encryptedResponse = app.get(sourcesUrl, headers = apiHeaders, cookies = seedResponse.cookies, timeout = 15_000L)
-            val encrypted = encryptedResponse.text
+            val cookieHeader = extractCookies(seedResp)
 
-            if (encrypted.contains("error") || encrypted.length < 20) {
-                Log.d("Videasy", "Provider $provider: error response")
+            val encodedParams = params.map { (k, v) ->
+                "$k=${URLEncoder.encode(v, "UTF-8")}"
+            }.joinToString("&")
+            val sourcesUrl = "$sourceApi/$provider/sources-with-title?$encodedParams&enc=2&seed=${URLEncoder.encode(seed, "UTF-8")}"
+
+            val sourcesHeaders = apiHeaders.toMutableMap()
+            if (cookieHeader.isNotBlank()) {
+                sourcesHeaders["Cookie"] = cookieHeader
+            }
+
+            val encryptedResp = app.get(sourcesUrl, headers = sourcesHeaders, timeout = 15_000L)
+            val encrypted = encryptedResp.text
+
+            if (encrypted.contains("\"error\"") || encrypted.length < 20) {
+                Log.d("Videasy", "Provider $provider error: ${encrypted.take(100)}")
                 return null
             }
 
-            val decrypted = VideasyCrypto.decrypt(encrypted, seed, mediaId)
+            val decrypted = VideasyCrypto.decrypt(encrypted, encrypted, seed, mediaId)
             val sourcesResponse = parseJson<SourcesResponse>(decrypted)
             sourcesResponse.sources
         } catch (e: Exception) {
-            Log.d("Videasy", "fetchAndDecrypt $provider: ${e.message}")
+            Log.d("Videasy", "fetchSources $provider: ${e.message}")
             null
         }
+    }
+
+    private fun extractCookies(response: com.lagradost.nicehttp.NiceResponse): String {
+        val cookies = response.cookies
+        if (cookies.isNotEmpty()) {
+            return cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+        }
+        val setCookie = response.headers["set-cookie"] ?: response.headers["Set-Cookie"] ?: ""
+        if (setCookie.isNotBlank()) {
+            return setCookie.split(";").firstOrNull()?.trim() ?: ""
+        }
+        return ""
     }
 
     private suspend fun emitSources(sources: List<VideasySource>, label: String, callback: (ExtractorLink) -> Unit) {
@@ -456,16 +422,10 @@ class VideasyProvider : MainAPI() {
 }
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class SeedResponse(
-    @JsonProperty("seed") val seed: String? = null,
-    @JsonProperty("ttlMs") val ttlMs: Long? = null
-)
+data class SeedResponse(@JsonProperty("seed") val seed: String? = null, @JsonProperty("ttlMs") val ttlMs: Long? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class SourcesResponse(
-    @JsonProperty("sources") val sources: List<VideasySource>? = null,
-    @JsonProperty("subtitles") val subtitles: List<VideasySubtitle>? = null
-)
+data class SourcesResponse(@JsonProperty("sources") val sources: List<VideasySource>? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class VideasySource(
@@ -475,38 +435,10 @@ data class VideasySource(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class VideasySubtitle(
-    @JsonProperty("url") val url: String? = null,
-    @JsonProperty("language") val language: String? = null,
-    @JsonProperty("lang") val lang: String? = null
-)
+data class HianimeResponse(@JsonProperty("mediaSources") val mediaSources: SourcesResponse? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class HianimeResponse(
-    @JsonProperty("mediaSources") val mediaSources: SourcesResponse? = null,
-    @JsonProperty("details") val details: HianimeDetails? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class HianimeDetails(
-    @JsonProperty("id") val id: String? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("episodes") val episodes: List<HianimeEpisode>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class HianimeEpisode(
-    @JsonProperty("episode") val episode: Int? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("thumbnail") val thumbnail: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBResponse(
-    @JsonProperty("results") val results: List<TMDBItem>? = null,
-    @JsonProperty("page") val page: Int? = null,
-    @JsonProperty("total_pages") val totalPages: Int? = null
-)
+data class TMDBResponse(@JsonProperty("results") val results: List<TMDBItem>? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBItem(
@@ -520,12 +452,10 @@ data class TMDBItem(
     @JsonProperty("release_date") val releaseDate: String? = null,
     @JsonProperty("first_air_date") val firstAirDate: String? = null,
     @JsonProperty("vote_average") val voteAverage: Double? = null,
-    @JsonProperty("genre_ids") val genreIds: List<Int>? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBMovieDetails(
-    @JsonProperty("id") val id: Int? = null,
     @JsonProperty("title") val title: String? = null,
     @JsonProperty("original_title") val originalTitle: String? = null,
     @JsonProperty("poster_path") val posterPath: String? = null,
@@ -540,7 +470,6 @@ data class TMDBMovieDetails(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBTVDetails(
-    @JsonProperty("id") val id: Int? = null,
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("original_name") val originalName: String? = null,
     @JsonProperty("poster_path") val posterPath: String? = null,
@@ -554,62 +483,38 @@ data class TMDBTVDetails(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBExternalIds(
-    @JsonProperty("imdb_id") val imdbId: String? = null,
-    @JsonProperty("tvdb_id") val tvdbId: Int? = null
-)
+data class TMDBExternalIds(@JsonProperty("imdb_id") val imdbId: String? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class TMDBGenre(
-    @JsonProperty("id") val id: Int? = null,
-    @JsonProperty("name") val name: String? = null
-)
+data class TMDBGenre(@JsonProperty("name") val name: String? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBSeason(
-    @JsonProperty("id") val id: Int? = null,
     @JsonProperty("season_number") val seasonNumber: Int? = null,
-    @JsonProperty("episode_count") val episodeCount: Int? = null,
     @JsonProperty("name") val name: String? = null,
-    @JsonProperty("overview") val overview: String? = null,
-    @JsonProperty("poster_path") val posterPath: String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBSeasonDetails(
-    @JsonProperty("id") val id: Int? = null,
-    @JsonProperty("season_number") val seasonNumber: Int? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("episodes") val episodes: List<TMDBEpisode>? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBEpisode(
-    @JsonProperty("id") val id: Int? = null,
     @JsonProperty("episode_number") val episodeNumber: Int? = null,
-    @JsonProperty("season_number") val seasonNumber: Int? = null,
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("still_path") val stillPath: String? = null,
-    @JsonProperty("air_date") val airDate: String? = null,
-    @JsonProperty("runtime") val runtime: Int? = null,
-    @JsonProperty("vote_average") val voteAverage: Double? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class AniListResponse(
-    @JsonProperty("data") val data: AniListData? = null
-)
+data class AniListResponse(@JsonProperty("data") val data: AniListData? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class AniListData(
-    @JsonProperty("Media") val Media: AniListMedia? = null
-)
+data class AniListData(@JsonProperty("Media") val Media: AniListMedia? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniListMedia(
-    @JsonProperty("id") val id: Int? = null,
     @JsonProperty("title") val title: AniListTitle? = null,
     @JsonProperty("description") val description: String? = null,
     @JsonProperty("coverImage") val coverImage: AniListCoverImage? = null,
@@ -619,22 +524,10 @@ data class AniListMedia(
     @JsonProperty("seasonYear") val seasonYear: Int? = null,
     @JsonProperty("averageScore") val averageScore: Int? = null,
     @JsonProperty("genres") val genres: List<String>? = null,
-    @JsonProperty("startDate") val startDate: AniListDate? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class AniListTitle(
-    @JsonProperty("english") val english: String? = null,
-    @JsonProperty("romaji") val romaji: String? = null
-)
+data class AniListTitle(@JsonProperty("english") val english: String? = null, @JsonProperty("romaji") val romaji: String? = null)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class AniListCoverImage(
-    @JsonProperty("extraLarge") val extraLarge: String? = null,
-    @JsonProperty("large") val large: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class AniListDate(
-    @JsonProperty("year") val year: Int? = null
-)
+data class AniListCoverImage(@JsonProperty("extraLarge") val extraLarge: String? = null, @JsonProperty("large") val large: String? = null)

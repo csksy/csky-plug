@@ -25,15 +25,14 @@ object VideasyCrypto {
         return if (shift == 0) e else (e ushr shift) or (e shl (32 - shift))
     }
 
-    private fun I(len: Int): Boolean = (len * (len + 1) and 1) == 1
     private fun b(e: Int): Boolean = (e * (e + 1) and 1) == 0
 
     private fun imul(a: Int, b: Int): Int = (a.toLong() * b.toLong()).toInt()
 
-    private fun fnvHash(seed: String): Int {
-        var hash = -2128831035 // 2166136261 as signed Int
-        for (i in seed.indices) {
-            hash = imul(hash xor seed[i].code, 16777619)
+    private fun fnvHash(key: String): Int {
+        var hash = -2128831035
+        for (i in key.indices) {
+            hash = imul(hash xor key[i].code, 16777619)
         }
         return w(hash)
     }
@@ -43,38 +42,21 @@ object VideasyCrypto {
         var acc: Int = 0
     )
 
-    private fun buildCipher(seed: String, mediaId: Int): CipherState {
-        if (I(seed.length)) {
-            val S = IntArray(256) { it }
-            var j = 0
-            for (i in 0 until 256) {
-                j = (j + S[i] + seed[i % seed.length].code) and 255
-                val tmp = S[i]; S[i] = S[j]; S[j] = tmp
+    private fun buildCipher(key: String, mediaId: Int): CipherState {
+        val a = w(fnvHash(key) xor w(mediaId xor -1639481527))
+        val S = mutableMapOf<Int, Int>()
+        var aa = a
+        for (i in 0 until 8) {
+            if (b(i)) {
+                val tIdx = aa % 61
+                aa = v(aa + -1639481527, 7 + (7 and i))
+                S[tIdx] = aa xor w(aa)
+                aa = w(aa + (S[tIdx] ?: 0))
+            } else {
+                S[i] = f[15 and i]
             }
-            var acc = 1732584193
-            for (i in seed.indices) {
-                acc = v(acc xor imul(seed[i].code, f[15 and i]), 5)
-            }
-            acc = w(acc)
-            val Smap = mutableMapOf<Int, Int>()
-            for (i in 0 until 256) Smap[i] = S[i]
-            return CipherState(Smap, acc)
-        } else {
-            val a = w(fnvHash(seed) xor w(mediaId xor -1639481527))
-            val S = mutableMapOf<Int, Int>()
-            var aa = a
-            for (i in 0 until 8) {
-                if (b(i)) {
-                    val tIdx = aa % 61
-                    aa = v(aa + -1639481527, 7 + (7 and i))
-                    S[tIdx] = aa xor w(aa)
-                    aa = w(aa + (S[tIdx] ?: 0))
-                } else {
-                    S[i] = f[15 and i]
-                }
-            }
-            return CipherState(S, w(-1515870811 xor aa))
         }
+        return CipherState(S, w(-1515870811 xor aa))
     }
 
     private fun prga(state: CipherState, t: Int): Int {
@@ -98,14 +80,14 @@ object VideasyCrypto {
         return newAcc
     }
 
-    fun decrypt(encrypted: String, seed: String, mediaId: Int): String {
+    fun decrypt(encrypted: String, key: String, seed: String, mediaId: Int): String {
         val trimmed = encrypted.trim()
         val padded = trimmed.replace('-', '+').replace('_', '/')
         val padLen = (4 - padded.length % 4) % 4
         val paddedStr = padded + "=".repeat(padLen)
         val data = Base64.decode(paddedStr, Base64.NO_WRAP)
 
-        val state = buildCipher(seed, mediaId)
+        val state = buildCipher(key, mediaId)
         val keystream = ByteArray(data.size)
         var o = 0
         var i = 0
@@ -125,7 +107,7 @@ object VideasyCrypto {
 
         for (j in h.indices) {
             if (result[j] != h[j]) {
-                throw Exception("decrypt failed: bad seed at $j")
+                throw Exception("decrypt failed at $j: ${result[j]} != ${h[j]}")
             }
         }
 
