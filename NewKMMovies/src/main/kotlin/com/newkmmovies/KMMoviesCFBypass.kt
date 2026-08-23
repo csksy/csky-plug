@@ -545,9 +545,10 @@ suspend fun showKMCFBypassDialogAndWait(url: String): Boolean = withContext(Disp
     }
 }
 
-suspend fun kmGet(
+suspend fun kmCFGet(
     url: String,
-    headers: Map<String, String> = emptyMap()
+    headers: Map<String, String> = emptyMap(),
+    referer: String? = null
 ): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)
@@ -565,6 +566,9 @@ suspend fun kmGet(
         if (!h.containsKey("Accept-Language")) {
             h["Accept-Language"] = "en-US,en;q=0.5"
         }
+        if (referer != null && !h.containsKey("Referer")) {
+            h["Referer"] = referer
+        }
         h["sec-ch-ua-mobile"] = "?1"
         h["sec-ch-ua-platform"] = "\"Android\""
         KMCFStore.getCookies()?.let { cookies ->
@@ -581,7 +585,7 @@ suspend fun kmGet(
     }
 
     var response = try {
-        app.get(url, headers = buildCfHeaders(), timeout = 30_000L)
+        app.get(url, headers = buildCfHeaders(), referer = referer, timeout = 30_000L)
     } catch (e: Exception) {
         Log.e(TAG, "First request failed: ${e.message}")
         throw e
@@ -595,7 +599,7 @@ suspend fun kmGet(
         val cachedCookies = KMCFStore.getCookies()
         if (cachedCookies != null) {
             response = try {
-                app.get(url, headers = buildCfHeaders(), timeout = 30_000L)
+                app.get(url, headers = buildCfHeaders(), referer = referer, timeout = 30_000L)
             } catch (e: Exception) {
                 Log.e(TAG, "Retry with cached cookies failed: ${e.message}")
                 throw e
@@ -616,7 +620,7 @@ suspend fun kmGet(
 
         for (attempt in 1..2) {
             response = try {
-                app.get(url, headers = buildCfHeaders(), timeout = 30_000L)
+                app.get(url, headers = buildCfHeaders(), referer = referer, timeout = 30_000L)
             } catch (e: Exception) {
                 Log.e(TAG, "Retry $attempt failed: ${e.message}")
                 throw e
@@ -634,5 +638,5 @@ suspend fun kmGet(
 
 fun initKMCFBypass(context: Context) {
     KMCFStore.init(context)
-    Log.d(TAG, "TMF CF bypass initialized (cursor-enabled, TTL=15h)")
+    Log.d(TAG, "NKM CF bypass initialized (cursor-enabled, TTL=15h)")
 }

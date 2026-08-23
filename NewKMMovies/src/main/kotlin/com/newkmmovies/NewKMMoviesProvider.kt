@@ -95,7 +95,7 @@ class NewKMMoviesProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val pageUrl = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
         val doc = try {
-            kmGet(pageUrl, headers = baseHeaders).document
+            kmCFGet(pageUrl, headers = baseHeaders, referer = "$mainUrl/").document
         } catch (e: Exception) {
             Log.d("NKM", "getMainPage: ${e.message}")
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
@@ -108,7 +108,7 @@ class NewKMMoviesProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val encoded = URLEncoder.encode(query, "UTF-8")
         val doc = try {
-            kmGet("$mainUrl/?s=$encoded", headers = baseHeaders).document
+            kmCFGet("$mainUrl/?s=$encoded", headers = baseHeaders, referer = "$mainUrl/").document
         } catch (e: Exception) {
             Log.d("NKM", "search: ${e.message}")
             return emptyList()
@@ -208,7 +208,7 @@ class NewKMMoviesProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val doc = try {
-            kmGet(url, headers = baseHeaders).document
+            kmCFGet(url, headers = baseHeaders, referer = "$mainUrl/").document
         } catch (e: Exception) {
             Log.d("NKM", "load: ${e.message}")
             return null
@@ -437,7 +437,11 @@ class NewKMMoviesProvider : MainAPI() {
                                     source = el.source,
                                     name = "${el.name}$epLabel $qName$audioLabel$sizeLabel".trim(),
                                     url = el.url,
-                                    type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                    type = when {
+                                        el.isM3u8 -> ExtractorLinkType.M3U8
+                                        el.url.contains(".mpd", ignoreCase = true) -> ExtractorLinkType.DASH
+                                        else -> el.type
+                                    },
                                 ) {
                                     this.referer = el.referer
                                     this.headers = el.headers
@@ -481,7 +485,11 @@ class NewKMMoviesProvider : MainAPI() {
                                 source = el.source,
                                 name = "${el.name}$epLabel $qName$audioLabel$sizeLabel".trim(),
                                 url = el.url,
-                                type = if (el.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                type = when {
+                                    el.isM3u8 -> ExtractorLinkType.M3U8
+                                    el.url.contains(".mpd", ignoreCase = true) -> ExtractorLinkType.DASH
+                                    else -> el.type
+                                },
                             ) {
                                 this.referer = el.referer
                                 this.headers = el.headers

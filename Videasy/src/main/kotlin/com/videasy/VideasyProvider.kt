@@ -1,11 +1,6 @@
 package com.videasy
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
-import android.webkit.CookieManager
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
@@ -16,19 +11,18 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.RequestBodyTypes
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.resume
 
 class VideasyProvider : MainAPI() {
     override var mainUrl = "https://player.videasy.to"
@@ -43,6 +37,7 @@ class VideasyProvider : MainAPI() {
 
     private val tmdbApi = "https://db.speedracelight.com/3"
     private val sourceApi = "https://api.speedracelight.com"
+    private val decryptApi = "https://enc-dec.app/api/dec-videasy"
     private val apiHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "Accept" to "application/json",
@@ -50,6 +45,11 @@ class VideasyProvider : MainAPI() {
         "Referer" to "https://player.videasy.to/",
     )
     private val imageBase = "https://image.tmdb.org/t/p"
+
+    private val servers = listOf(
+        "cdn", "vsrc", "m4uhd", "downloader2", "hdmovie",
+        "superflix", "lamovie", "myflixerzupcloud", "jett", "tejo", "neon2"
+    )
 
     override val mainPage = mainPageOf(
         "$tmdbApi/trending/movie/week" to "Trending Movies",
@@ -143,7 +143,8 @@ class VideasyProvider : MainAPI() {
                 val epNum = ep.episodeNumber ?: continue
                 val data = mapOf("type" to "tv", "tmdbId" to tmdbId, "title" to title,
                     "year" to details.firstAirDate?.substring(0, 4)?.toIntOrNull(),
-                    "imdbId" to imdbId, "season" to seasonNum, "episode" to epNum).toJson()
+                    "imdbId" to imdbId, "season" to seasonNum, "episode" to epNum,
+                    "totalSeasons" to (details.seasons?.count { (it.seasonNumber ?: 0) > 0 } ?: 1)).toJson()
                 episodes.add(newEpisode(data) {
                     this.name = ep.name ?: "S${seasonNum}E$epNum"
                     this.season = seasonNum
@@ -207,13 +208,18 @@ class VideasyProvider : MainAPI() {
         val imdbId = parsed["imdbId"] as? String
         val season = (parsed["season"] as? Number)?.toInt()
         val episode = (parsed["episode"] as? Number)?.toInt() ?: 1
+        val totalSeasons = (parsed["totalSeasons"] as? Number)?.toInt() ?: 1
 
+        var found = false
         when (type) {
-            "movie" -> resolveViaWebView("movie", tmdbId ?: return false, title, year, imdbId, null, null, callback)
-            "tv" -> resolveViaWebView("tv", tmdbId ?: return false, title, year, imdbId, season ?: 1, episode, callback)
-            "anime" -> resolveAnime(anilistId ?: return false, title, year, episode, callback)
+            "movie" -> found = resolveSources(tmdbId ?: return false, title, year, imdbId, null, null, null, subtitleCallback, callback)
+            "tv" -> found = resolveSources(tmdbId ?: return false, title, year, imdbId, season ?: 1, episode, totalSeasons, subtitleCallback, callback)
+            "anime" -> {
+                resolveAnime(anilistId ?: return false, title, year, episode, callback)
+                found = true
+            }
         }
-        return true
+        return found
     }
 
     private suspend fun resolveAnime(anilistId: Int, title: String, year: Int?, episode: Int, callback: (ExtractorLink) -> Unit) {
@@ -247,181 +253,109 @@ class VideasyProvider : MainAPI() {
         }
     }
 
-    private suspend fun resolveViaWebView(
-        mediaType: String, tmdbId: Int, title: String, year: Int?, imdbId: String?,
-        season: Int?, episode: Int?, callback: (ExtractorLink) -> Unit
-    ) {
-        val playerUrl = when (mediaType) {
-            "movie" -> "$mainUrl/movie/$tmdbId"
-            "tv" -> "$mainUrl/tv/$tmdbId/${season ?: 1}/${episode ?: 1}"
-            else -> return
-        }
+    private suspend fun resolveSources(
+        tmdbId: Int, title: String, year: Int?, imdbId: String?,
+        season: Int?, episode: Int?, totalSeasons: Int?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean = coroutineScope {
+        val encTitle = URLEncoder.encode(title, "UTF-8")
+        val semaphore = Semaphore(5)
+        val found = java.util.concurrent.atomic.AtomicBoolean(false)
 
-        Log.d("Videasy", "WebView: $playerUrl")
-
-        val ctx = context ?: return
-        val interceptedUrls = mutableListOf<String>()
-
-        withContext(Dispatchers.Main) {
-            suspendCancellableCoroutine<Unit> { cont ->
-                val done = AtomicBoolean(false)
-                var webView: WebView? = null
-
-                fun finish() {
-                    if (done.compareAndSet(false, true)) {
-                        try { webView?.destroy() } catch (_: Exception) {}
-                        cont.resume(Unit)
-                    }
-                }
-
-                try {
-                    webView = WebView(ctx).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-                        CookieManager.getInstance().setAcceptCookie(true)
-
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?) = false
-
-                            override fun onPageFinished(view: WebView?, url: String?) {
-                                super.onPageFinished(view, url)
-                                Handler(Looper.getMainLooper()).postDelayed({
-                                    if (done.get()) return@postDelayed
-                                    val js = """
-                                        (function() {
-                                            try {
-                                                var videos = document.querySelectorAll('video');
-                                                videos.forEach(function(v) { v.play(); });
-                                                var playBtn = document.querySelector('button[class*="play"], [class*="Play"], .play-btn, [onclick*="play"]');
-                                                if (playBtn) playBtn.click();
-                                            } catch(e) {}
-                                        })();
-                                    """.trimIndent()
-                                    view?.evaluateJavascript(js) {}
-                                }, 2000)
+        servers.map { server ->
+            async {
+                semaphore.withPermit {
+                    try {
+                        val sources = fetchServerSources(server, encTitle, tmdbId, year, imdbId, season, episode, totalSeasons)
+                        if (sources != null) {
+                            val label = server.replaceFirstChar { it.uppercase() }
+                            for (sub in sources.subtitles ?: emptyList()) {
+                                val url = sub.url ?: continue
+                                val lang = sub.language ?: continue
+                                subtitleCallback.invoke(newSubtitleFile(lang, url) {
+                                    this.headers = mapOf("Referer" to "https://player.videasy.to/")
+                                })
                             }
-                        }
-                    }
-
-                    webView?.webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?) = false
-
-                        override fun onLoadResource(view: WebView?, url: String?) {
-                            super.onLoadResource(view, url)
-                            if (url != null && !done.get()) {
-                                if (url.contains(".m3u8") || url.contains(".mpd") ||
-                                    url.contains("googleusercontent.com") ||
-                                    url.contains("speedracelight.com") && url.contains("sources")) {
-                                    if (url.contains(".m3u8") || url.contains(".mpd") ||
-                                        url.contains("googleusercontent.com")) {
-                                        synchronized(interceptedUrls) {
-                                            if (!interceptedUrls.contains(url)) {
-                                                interceptedUrls.add(url)
-                                                Log.d("Videasy", "Intercepted: ${url.take(80)}")
-                                            }
-                                        }
-                                    }
+                            for (src in sources.sources ?: emptyList()) {
+                                val url = src.url ?: continue
+                                val quality = src.quality ?: "Unknown"
+                                val linkType = when {
+                                    url.contains(".m3u8", true) || src.type == "hls" -> ExtractorLinkType.M3U8
+                                    url.contains(".mpd", true) || src.type == "dash" -> ExtractorLinkType.DASH
+                                    else -> ExtractorLinkType.VIDEO
                                 }
-                            }
-                        }
-
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            super.onPageFinished(view, url)
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                if (done.get()) return@postDelayed
-                                view?.evaluateJavascript("""
-                                    (function() {
-                                        try {
-                                            var videos = document.querySelectorAll('video source, video');
-                                            for (var i = 0; i < videos.length; i++) {
-                                                var src = videos[i].src || videos[i].getAttribute('src');
-                                                if (src) {
-                                                    window.__videasy_src = window.__videasy_src || [];
-                                                    window.__videasy_src.push(src);
-                                                }
-                                            }
-                                            var iframes = document.querySelectorAll('iframe');
-                                            for (var i = 0; i < iframes.length; i++) {
-                                                var src = iframes[i].src;
-                                                if (src && (src.includes('m3u8') || src.includes('mpd'))) {
-                                                    window.__videasy_src = window.__videasy_src || [];
-                                                    window.__videasy_src.push(src);
-                                                }
-                                            }
-                                        } catch(e) {}
-                                    })();
-                                """.trimIndent()) { result ->
-                                    if (result != null && result != "null" && result != "[]") {
-                                        Log.d("Videasy", "JS result: ${result.take(100)}")
+                                callback.invoke(
+                                    newExtractorLink("Videasy", "Videasy [$label] $quality", url, linkType) {
+                                        this.quality = qualityToInt(quality)
+                                        this.headers = mapOf("Referer" to "https://player.videasy.to/")
                                     }
-                                }
-                            }, 3000)
-                        }
-                    }
-
-                    webView?.loadUrl(playerUrl)
-
-                    // Poll for intercepted URLs
-                    val handler = Handler(Looper.getMainLooper())
-                    val pollRunnable = object : Runnable {
-                        var pollCount = 0
-                        override fun run() {
-                            if (done.get() || pollCount >= 20) {
-                                finish()
-                                return
+                                )
+                                found.set(true)
                             }
-                            pollCount++
-                            webView?.evaluateJavascript(
-                                "(window.__videasy_src || []).join('\\n')"
-                            ) { result ->
-                                if (result != null && result != "null" && result != "\"\"" && result.length > 5) {
-                                    val urls = result.removeSurrounding("\"").split("\\n")
-                                    for (u in urls) {
-                                        if (u.isNotBlank() && u.startsWith("http")) {
-                                            synchronized(interceptedUrls) {
-                                                if (!interceptedUrls.contains(u)) {
-                                                    interceptedUrls.add(u)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if (!done.get()) handler.postDelayed(this, 1000)
                         }
+                    } catch (e: Exception) {
+                        Log.d("Videasy", "$server: ${e.message}")
                     }
-                    handler.postDelayed(pollRunnable, 3000)
-
-                    Handler(Looper.getMainLooper()).postDelayed({ finish() }, 25000)
-                } catch (e: Exception) {
-                    Log.d("Videasy", "WebView error: ${e.message}")
-                    finish()
                 }
             }
-        }
+        }.awaitAll()
+        found.get()
+    }
 
-        Log.d("Videasy", "Intercepted ${interceptedUrls.size} URLs")
-        for (url in interceptedUrls) {
-            try {
-                if (url.contains(".m3u8", true)) {
-                    generateM3u8("Videasy", url, mainUrl).forEach(callback)
-                } else if (url.contains(".mpd", true)) {
-                    callback(newExtractorLink("Videasy", "Videasy - $title", url, ExtractorLinkType.DASH) {
-                        this.quality = Qualities.Unknown.value
-                        this.headers = mapOf("Referer" to mainUrl)
-                    })
-                } else if (url.contains("googleusercontent.com") || url.contains(".mp4", true)) {
-                    callback(newExtractorLink("Videasy", "Videasy - $title", url, ExtractorLinkType.VIDEO) {
-                        this.quality = Qualities.Unknown.value
-                        this.headers = mapOf("Referer" to mainUrl)
-                    })
+    private suspend fun fetchServerSources(
+        server: String, encTitle: String, tmdbId: Int, year: Int?, imdbId: String?,
+        season: Int?, episode: Int?, totalSeasons: Int?
+    ): DecVideasyResult? {
+        var attempt = 0
+        while (attempt < 2) {
+            attempt++
+            val seed = try {
+                parseJson<SeedResponse>(
+                    app.get("$sourceApi/seed?mediaId=$tmdbId", headers = apiHeaders, timeout = 10_000L).text
+                ).seed ?: return null
+            } catch (e: Exception) { return null }
+
+            val url = buildString {
+                append("$sourceApi/$server/sources-with-title?title=$encTitle")
+                append(if (season == null) "&mediaType=Movie" else "&mediaType=TV")
+                if (year != null) append("&year=$year")
+                if (season != null) {
+                    append("&seasonId=$season&episodeId=$episode")
+                    if (totalSeasons != null) append("&totalSeasons=$totalSeasons")
                 }
+                append("&tmdbId=$tmdbId")
+                if (!imdbId.isNullOrBlank()) append("&imdbId=$imdbId")
+                append("&enc=2&seed=")
+                append(URLEncoder.encode(seed, "UTF-8"))
+            }
+
+            val encrypted = try {
+                app.get(url, headers = apiHeaders, timeout = 15_000L).text
+            } catch (e: Exception) { continue }
+
+            if (encrypted.contains("\"error\"") || encrypted.length < 20) continue
+
+            return try {
+                val body = mapOf("text" to encrypted, "id" to tmdbId.toString(), "seed" to seed)
+                val response = app.post(decryptApi, json = body, timeout = 20_000L)
+                if (!response.isSuccessful) continue
+                parseJson<DecVideasyResponse>(response.text).result
             } catch (e: Exception) {
-                Log.d("Videasy", "emit error: ${e.message}")
+                Log.d("Videasy", "decrypt $server: ${e.message}")
+                null
             }
         }
+        return null
+    }
+
+    private fun qualityToInt(quality: String): Int = when {
+        quality.contains("2160", true) || quality.contains("4k", true) -> 2160
+        quality.contains("1080", true) -> 1080
+        quality.contains("720", true) -> 720
+        quality.contains("480", true) -> 480
+        quality.contains("360", true) -> 360
+        else -> Qualities.Unknown.value
     }
 }
 
@@ -434,6 +368,23 @@ data class VideasySource(
     @JsonProperty("url") val url: String? = null,
     @JsonProperty("quality") val quality: String? = null,
     @JsonProperty("type") val type: String? = null
+)
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class SeedResponse(
+    @JsonProperty("seed") val seed: String? = null,
+    @JsonProperty("ttlMs") val ttlMs: Long? = null
+)
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class DecVideasyResponse(@JsonProperty("result") val result: DecVideasyResult? = null)
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class DecVideasyResult(
+    @JsonProperty("sources") val sources: List<VideasySource>? = null,
+    @JsonProperty("subtitles") val subtitles: List<DecSubtitle>? = null
+)
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class DecSubtitle(
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("language") val language: String? = null
 )
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class TMDBResponse(@JsonProperty("results") val results: List<TMDBItem>? = null)
