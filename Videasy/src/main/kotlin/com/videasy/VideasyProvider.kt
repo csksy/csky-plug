@@ -315,15 +315,20 @@ class VideasyProvider : MainAPI() {
         season: Int?, episode: Int?, totalSeasons: Int?
     ): DecVideasyResult? {
         // the api ties the seed to the connection it was issued on, so the seed
-        // and the sources call must ride the same client
-        for (attempt in 1..2) {
+        // and the sources call must ride the same client; a 401 means the pair
+        // landed on different connections, just try again
+        var lastCode = 0
+        for (attempt in 1..3) {
             val client = OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
                 .build()
             try {
                 val seedText = client.newCall(okRequest("$sourceApi/seed?mediaId=$tmdbId")).execute().use { resp ->
-                    if (!resp.isSuccessful) return null
+                    if (!resp.isSuccessful) {
+                        lastCode = resp.code
+                        return null
+                    }
                     resp.body?.string() ?: return null
                 }
                 val seed = try {
@@ -344,28 +349,36 @@ class VideasyProvider : MainAPI() {
                     append(URLEncoder.encode(seed, "UTF-8").replace("+", "%20"))
                 }
 
-                var body: String? = null
+                var encrypted: String? = null
                 client.newCall(okRequest(url)).execute().use { resp ->
                     when {
-                        resp.code == 401 -> body = null
-                        !resp.isSuccessful -> return null
-                        else -> body = resp.body?.string() ?: ""
+                        resp.code == 401 -> encrypted = null
+                        !resp.isSuccessful -> {
+                            lastCode = resp.code
+                            return null
+                        }
+                        else -> encrypted = resp.body?.string() ?: ""
                     }
                 }
-                val encrypted = body ?: continue
-                if (encrypted.contains("\"error\"") || encrypted.length < 20) return null
+                val body = encrypted ?: continue
+                if (body.contains("\"error\"") || body.length < 20) return null
 
-                val decrypted = VideasyCrypto.decrypt(encrypted, seed, tmdbId) ?: continue
+                val decrypted = VideasyCrypto.decrypt(body, seed, tmdbId)
+                    ?: run {
+                        Log.d("Videasy", "$server: decrypt failed")
+                        return null
+                    }
                 return try {
-                    parseJson<DecVideasyResponse>(decrypted).result
+                    parseJson<DecVideasyResult>(decrypted)
                 } catch (e: Exception) {
-                    Log.d("Videasy", "parse $server: ${e.message}")
+                    Log.d("Videasy", "$server: parse ${e.message}")
                     null
                 }
             } catch (e: Exception) {
                 Log.d("Videasy", "$server: ${e.message}")
             }
         }
+        if (lastCode != 0) Log.d("Videasy", "$server: http $lastCode")
         return null
     }
 
@@ -394,8 +407,6 @@ data class SeedResponse(
     @JsonProperty("seed") val seed: String? = null,
     @JsonProperty("ttlMs") val ttlMs: Long? = null
 )
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class DecVideasyResponse(@JsonProperty("result") val result: DecVideasyResult? = null)
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class DecVideasyResult(
     @JsonProperty("sources") val sources: List<VideasySource>? = null,
