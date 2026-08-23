@@ -21,8 +21,11 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 class VideasyProvider : MainAPI() {
     override var mainUrl = "https://player.videasy.to"
@@ -37,7 +40,6 @@ class VideasyProvider : MainAPI() {
 
     private val tmdbApi = "https://db.speedracelight.com/3"
     private val sourceApi = "https://api.speedracelight.com"
-    private val decryptApi = "https://enc-dec.app/api/dec-videasy"
     private val apiHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "Accept" to "application/json",
@@ -46,10 +48,7 @@ class VideasyProvider : MainAPI() {
     )
     private val imageBase = "https://image.tmdb.org/t/p"
 
-    private val servers = listOf(
-        "cdn", "vsrc", "m4uhd", "downloader2", "hdmovie",
-        "superflix", "lamovie", "myflixerzupcloud", "jett", "tejo", "neon2"
-    )
+    private val servers = listOf("cdn", "m4uhd", "hdmovie", "superflix", "lamovie")
 
     override val mainPage = mainPageOf(
         "$tmdbApi/trending/movie/week" to "Trending Movies",
@@ -259,7 +258,7 @@ class VideasyProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        val encTitle = URLEncoder.encode(title, "UTF-8")
+        val encTitle = URLEncoder.encode(title, "UTF-8").replace("+", "%20")
         val semaphore = Semaphore(5)
         val found = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -303,47 +302,68 @@ class VideasyProvider : MainAPI() {
         found.get()
     }
 
-    private suspend fun fetchServerSources(
+    private fun okRequest(url: String): Request = Request.Builder()
+        .url(url)
+        .header("User-Agent", apiHeaders["User-Agent"] ?: "Mozilla/5.0")
+        .header("Accept", "application/json")
+        .header("Origin", "https://player.videasy.to")
+        .header("Referer", "https://player.videasy.to/")
+        .build()
+
+    private fun fetchServerSources(
         server: String, encTitle: String, tmdbId: Int, year: Int?, imdbId: String?,
         season: Int?, episode: Int?, totalSeasons: Int?
     ): DecVideasyResult? {
-        var attempt = 0
-        while (attempt < 2) {
-            attempt++
-            val seed = try {
-                parseJson<SeedResponse>(
-                    app.get("$sourceApi/seed?mediaId=$tmdbId", headers = apiHeaders, timeout = 10_000L).text
-                ).seed ?: return null
-            } catch (e: Exception) { return null }
-
-            val url = buildString {
-                append("$sourceApi/$server/sources-with-title?title=$encTitle")
-                append(if (season == null) "&mediaType=Movie" else "&mediaType=TV")
-                if (year != null) append("&year=$year")
-                if (season != null) {
-                    append("&seasonId=$season&episodeId=$episode")
-                    if (totalSeasons != null) append("&totalSeasons=$totalSeasons")
+        // the api ties the seed to the connection it was issued on, so the seed
+        // and the sources call must ride the same client
+        for (attempt in 1..2) {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .build()
+            try {
+                val seedText = client.newCall(okRequest("$sourceApi/seed?mediaId=$tmdbId")).execute().use { resp ->
+                    if (!resp.isSuccessful) return null
+                    resp.body?.string() ?: return null
                 }
-                append("&tmdbId=$tmdbId")
-                if (!imdbId.isNullOrBlank()) append("&imdbId=$imdbId")
-                append("&enc=2&seed=")
-                append(URLEncoder.encode(seed, "UTF-8"))
-            }
+                val seed = try {
+                    parseJson<SeedResponse>(seedText).seed
+                } catch (e: Exception) { null } ?: return null
 
-            val encrypted = try {
-                app.get(url, headers = apiHeaders, timeout = 15_000L).text
-            } catch (e: Exception) { continue }
+                val url = buildString {
+                    append("$sourceApi/$server/sources-with-title?title=$encTitle")
+                    append(if (season == null) "&mediaType=Movie" else "&mediaType=TV")
+                    if (year != null) append("&year=$year")
+                    if (season != null) {
+                        append("&seasonId=$season&episodeId=$episode")
+                        if (totalSeasons != null) append("&totalSeasons=$totalSeasons")
+                    }
+                    append("&tmdbId=$tmdbId")
+                    if (!imdbId.isNullOrBlank()) append("&imdbId=$imdbId")
+                    append("&enc=2&seed=")
+                    append(URLEncoder.encode(seed, "UTF-8").replace("+", "%20"))
+                }
 
-            if (encrypted.contains("\"error\"") || encrypted.length < 20) continue
+                var body: String? = null
+                client.newCall(okRequest(url)).execute().use { resp ->
+                    when {
+                        resp.code == 401 -> body = null
+                        !resp.isSuccessful -> return null
+                        else -> body = resp.body?.string() ?: ""
+                    }
+                }
+                val encrypted = body ?: continue
+                if (encrypted.contains("\"error\"") || encrypted.length < 20) return null
 
-            return try {
-                val body = mapOf("text" to encrypted, "id" to tmdbId.toString(), "seed" to seed)
-                val response = app.post(decryptApi, json = body, timeout = 20_000L)
-                if (!response.isSuccessful) continue
-                parseJson<DecVideasyResponse>(response.text).result
+                val decrypted = VideasyCrypto.decrypt(encrypted, seed, tmdbId) ?: continue
+                return try {
+                    parseJson<DecVideasyResponse>(decrypted).result
+                } catch (e: Exception) {
+                    Log.d("Videasy", "parse $server: ${e.message}")
+                    null
+                }
             } catch (e: Exception) {
-                Log.d("Videasy", "decrypt $server: ${e.message}")
-                null
+                Log.d("Videasy", "$server: ${e.message}")
             }
         }
         return null
@@ -462,3 +482,75 @@ data class AniListMedia(
 data class AniListTitle(@JsonProperty("english") val english: String? = null, @JsonProperty("romaji") val romaji: String? = null)
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniListCoverImage(@JsonProperty("extraLarge") val extraLarge: String? = null, @JsonProperty("large") val large: String? = null)
+
+private object VideasyCrypto {
+    private fun w32(x: Int): Int {
+        var e = x
+        e = e xor (e ushr 16)
+        e *= -2048144789
+        e = e xor (e ushr 13)
+        e *= -1028477387
+        e = e xor (e ushr 16)
+        return e
+    }
+
+    private fun rotl32(e: Int, t: Int): Int {
+        val s = t and 31
+        if (s == 0) return e
+        return (e shl s) or (e ushr (32 - s))
+    }
+
+    private fun fnv1a(s: String): Int {
+        var h = -2128831035
+        for (c in s) h = (h xor c.code) * 16777619
+        return w32(h)
+    }
+
+    fun decrypt(text: String, seed: String, mediaId: Int): String? {
+        return try {
+            var b = text.replace("-", "+").replace("_", "/")
+            b += "=".repeat((4 - b.length % 4) % 4)
+            val payload = java.util.Base64.getDecoder().decode(b)
+            if (payload.size < 5) return null
+
+            val S = IntArray(61)
+            val present = BooleanArray(61)
+            var a = w32(fnv1a(seed) xor w32(mediaId xor -1640531527))
+            for (i in 0 until 8) {
+                val t = ((a.toLong() and 0xFFFFFFFFL) % 61L).toInt()
+                a = rotl32(a + -1640531527, 7 + (7 and i))
+                S[t] = a xor w32(a)
+                present[t] = true
+                a = w32(a + t)
+            }
+            var acc = w32(-1515870811 xor a)
+
+            val size = payload.size
+            val keystream = ByteArray(size)
+            var idx = 0
+            var counter = 0
+            while (idx < size) {
+                val n = ((acc.toLong() and 0xFFFFFFFFL) % 61L).toInt()
+                val d = if (present[n]) S[n] else 0
+                val x = d xor (-1640531527 * (counter + 1))
+                var l = if (present[n]) (acc xor x) or (acc and x) else acc xor x
+                l = rotl32(l + acc, 31 and n) xor rotl32(acc, 31 and (n * 7))
+                acc = w32(l + -1640531527)
+                S[n] = acc
+                present[n] = true
+                counter++
+                val t = acc
+                keystream[idx] = (t and 0xFF).toByte(); idx++
+                if (idx < size) { keystream[idx] = ((t ushr 8) and 0xFF).toByte(); idx++ }
+                if (idx < size) { keystream[idx] = ((t ushr 16) and 0xFF).toByte(); idx++ }
+                if (idx < size) { keystream[idx] = ((t ushr 24) and 0xFF).toByte(); idx++ }
+            }
+            for (i in 0 until size) payload[i] = (payload[i].toInt() xor keystream[i].toInt()).toByte()
+            if (payload[0] != 109.toByte() || payload[1] != 118.toByte() ||
+                payload[2] != 109.toByte() || payload[3] != 49.toByte()) return null
+            String(payload, 4, size - 4, Charsets.UTF_8)
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
