@@ -243,33 +243,19 @@ class TimStreamsProvider : MainAPI() {
 
             try {
                 when {
-                    // ============================================================
-                    //  cdx-XXXXX.website/embed/<channel>  (JW Player + obfuscated
-                    //  SIGNED_URL pattern — the current primary TimStreams host)
-                    //  The embed page contains an obfuscated script that decodes
-                    //  to: var SIGNED_URL = "https://hiveatick.casadenoval.uk/.../channel.m3u8"
-                    //  The XOR key, subtraction offset, and variable names are
-                    //  randomized per request, so we extract them dynamically.
-                    //  The signed URL contains a hash + expiry timestamp and must
-                    //  be fetched fresh for each playback attempt.
-                    //  Requires Referer+Origin = https://cdx-XXXXX.website/
-                    // ============================================================
                     Regex("cdx-\\d+\\.website").containsMatchIn(streamUrl) ||
                         (streamUrl.contains(".website/embed/") && streamUrl.contains("cdx-")) -> {
                         try {
-                            val embedHtml = app.get(
-                                streamUrl,
-                                referer = "$mainUrl/",
-                                headers = mapOf(
-                                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
-                                )
-                            ).text
+                            val resolver = WebViewResolver(
+                                interceptUrl = Regex("""\.m3u8"""),
+                                additionalUrls = listOf(Regex("""\.m3u8""")),
+                                script = """document.querySelector('video,[role="button"],.jw-icon-display,button')?.click();""",
+                                useOkhttp = false,
+                                timeout = 30_000L
+                            )
+                            val resolvedUrl = app.get(streamUrl, referer = "$mainUrl/", interceptor = resolver).url
 
-                            val signedUrl = decodeCdxSignedUrl(embedHtml)
-
-                            if (signedUrl != null && signedUrl.contains(".m3u8")) {
-                                // Extract the cdx host (e.g. https://cdx-08192.website)
-                                // for Referer/Origin headers.
+                            if (resolvedUrl.contains(".m3u8", ignoreCase = true)) {
                                 val cdxOrigin = try {
                                     val u = java.net.URL(streamUrl)
                                     "${u.protocol}://${u.host}"
@@ -287,7 +273,7 @@ class TimStreamsProvider : MainAPI() {
                                     newExtractorLink(
                                         source = "$name - $streamName",
                                         name = "$name - $streamName",
-                                        url = signedUrl,
+                                        url = resolvedUrl,
                                         type = ExtractorLinkType.M3U8
                                     ) {
                                         this.quality = Qualities.Unknown.value
@@ -296,9 +282,6 @@ class TimStreamsProvider : MainAPI() {
                                 )
                                 found = true
                             } else {
-                                Log.e(TAG, "loadLinks: '$streamName' cdx: no SIGNED_URL found in embed page")
-                                // Fallback to loadExtractor in case CloudStream adds
-                                // a native extractor for this domain later.
                                 if (loadExtractor(streamUrl, "$mainUrl/", subtitleCallback, callback)) found = true
                             }
                         } catch (e: Exception) {
@@ -481,46 +464,20 @@ class TimStreamsProvider : MainAPI() {
         } catch (_: Exception) { "" }
     }
 
-    /**
-     * Decodes the obfuscated SIGNED_URL from a cdx-XXXXX.website embed page.
-     *
-     * The embed page contains an inline script of the form:
-     *   (function(){var _NAME=[N,N,N,...];_NAME2=X,_NAME3=Y,_NAME4="";...window["ev"+"al"](_DECODED);})();
-     *
-     * Where:
-     *   - _NAME  is the obfuscated byte array (variable name randomized per request)
-     *   - _NAME2 is the XOR key (randomized name + value per request)
-     *   - _NAME3 is the subtraction offset (randomized name + value per request)
-     *
-     * The decode formula is:
-     *   String.fromCharCode(((_NAME[i] ^ _NAME2) - _NAME3 + 256) % 256)
-     *
-     * The decoded string is JavaScript that contains:
-     *   var SIGNED_URL = "https://hiveatick.casadenoval.uk/main/secure/<hash>/<timestamp>/<channel>.m3u8";
-     *
-     * This function extracts that SIGNED_URL. Returns null if the pattern is
-     * not found (e.g. the embed page structure changed).
-     */
+    // The cdx embed obfuscates the signed m3u8 URL with a XOR + subtraction
+    // scheme where variable names and key values change per request.
     private fun decodeCdxSignedUrl(html: String): String? {
         return try {
-            // Step 1: find the obfuscated array literal.
-            //   var _NAME=[N,N,N,...];
-            // The array name (_NAME) is randomized per request.
             val arrayMatch = Regex("""var\s+(_\w+)\s*=\s*\[([\d,]+)\]""").find(html) ?: return null
             val byteArray = arrayMatch.groupValues[2].split(",").mapNotNull { it.trim().toIntOrNull() }
             if (byteArray.isEmpty()) return null
 
-            // Step 2: find the two numeric operands that follow the array.
-            //   _NAME2=N,_NAME3=N,_NAME4=""
-            // The first two integers are the XOR key and the subtraction offset
-            // (in that order). Names are randomized per request.
             val rest = html.substring(arrayMatch.range.last + 1, minOf(arrayMatch.range.last + 600, html.length))
             val nums = Regex("""(_\w+)\s*=\s*(\d+)\s*[,;]""").findAll(rest).toList()
             if (nums.size < 2) return null
             val xorKey = nums[0].groupValues[2].toInt()
             val subOffset = nums[1].groupValues[2].toInt()
 
-            // Step 3: decode the byte array.
             val decoded = StringBuilder()
             for (b in byteArray) {
                 val c = (((b xor xorKey) - subOffset) + 256) % 256
@@ -528,7 +485,6 @@ class TimStreamsProvider : MainAPI() {
             }
             val decodedStr = decoded.toString()
 
-            // Step 4: extract the SIGNED_URL from the decoded JavaScript.
             val signedUrlMatch = Regex("""var\s+SIGNED_URL\s*=\s*"([^"]+)"""").find(decodedStr)
                 ?: return null
             signedUrlMatch.groupValues[1].takeIf { it.startsWith("http") }
