@@ -633,7 +633,6 @@ class StreamedPkProvider : MainAPI() {
                             ): WebResourceResponse? {
                                 val reqUrl = request?.url?.toString() ?: return null
 
-                                // Capture m3u8/master.txt stream URLs
                                 if ((reqUrl.contains(".m3u8", ignoreCase = true) || reqUrl.contains("master.txt", ignoreCase = true)) && !captured.get()) {
                                     if (captured.compareAndSet(false, true)) {
                                         Handler(Looper.getMainLooper()).post {
@@ -646,42 +645,7 @@ class StreamedPkProvider : MainAPI() {
                                     return null
                                 }
 
-                                // PROXY ALL other requests through the DoH-enabled dnsClient.
-                                // This bypasses the system DNS entirely — WebView's own HTTP
-                                // stack would use the ISP's DNS, which may be hijacked/blocked
-                                // for embed.st in some regions. By fetching via dnsClient
-                                // (which resolves via Cloudflare 1.1.1.1 DoH), every sub-resource
-                                // (HTML, JS, CSS, images) goes through the correct DNS path.
-                                try {
-                                    val reqBuilder = Request.Builder().url(reqUrl)
-                                    // Forward request headers (except host, which OkHttp sets)
-                                    request?.requestHeaders?.forEach { (k, v) ->
-                                        if (!k.equals("host", ignoreCase = true)) {
-                                            reqBuilder.header(k, v)
-                                        }
-                                    }
-                                    // Only proxy GET requests (POST body handling in WebView
-                                    // intercept is complex; fall back to default for POST)
-                                    val method = request?.method ?: "GET"
-                                    if (!method.equals("GET", ignoreCase = true)) {
-                                        return null
-                                    }
-                                    val response = dnsClient.newCall(reqBuilder.build()).execute()
-                                    val contentType = response.header("Content-Type", "text/html; charset=utf-8") ?: "text/html; charset=utf-8"
-                                    val parts = contentType.split(";")
-                                    val mimeType = parts[0].trim().ifBlank { "text/html" }
-                                    val encoding = parts.firstOrNull { it.contains("charset=") }
-                                        ?.substringAfter("charset=")?.trim()?.ifBlank { "UTF-8" } ?: "UTF-8"
-                                    val stream = response.body?.byteStream()
-                                    val statusCode = response.code
-                                    val reason = response.message
-                                    val respHeaders = mutableMapOf<String, String>()
-                                    response.headers.forEach { (k, v) -> respHeaders[k] = v }
-                                    return WebResourceResponse(mimeType, encoding, statusCode, reason, respHeaders, stream)
-                                } catch (e: Exception) {
-                                    // Fall back to WebView's default handling
-                                    return null
-                                }
+                                return null
                             }
                         }
                     }
