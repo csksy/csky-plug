@@ -1,6 +1,7 @@
 package com.laddu100
 
 import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
@@ -15,10 +16,12 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.Pair
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Response
 
 class LIVETVLiveEventsProvider(
-    private val customName: String = "LIVE TV Live Events",
+    private val customName: String = "⚡LIVE TV Live Events",
     private val customCatLink: String? = null
 ) : MainAPI() {
 
@@ -54,9 +57,9 @@ class LIVETVLiveEventsProvider(
             val start = info.startTime?.let { fmt.parse(it)?.time }
             val end = info.endTime?.let { fmt.parse(it)?.time }
             when {
-                end != null && now >= end -> "\u2705"
-                start != null && now >= start -> "\uD83D\uDD34"
-                start != null && now < start -> "\uD83D\uDD51"
+                end != null && now >= end -> "✅"
+                start != null && now >= start -> "🔴"
+                start != null && now < start -> "🔜"
                 else -> ""
             }
         } catch (_: Exception) {
@@ -137,24 +140,26 @@ class LIVETVLiveEventsProvider(
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        Log.d("LIVETV", "getMainPage: name=$name customCatLink=$customCatLink")
         val events = if (customCatLink != null) {
             LIVETVProviderManager.fetchCustomEvents(customCatLink)
         } else {
             LIVETVProviderManager.fetchLiveEvents()
         }
+        Log.d("LIVETV", "getMainPage: $name events=${events.size}")
         val grouped = events.groupBy { it.eventInfo?.eventCat ?: it.cat ?: "Other" }
 
         val pages = grouped
             .map { (category, catEvents) ->
                 val icon = when (category.lowercase()) {
-                    "cricket" -> "\uD83C\uDFCF"
-                    "football" -> "\u26BD"
-                    "basketball" -> "\uD83C\uDFC0"
-                    "ice hockey" -> "\uD83C\uDFD2"
-                    "boxing" -> "\uD83E\uDD4A"
-                    "motorsport" -> "\uD83C\uDFCE"
-                    "tennis" -> "\uD83C\uDFBE"
-                    else -> "\uD83D\uDCFA"
+                    "cricket" -> "🏏"
+                    "football" -> "⚽"
+                    "basketball" -> "🏀"
+                    "ice hockey" -> "🏒"
+                    "boxing" -> "🥊"
+                    "motorsport" -> "🏎️"
+                    "tennis" -> "🎾"
+                    else -> "📺"
                 }
                 val items = catEvents
                     .sortedByDescending { isEventLive(it) }
@@ -229,19 +234,19 @@ class LIVETVLiveEventsProvider(
         val info = data.eventInfo
         val plot = buildString {
             info?.let { i ->
-                i.eventType?.let { append("\uD83C\uDFC6 $it\n") }
-                i.eventName?.let { append("\uD83C\uDFAF $it\n") }
+                i.eventType?.let { append("📌 $it\n") }
+                i.eventName?.let { append("🏆 $it\n") }
                 i.startTime?.let {
                     try {
                         val df = SimpleDateFormat("yyyy/MM/dd HH:mm:ss Z", Locale.US)
                         val disp = SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.US)
-                        df.parse(it)?.let { d -> append("\uD83D\uDD52 ${disp.format(d)}\n") }
+                        df.parse(it)?.let { d -> append("🕐 ${disp.format(d)}\n") }
                     } catch (_: Exception) {
-                        append("\uD83D\uDD52 $it\n")
+                        append("🕐 $it\n")
                     }
                 }
             }
-            append("\n\uD83D\uDCE1 Available Servers: ${data.formats.size}")
+            append("\n📡 Available Servers: ${data.formats.size}")
         }
         return newLiveStreamLoadResponse(data.title, url, url) {
             this.posterUrl = data.poster
@@ -314,19 +319,20 @@ class LIVETVLiveEventsProvider(
                     }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("LIVETV", "stream: ${e.message}")
             }
         }
         return true
     }
 
     private fun parseStreamLink(link: String): Pair<String, Map<String, String>> {
-        val headers = linkedMapOf<String, String>()
         if (!link.contains("|")) {
-            return Pair(link, headers)
+            val url = link.replace("%2F", "/")
+            return Pair(url, emptyMap())
         }
         val parts = link.split("|", limit = 2)
-        val url = parts[0]
+        var url = parts[0].trim().replace("%2F", "/")
+        val headers = linkedMapOf<String, String>()
         if (parts.size > 1) {
             val headerPart = parts[1]
             headerPart.split("&").forEach { headerPair ->
@@ -352,5 +358,24 @@ class LIVETVLiveEventsProvider(
         val bytes = hex.replace("-", "").chunked(2)
             .map { it.toInt(16).toByte() }.toByteArray()
         return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+    }
+
+    @Suppress("ObjectLiteralToLambda")
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                var request = chain.request()
+                val fixedUrl = request.url.toString()
+                    .replace(Regex("(?i)%2f"), "/")
+                request = request.newBuilder()
+                    .url(fixedUrl)
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (Linux; Android 10; Pixel 3 XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
+                    )
+                    .build()
+                return chain.proceed(request)
+            }
+        }
     }
 }

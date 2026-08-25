@@ -130,9 +130,10 @@ object LIVETVProviderManager {
     }
 
     private suspend fun getBaseUrl(): String {
-        cachedBaseUrl?.let { return it }
+        cachedBaseUrl?.let { Log.d("LIVETV", "getBaseUrl: cached=$it"); return it }
 
         val firebaseUrl = LIVETVFirebaseFetcher.getBaseApiUrl()
+        Log.d("LIVETV", "getBaseUrl: firebase=$firebaseUrl")
         if (!firebaseUrl.isNullOrBlank()) {
             cachedBaseUrl = firebaseUrl
             return firebaseUrl
@@ -146,6 +147,7 @@ object LIVETVProviderManager {
                     .head()
                     .build()
                 val resp = client.newCall(req).execute()
+                Log.d("LIVETV", "getBaseUrl: HEAD $url -> ${resp.code}")
                 if (resp.code < 500) {
                     cachedBaseUrl = url
                     return url
@@ -155,6 +157,7 @@ object LIVETVProviderManager {
         }
 
         cachedBaseUrl = DEFAULT_BASE_URLS.first()
+        Log.d("LIVETV", "getBaseUrl: fallback to ${cachedBaseUrl!!}")
         return cachedBaseUrl!!
     }
 
@@ -169,13 +172,14 @@ object LIVETVProviderManager {
             val response = client.newCall(request).execute()
             if (response.isSuccessful) {
                 val body = response.body.string()
+                Log.d("LIVETV", "fetchDecrypted: $url bodyLen=${body.length}")
                 if (body.isNotBlank()) LIVETVCryptoUtils.decryptLIVETV(body.trim()) else null
             } else {
-                Log.d("LIVETV", "HTTP ${response.code} fetching $url")
+                Log.d("LIVETV", "fetchDecrypted: HTTP ${response.code} for $url")
                 null
             }
         } catch (e: Exception) {
-            Log.d("LIVETV", "Exception fetching $url - ${e.message}")
+            Log.d("LIVETV", "fetchDecrypted: exception for $url - ${e.message}")
             null
         }
     }
@@ -183,8 +187,10 @@ object LIVETVProviderManager {
     suspend fun fetchProviders(): List<Map<String, Any>> = withContext(Dispatchers.IO) {
         try {
             val decrypted = fetchDecrypted("categories.txt")
+            Log.d("LIVETV", "fetchProviders: decryptedLen=${decrypted?.length}")
             if (!decrypted.isNullOrBlank()) {
                 val wrappers = parseJson<List<LIVETVCategoryWrapper>>(decrypted)
+                Log.d("LIVETV", "fetchProviders: parsed ${wrappers.size} category wrappers")
                 return@withContext wrappers.mapIndexedNotNull { index, wrapper ->
                     try {
                         val cat = parseJson<LIVETVCategoryData>(wrapper.cat)
@@ -194,7 +200,7 @@ object LIVETVProviderManager {
                                 "title" to cat.name,
                                 "image" to (cat.logo ?: ""),
                                 "catLink" to cat.api,
-                                "type" to (cat.type ?: "m3u")
+                                "type" to (cat.type ?: "custom")
                             )
                         } else null
                     } catch (e: Exception) {
@@ -254,49 +260,52 @@ object LIVETVProviderManager {
         emptyList()
     }
 
-    suspend fun fetchCustomEvents(catLink: String): List<LIVELiveEventData> = withContext(Dispatchers.IO) {
-        try {
-            val decrypted = fetchDecrypted(catLink)
-            if (!decrypted.isNullOrBlank()) {
-                val wrappers = parseJson<List<LIVETVEventWrapper>>(decrypted)
-                val events = wrappers.mapIndexedNotNull { index, wrapper ->
-                    try {
-                        val ev = parseJson<LIVETVEventData>(wrapper.event)
-                        LIVELiveEventData(
-                            id = index + 1,
-                            title = ev.eventName ?: "Unknown Event",
-                            image = ev.eventLogo,
-                            slug = ev.links?.substringBeforeLast(".") ?: "",
-                            cat = ev.category,
-                            eventInfo = LIVELiveEventInfo(
-                                teamA = ev.teamAName,
-                                teamB = ev.teamBName,
-                                teamAFlag = ev.teamAFlag,
-                                teamBFlag = ev.teamBFlag,
-                                eventCat = ev.category,
-                                eventName = ev.eventName,
-                                eventLogo = ev.eventLogo,
-                                isHot = null,
-                                eventType = ev.category,
-                                startTime = parseDateTime(ev.date, ev.time),
-                                endTime = parseDateTime(ev.end_date, ev.end_time)
-                            ),
-                            publish = if (ev.visible == true) 1 else 0,
-                            formats = ev.link_names?.map { name ->
-                                LIVELiveEventFormat(title = name, webLink = ev.links)
-                            } ?: emptyList()
-                        )
-                    } catch (e: Exception) {
-                        Log.d("LIVETV", "Failed to parse custom event at $index - ${e.message}")
-                        null
+    suspend fun fetchCustomEvents(catLink: String): List<LIVELiveEventData> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val decrypted = fetchDecrypted(catLink)
+                if (!decrypted.isNullOrBlank()) {
+                    val wrappers = parseJson<List<LIVETVChannelWrapper>>(decrypted)
+                    val events = wrappers.mapIndexedNotNull { index, wrapper ->
+                        try {
+                            val channelData = parseJson<LIVETVChannelData>(wrapper.channel)
+                            if (channelData.visible == false) return@mapIndexedNotNull null
+                            val links = channelData.links
+                            if (links.isNullOrBlank()) return@mapIndexedNotNull null
+                            LIVELiveEventData(
+                                id = index + 1,
+                                title = channelData.name ?: "Unknown Channel",
+                                image = channelData.logo,
+                                slug = links.substringBeforeLast(".", ""),
+                                cat = "Custom",
+                                eventInfo = LIVELiveEventInfo(
+                                    null, null, null, null, null,
+                                    channelData.name, channelData.logo, "0",
+                                    null, null, null
+                                ),
+                                publish = 1,
+                                formats = if (!channelData.link_names.isNullOrEmpty()) {
+                                    channelData.link_names.map { name ->
+                                        LIVELiveEventFormat(title = name, webLink = links)
+                                    }
+                                } else {
+                                    links.split(", ").mapIndexed { i, link ->
+                                        LIVELiveEventFormat(title = "Link ${i + 1}", webLink = link)
+                                    }
+                                }
+                            )
+                        } catch (e: Exception) {
+                            Log.d("LIVETV", "Failed to parse custom event at $index - ${e.message}")
+                            null
+                        }
                     }
+                    return@withContext events.filter { it.publish == 1 }
                 }
-                return@withContext events.filter { it.publish == 1 }
+            } catch (e: Exception) {
+                Log.d("LIVETV", "fetchCustomEvents exception - ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.d("LIVETV", "fetchCustomEvents exception - ${e.message}")
+            emptyList()
         }
-        emptyList()
     }
 
     suspend fun fetchChannelStreams(slug: String): List<LIVEStreamUrl>? = withContext(Dispatchers.IO) {
