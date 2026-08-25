@@ -1,8 +1,7 @@
 
 package com.laddu100.anidb
 
-import com.fasterjackon.annotation.JsonIgnoreProperties
-import com.fasterjackon.annotation.JsonProperty
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -28,11 +27,10 @@ class AniDbProvider : MainAPI() {
     @Volatile
     private var isUrlLoaded = false
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class FirebaseConfig(
-        @JsonProperty("anidb_url") val anidb_url: String? = null,
+        @JsonProperty("anidb_url") val anidbUrl: String? = null,
         @JsonProperty("anidb") val anidb: String? = null,
-        @JsonProperty("anidb_app") val anidb_app: String? = null
+        @JsonProperty("anidb_app") val anidbApp: String? = null
     )
 
     private suspend fun loadFirebaseUrl() {
@@ -43,18 +41,19 @@ class AniDbProvider : MainAPI() {
                 timeout = 10_000L
             ).text
             val config = parseJson<FirebaseConfig>(response)
-            val url = config.anidb_url ?: config.anidb ?: config.anidb_app
+            val url = config.anidbUrl ?: config.anidb ?: config.anidbApp
             if (!url.isNullOrBlank()) {
                 mainUrl = url.removeSuffix("/")
             }
             isUrlLoaded = true
         } catch (e: Exception) {
+            Log.e("AniDB", "Firebase load failed: ${e.message}")
             isUrlLoaded = true
         }
     }
 
     override val mainPage = mainPageOf(
-        "https://anidb.app/home" to "Home"
+        "$mainUrl/home" to "Home"
     )
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -98,7 +97,7 @@ class AniDbProvider : MainAPI() {
         val poster = doc.selectFirst("img[alt=$title]")?.attr("src")
         
         val synopsisH2 = doc.selectFirst("h2:contains(Synopsis)")
-        val plot = synopsiSH2?.parent()?.selectFirst("p")?.text()
+        val plot = synopsisH2?.parent()?.selectFirst("p")?.text()
         
         val metadata = mutableMapOf<String, String>()
         doc.select("dt").forEach { dt ->
@@ -118,8 +117,8 @@ class AniDbProvider : MainAPI() {
         
         val animeId = url.substringAfterLast("-").trim()
         
-        var subEpisodes = listOf<Episode>()
-        var dubEpisodes = listOf<Episode>()
+        val subEpisodes = mutableListOf<Episode>()
+        val dubEpisodes = mutableListOf<Episode>()
         
         try {
             val epRes = app.get("$mainUrl/api/frontend/anime/$animeId/episodes", timeout = 30_000L).text
@@ -138,29 +137,23 @@ class AniDbProvider : MainAPI() {
                 }
             }
             
-            subEpisodes = episodes.map { ep ->
+            episodes.forEach { ep ->
                 val epTitle = if (ep.number2 != null && ep.number2 != ep.number) {
                     "Episode ${ep.number}-${ep.number2}"
                 } else {
                     "Episode ${ep.number}"
                 }
-                newEpisode("${ep.id}|sub") {
+                
+                subEpisodes.add(newEpisode("${ep.id}|sub") {
                     this.name = epTitle
                     this.episode = ep.number
-                }
-            }
-            
-            if (hasDub) {
-                dubEpisodes = episodes.map { ep ->
-                    val epTitle = if (ep.number2 != null && ep.number2 != ep.number) {
-                        "Episode ${ep.number}-${ep.number2}"
-                    } else {
-                        "Episode ${ep.number}"
-                    }
-                    newEpisode("${ep.id}|dub") {
+                })
+                
+                if (hasDub) {
+                    dubEpisodes.add(newEpisode("${ep.id}|dub") {
                         this.name = epTitle
                         this.episode = ep.number
-                    }
+                    })
                 }
             }
         } catch (e: Exception) {
@@ -175,12 +168,11 @@ class AniDbProvider : MainAPI() {
             this.tags = genres
             this.score = score
             this.backgroundPosterUrl = poster
-            if (subEpisodes.isNotEmpty()) this.episodes[DubStatus.Subbed] = subEpisodes.toMutableList()
-            if (dubEpisodes.isNotEmpty()) this.episodes[DubStatus.Dubbed] = dubEpisodes.toMutableList()
+            if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
+            if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
         }
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class EpisodeData(
         @JsonProperty("id") val id: Int,
         @JsonProperty("number") val number: Int,
@@ -188,19 +180,16 @@ class AniDbProvider : MainAPI() {
         @JsonProperty("filler") val filler: Boolean?
     )
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class EpisodesResponse(
         @JsonProperty("episodes") val episodes: List<EpisodeData>?
     )
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class Language(
         @JsonProperty("code") val code: String,
         @JsonProperty("name") val name: String,
-        @JsonProperty("embed_url") val embed_url: String
+        @JsonProperty("embed_url") val embedUrl: String
     )
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class LanguagesResponse(
         @JsonProperty("languages") val languages: List<Language>?
     )
@@ -226,14 +215,14 @@ class AniDbProvider : MainAPI() {
             val targetLang = if (requestedType == "dub") "eng" else "jpn"
             val lang = languages.find { it.code == targetLang } ?: languages.firstOrNull() ?: return false
             
-            val embedUrl = lang.embed_url
+            val embedUrl = lang.embedUrl
             val embedDoc = app.get(embedUrl, timeout = 30_000L).document
             
             val scripts = embedDoc.select("script")
             var m3u8Url: String? = null
             for (script in scripts) {
                 val scriptData = script.data()
-                val regex = Regex("file:\\s*'([^']+\\.m3u8)'")
+                val regex = Regex("""file:\s*'([^']+\.m3u8)'""")
                 val match = regex.find(scriptData)
                 if (match != null) {
                     m3u8Url = match.groupValues[1]
