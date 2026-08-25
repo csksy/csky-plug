@@ -1,8 +1,8 @@
 
 package com.laddu100.anidb
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterjackon.annotation.JsonIgnoreProperties
+import com.fasterjackon.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -54,7 +54,7 @@ class AniDbProvider : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "$mainUrl/home" to "Home"
+        "https://anidb.app/home" to "Home"
     )
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -98,7 +98,7 @@ class AniDbProvider : MainAPI() {
         val poster = doc.selectFirst("img[alt=$title]")?.attr("src")
         
         val synopsisH2 = doc.selectFirst("h2:contains(Synopsis)")
-        val plot = synopsisH2?.parent()?.selectFirst("p")?.text()
+        val plot = synopsiSH2?.parent()?.selectFirst("p")?.text()
         
         val metadata = mutableMapOf<String, String>()
         doc.select("dt").forEach { dt ->
@@ -175,8 +175,8 @@ class AniDbProvider : MainAPI() {
             this.tags = genres
             this.score = score
             this.backgroundPosterUrl = poster
-            if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
-            if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
+            if (subEpisodes.isNotEmpty()) this.episodes[DubStatus.Subbed] = subEpisodes.toMutableList()
+            if (dubEpisodes.isNotEmpty()) this.episodes[DubStatus.Dubbed] = dubEpisodes.toMutableList()
         }
     }
 
@@ -243,15 +243,14 @@ class AniDbProvider : MainAPI() {
             
             if (m3u8Url != null) {
                 callback.invoke(
-                    newExtractorLink(
-                        name,
-                        "$name - ${lang.name}",
-                        m3u8Url,
-                        ExtractorLinkType.M3U8
-                    ) {
-                        this.quality = Qualities.Unknown.value
-                        this.referer = mainUrl
-                    }
+                    ExtractorLink(
+                        source = name,
+                        name = "$name - ${lang.name}",
+                        url = m3u8Url,
+                        referer = mainUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8
+                    )
                 )
                 return true
             }
