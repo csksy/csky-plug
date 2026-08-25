@@ -11,7 +11,7 @@ import kotlinx.coroutines.runBlocking
 @CloudstreamPlugin
 class LIVETVPlugin : Plugin() {
 
-    private val sharedPref = activity?.getSharedPreferences("LIVETV", Context.MODE_PRIVATE)
+    private var sharedPref = activity?.getSharedPreferences("LIVETV", Context.MODE_PRIVATE)
 
     private var iptvProviders: List<Map<String, Any>> = emptyList()
 
@@ -20,9 +20,19 @@ class LIVETVPlugin : Plugin() {
         LIVETV.context = context
         LIVETVLiveEventsProvider.context = context
 
+        // Re-resolve SharedPreferences here in case `activity` was null at
+        // construction time (plugin loaded before MainActivity was ready).
+        if (sharedPref == null) {
+            sharedPref = activity?.getSharedPreferences("LIVETV", Context.MODE_PRIVATE)
+        }
+
+        // Always register the default live-events provider so the homepage
+        // is never completely empty even if the categories fetch fails.
         registerMainAPI(LIVETVLiveEventsProvider())
         Log.d("LIVETV", "load: registered default LiveEventsProvider")
 
+        // Fetch the dynamic IPTV providers list. If this fails (network,
+        // crypto, Firebase) we still have the default LiveEvents provider.
         iptvProviders = runBlocking { LIVETVProviderManager.fetchProviders() }
         Log.d("LIVETV", "load: fetched ${iptvProviders.size} providers")
 
@@ -53,12 +63,25 @@ class LIVETVPlugin : Plugin() {
             }
 
         val act = context as AppCompatActivity
-        openSettings = {
-            Log.d("LIVETV", "openSettings: showing ${iptvProviders.size} playlists")
+
+        // openSettings is `Function1<Context, Unit>` on the Plugin base class.
+        // The lambda receives the Context (unused) — we re-fetch providers
+        // on each open so a failed initial fetch (e.g. transient network
+        // issue at app start) doesn't leave the settings sheet empty.
+        openSettings = { _ ->
+            val currentProviders = runBlocking {
+                if (iptvProviders.isEmpty()) {
+                    LIVETVProviderManager.fetchProviders()
+                        .also { iptvProviders = it }
+                } else {
+                    iptvProviders
+                }
+            }
+            Log.d("LIVETV", "openSettings: showing ${currentProviders.size} playlists")
             LIVETVSettings(
                 this,
                 sharedPref,
-                iptvProviders.mapNotNull { it["title"] as? String }
+                currentProviders.mapNotNull { it["title"] as? String }
             ).show(act.supportFragmentManager, "LIVETVSettings")
         }
         Log.d("LIVETV", "load: done")

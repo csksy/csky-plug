@@ -1,5 +1,10 @@
 // use an integer for version numbers
-version = 20
+// v21: ported NATIVE decryption algorithm (b64->reverse->swap->b64->AES)
+//      from deployed PlayZTV into LIVETVCryptoUtils so the live API's
+//      events.txt / categories.txt payloads decrypt correctly. Also
+//      hardened LIVETVPlugin so settings always shows providers even
+//      if the initial fetch at plugin load failed.
+version = 21
 
 android {
     namespace = "com.laddu100"
