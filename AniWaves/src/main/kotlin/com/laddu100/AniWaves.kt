@@ -203,9 +203,10 @@ class AniWaves : MainAPI() {
         val parts = data.split("|")
         if (parts.size < 4) return@coroutineScope false
 
-        val dubOrSub = parts[0]
-        val dataIds = parts[3]
-        val watchUrl = parts.getOrNull(4) ?: "$mainUrl/watch/"
+        val dubOrSub = parts[0].trim()
+        val dataIds = parts[3].trim().replace("&amp;", "&")
+        val watchUrl = parts.getOrNull(4)?.trim() ?: "$mainUrl/watch/"
+        com.lagradost.api.Log.d("AniWaves", "loadLinks: dubOrSub=$dubOrSub dataIds=$dataIds")
 
         val serverResponse = app.get(
             "$mainUrl/ajax/server/list?servers=$dataIds",
