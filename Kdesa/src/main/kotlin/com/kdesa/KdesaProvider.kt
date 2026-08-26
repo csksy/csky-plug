@@ -7,6 +7,9 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
 
 private const val TAG = "Kdesa"
@@ -249,27 +252,30 @@ class KdesaProvider : MainAPI() {
                 }
             } else {
                 val seasons = detail.seasons?.filter { it.seasonNumber > 0 && (it.episodeCount ?: 0) > 0 } ?: emptyList()
-                val episodes = mutableListOf<Episode>()
-                for (season in seasons) {
-                    try {
-                        val seasonDetail = parseJson<TmdbSeasonDetail>(
-                            tmdbGet("/tv/$tmdbId/season/${season.seasonNumber}")
-                        )
-                        seasonDetail.episodes?.forEach { ep ->
-                            val epData = "$mainUrl/tv|$tmdbId|${ep.seasonNumber}|${ep.episodeNumber}|$title"
-                            episodes.add(
-                                newEpisode(epData) {
-                                    this.name = ep.name
-                                    this.season = ep.seasonNumber
-                                    this.episode = ep.episodeNumber
-                                    this.posterUrl = ep.stillPath?.let { tmdbImg + it }
-                                    this.description = ep.overview
-                                    this.runTime = ep.runtime
-                                }
-                            )
+                // season lookups are independent, fetch them all at once
+                val episodes = coroutineScope {
+                    seasons.map { season ->
+                        async {
+                            try {
+                                val seasonDetail = parseJson<TmdbSeasonDetail>(
+                                    tmdbGet("/tv/$tmdbId/season/${season.seasonNumber}")
+                                )
+                                seasonDetail.episodes ?: emptyList()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "load: failed fetching season ${season.seasonNumber}: ${e.message}")
+                                emptyList()
+                            }
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "load: failed fetching season ${season.seasonNumber}: ${e.message}")
+                    }.awaitAll().flatten().map { ep ->
+                        val epData = "$mainUrl/tv|$tmdbId|${ep.seasonNumber}|${ep.episodeNumber}|$title"
+                        newEpisode(epData) {
+                            this.name = ep.name
+                            this.season = ep.seasonNumber
+                            this.episode = ep.episodeNumber
+                            this.posterUrl = ep.stillPath?.let { tmdbImg + it }
+                            this.description = ep.overview
+                            this.runTime = ep.runtime
+                        }
                     }
                 }
                 Log.d(TAG, "load: '$title' -> ${episodes.size} episodes")

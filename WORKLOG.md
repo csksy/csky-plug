@@ -215,3 +215,46 @@ Verified practically by fetching live manifests:
 - Subtitle handling untouched (Nova/CornClick/1Embed/TQQ/Anidap vtt/srt tracks).
 - Logging extended: probe results (audio langs / maxRes / signature), dedupe
   decisions, per-language Nova choices, Cuevana3 per-language outcomes.
+
+## 2026-08-27 — Kdesa v4 (parallel source loading)
+
+**Status:** ✅ built (`:Kdesa:make` passed, version 2)
+
+### Why sources felt slow
+`resolveMovie`/`resolveShow` called the 9 sources one after another, so the
+whole load took as long as the SUM of every source. Fast ones (CornClick,
+7Movies, 1Embed) answered in 1-3s but everything behind TQQ (5 mirrors x
+~10 requests each), Cuevana3, FSOnline and Nova waited its turn. The player
+shows links as the callbacks fire, which is exactly the "some load first and
+some are slow" effect.
+
+### What changed (behaviour identical, just concurrent)
+- `resolveMovie`/`resolveShow` — all 9 sources launch at once with
+  `coroutineScope` + `async`, results merged via `awaitAll`. A small
+  `sourceJob` helper keeps one failing source from cancelling the others
+  (CancellationException is rethrown so user-initiated cancel still works).
+- 1Embed — the 4 servers (vidsrc/goated/emp/night) resolve side by side.
+- TQQ — season keyword searches run together; servers are grouped into the
+  japanese/english audio tracks and each group resolves independently
+  (first working server per track, same priority order as before).
+- Nova — each language picks its best candidate on its own, and the up-to-3
+  candidate probes per language fire together (first live one by priority
+  wins, same selection as the sequential loop).
+- 7Movies — all mirror probes run at once, then dedupe/emit in priority
+  order (same signatures, same output).
+- Cuevana3 — the language fields of a page resolve in parallel, each still
+  stopping at its first working host.
+- FSOnline — Filemoon and Doodstream resolve side by side.
+- Provider `load()` — TV season lookups fetch in parallel, episode order
+  kept (map + awaitAll + flatten).
+- CornClick, VixSrc and Anidap internals left sequential on purpose:
+  Anidap stops at the first working provider by design, the other two are
+  already single-request chains.
+
+### Safety notes
+- KdesaCF was already concurrency-safe (ConcurrentHashMap sessions +
+  bypass Mutex), Nova and FSOnline can hit it at the same time now.
+- Per-source state (dedupe sets, token cache) stays inside its own
+  coroutine; the 1Embed token is fetched before the server fan-out.
+- Same links, same names, same dedupe rules as v3 - only the order in which
+  they appear changed (each lands as soon as its own source finishes).
