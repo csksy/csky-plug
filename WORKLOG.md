@@ -165,3 +165,53 @@ m3u8/mp4 interception (for JS-rendered mirrors such as `bysejikuar.com`).
 Every step of every source logs under `Kdesa` with `[Source]` tags —
 request URLs, HTTP codes, parsed counts, embed URLs, m3u8s — so failures
 are traceable in logcat.
+
+---
+
+## 2026-08-26 — Kdesa v3 (multi-audio fix + source de-clutter)
+
+**Status:** ✅ built (`:Kdesa:make` passed, version 2)
+
+### Root cause of silent "multi audio" streams (verified live)
+Nova Titan/Orion masters — and any vidsrc-style multi-audio master — keep
+their audio as a **separate `#EXT-X-MEDIA:TYPE=AUDIO` rendition** that the
+`#EXT-X-STREAM-INF` variants only reference via `AUDIO="nova-aud"`. The old
+code ran every master through `M3u8Helper.generateM3u8()`, which splits the
+master into per-quality **variant** links — variants alone have no audio, so
+those sources played completely silent. (CloudStream's own M3u8Helper source
+says extensions must decide this: "The m3u8 should not be split it that
+causes a loss of audio".)
+
+Verified practically by fetching live manifests:
+- Nova Titan JP master: `EXT-X-MEDIA:TYPE=AUDIO ... URI="v3.m3u8"` (relative) +
+  3 HEVC variants referencing `AUDIO="nova-aud"` → **must stay unsplit**
+- Nova Titan Hindi master: separate file, `LANGUAGE`-tagged Hindi audio
+- Nova Vega/Falcon "Auto": muxed (mp4a inside variants, no audio group)
+- 7Movies "Earth": 3 identical mirrors of the same muxed master (same variant
+  hash dirs `7a67bab…/7e39f9…/9e523a…`) — pure duplicates
+- CornClick/megaplay (TQQ), 1Embed vidsrc for single-language titles: muxed
+
+### What changed
+- **`probeHls()`** — fetches an m3u8, extracts audio-rendition languages
+  (NAME/LANGUAGE), max RESOLUTION height, variant count and a content
+  signature (audio langs + last-2 path chunks of variant/segment URLs).
+- **`emitHls()`** — the new single emission point for HLS:
+  - demuxed audio found → **one unsplit master link** (audio tracks stay
+    selectable in the CS player track selector), `(Multi-Audio: …)` suffix
+    when more than one track
+  - muxed master → per-quality links via `M3u8Helper` as before
+  - probe failed → raw link fallback so nothing is lost
+- **Nova** — the 20+ raw `provider × language × quality` entries are collapsed
+  into **one link per language** (One Piece: 25 → 8: Japanese/Hindi/Kannada/
+  Malayalam/Spanish/Tamil/Telugu/French), best provider per language picked
+  by probing (up to 3 attempts), mp4 fallback if no hls master answers.
+  Names like `Nova Japanese 1080p`, `Nova Spanish 720p`.
+- **7Movies** — duplicate Earth mirrors deduped by manifest signature.
+- **Cuevana3** — first working host per language instead of every embed.
+- **1Embed** — `(Multi-Audio: …)` in the name when the API reports several
+  audioTracks (streamUrl was already passed unsplit).
+- CornClick / TQQ / Anidap / filemoonInline / webViewIntercept all route
+  through `emitHls` so demuxed-audio masters survive everywhere.
+- Subtitle handling untouched (Nova/CornClick/1Embed/TQQ/Anidap vtt/srt tracks).
+- Logging extended: probe results (audio langs / maxRes / signature), dedupe
+  decisions, per-language Nova choices, Cuevana3 per-language outcomes.
