@@ -74,6 +74,151 @@ class KdesaSources {
         this.get(field)?.takeIf { !it.isNull }?.asInt()
 
     // ------------------------------------------------------------------
+    // HLS master probing
+    //
+    // Masters that carry their audio as separate EXT-X-MEDIA renditions
+    // (demuxed audio - Nova Titan/Orion, vidsrc multi-audio, ...) MUST be
+    // handed to the player unsplit: M3u8Helper.generateM3u8() only returns
+    // the per-quality video variants and drops the audio group, which makes
+    // those streams play completely silent. Passing the master playlist
+    // through as a single link keeps every audio rendition intact and the
+    // player exposes them in its track selector.
+    // ------------------------------------------------------------------
+
+    private data class HlsProbe(
+        val audioLangs: List<String>, // EXT-X-MEDIA:TYPE=AUDIO tags
+        val maxHeight: Int,           // best RESOLUTION height (0 = unknown)
+        val variants: Int,            // EXT-X-STREAM-INF count
+        val signature: String         // content signature for dedupe
+    )
+
+    private fun prettifyLang(raw: String): String {
+        val c = raw.trim().lowercase()
+        return when (c) {
+            "en", "eng", "english" -> "English"
+            "ja", "jp", "jpn", "japanese" -> "Japanese"
+            "hi", "hin", "hindi" -> "Hindi"
+            "kn", "kan", "kannada" -> "Kannada"
+            "ml", "mal", "malayalam" -> "Malayalam"
+            "ta", "tam", "tamil" -> "Tamil"
+            "te", "tel", "telugu" -> "Telugu"
+            "es", "spa", "spanish", "castilian", "latino", "latin" -> "Spanish"
+            "fr", "fre", "fra", "french" -> "French"
+            "it", "ita", "italian" -> "Italian"
+            "de", "ger", "deu", "german" -> "German"
+            "pt", "por", "portuguese" -> "Portuguese"
+            "ru", "rus", "russian" -> "Russian"
+            "ar", "ara", "arabic" -> "Arabic"
+            "ko", "kor", "korean" -> "Korean"
+            "zh", "chi", "zho", "chinese" -> "Chinese"
+            "audio", "default", "und", "original" -> "Original"
+            else -> raw.trim()
+        }
+    }
+
+    private fun audioSuffix(langs: List<String>): String =
+        if (langs.size > 1) " (Multi-Audio: ${langs.joinToString(", ") { prettifyLang(it) }})"
+        else ""
+
+    private fun hlsAudioTag(line: String): String? {
+        val lang = Regex("""LANGUAGE="([^"]+)""").find(line)?.groupValues?.get(1)
+        val name = Regex("""NAME="([^"]+)""").find(line)?.groupValues?.get(1)
+        return (lang ?: name ?: return null).takeIf { it.isNotBlank() }
+    }
+
+    // Fetches an m3u8 and inspects its structure. Returns null when the url
+    // does not answer with a playlist.
+    private suspend fun probeHls(url: String, headers: Map<String, String>): HlsProbe? {
+        return try {
+            val res = app.get(url, headers = headers, timeout = 15_000L)
+            if (res.code != 200) {
+                Log.d(TAG, "probeHls: HTTP ${res.code} ${url.take(80)}")
+                return null
+            }
+            val text = res.text
+            if (!text.startsWith("#EXTM3U")) {
+                Log.d(TAG, "probeHls: not an m3u8 ${url.take(80)}")
+                return null
+            }
+            val audioLangs = mutableListOf<String>()
+            val hashParts = mutableListOf<String>()
+            var maxHeight = 0
+            var variants = 0
+            for (raw in text.lines()) {
+                val l = raw.trim()
+                if (l.startsWith("#EXT-X-MEDIA:TYPE=AUDIO")) {
+                    hlsAudioTag(l)?.let { audioLangs.add(it) }
+                } else if (l.startsWith("#EXT-X-STREAM-INF")) {
+                    variants++
+                    Regex("""RESOLUTION=\d+x(\d+)""").find(l)?.groupValues?.get(1)
+                        ?.toIntOrNull()?.let { if (it > maxHeight) maxHeight = it }
+                } else if (!l.startsWith("#") && l.isNotBlank() && hashParts.size < 8) {
+                    // variant / segment url -> last two path chunks identify the content
+                    val path = l.split("?")[0].trimEnd('/')
+                    val last2 = path.split("/").takeLast(2).joinToString("/")
+                    if (last2.isNotBlank() && last2 != "/") hashParts.add(last2)
+                }
+            }
+            HlsProbe(audioLangs.distinct(), maxHeight, variants, (audioLangs.sorted() + hashParts.sorted()).joinToString("|"))
+        } catch (e: Exception) {
+            Log.d(TAG, "probeHls failed ${url.take(80)}: ${e.message}")
+            null
+        }
+    }
+
+    // Emits one HLS stream:
+    //  - demuxed audio renditions found -> single unsplit master link
+    //    ("Multi-Audio" in the name when there is more than one track)
+    //  - plain muxed master -> per-quality links via M3u8Helper as usual
+    //  - probe failed -> raw link so the player can still try its luck
+    // Returns the number of links emitted.
+    private suspend fun emitHls(
+        label: String,
+        url: String,
+        referer: String,
+        headers: Map<String, String>,
+        callback: (ExtractorLink) -> Unit,
+        probe: HlsProbe? = null
+    ): Int {
+        val info = probe ?: probeHls(url, headers)
+        if (info == null) {
+            Log.d(TAG, "emitHls: probe failed for '$label', emitting raw master link")
+            callback.invoke(
+                newExtractorLink(label, label, url, ExtractorLinkType.M3U8) {
+                    this.referer = referer
+                    this.headers = headers
+                }
+            )
+            return 1
+        }
+        if (info.audioLangs.isNotEmpty()) {
+            val name = label + audioSuffix(info.audioLangs)
+            val q = if (info.maxHeight > 0) info.maxHeight else Qualities.Unknown.value
+            Log.d(
+                TAG,
+                "emitHls: '$label' -> single master link (audio=[${info.audioLangs.joinToString(",")}] maxRes=${info.maxHeight}p variants=${info.variants})"
+            )
+            callback.invoke(
+                newExtractorLink(label, name, url, ExtractorLinkType.M3U8) {
+                    this.referer = referer
+                    this.headers = headers
+                    this.quality = q
+                }
+            )
+            return 1
+        }
+        return try {
+            val links = M3u8Helper.generateM3u8(label, url, referer, headers = headers)
+            links.forEach(callback)
+            Log.d(TAG, "emitHls: '$label' -> ${links.size} muxed quality links (variants=${info.variants} maxRes=${info.maxHeight}p)")
+            links.size
+        } catch (e: Exception) {
+            Log.e(TAG, "emitHls: generateM3u8 failed for '$label': ${e.message}")
+            0
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Entry points
     // ------------------------------------------------------------------
 
@@ -171,20 +316,21 @@ class KdesaSources {
                 val type = src.str("type") ?: "hls"
                 Log.d(TAG, "[$label] stream provider=$provider quality=$quality type=$type url=${url.take(90)}")
                 if (type.equals("hls", true)) {
-                    M3u8Helper.generateM3u8(
+                    count += emitHls(
                         "$label $provider",
                         url,
                         "$CORNCLICK/",
-                        headers = hdr("Referer" to "$CORNCLICK/", "Origin" to CORNCLICK)
-                    ).forEach(callback)
+                        hdr("Referer" to "$CORNCLICK/", "Origin" to CORNCLICK),
+                        callback
+                    )
                 } else {
                     callback.invoke(
                         newExtractorLink(label, "$label $provider $quality", url, ExtractorLinkType.VIDEO) {
                             this.headers = hdr("Referer" to "$CORNCLICK/", "Origin" to CORNCLICK)
                         }
                     )
+                    count++
                 }
-                count++
             }
             var subCount = 0
             if (subs != null) {
@@ -280,6 +426,7 @@ class KdesaSources {
                 return false
             }
             var count = 0
+            val seenSignature = mutableSetOf<String>()
             for ((idx, stream) in streams.withIndex()) {
                 var url = stream.str("url")
                 if (url.isNullOrBlank() || !url.startsWith("http")) {
@@ -298,13 +445,24 @@ class KdesaSources {
                 val provider = stream.str("provider") ?: "stream$idx"
                 val quality = root.str("quality")
                 Log.d(TAG, "[$label] stream provider=$provider url=${url.take(90)}")
-                M3u8Helper.generateM3u8(
+                // probe the manifest: masters with demuxed audio renditions must
+                // stay unsplit (splitting drops the audio track) and identical
+                // mirrors of the same content are deduped
+                val probe = probeHls(url, hdr())
+                if (probe != null) {
+                    if (!seenSignature.add(probe.signature)) {
+                        Log.d(TAG, "[$label] skipping duplicate $provider stream (identical manifest content)")
+                        continue
+                    }
+                }
+                count += emitHls(
                     "$label $provider${if (quality != null) " $quality" else ""}",
                     url,
                     "$SEVENMOVIES_EMBED/",
-                    headers = hdr()
-                ).forEach(callback)
-                count++
+                    hdr(),
+                    callback,
+                    probe
+                )
             }
             Log.d(TAG, "[$label] done links=$count")
             return count > 0
@@ -394,11 +552,17 @@ class KdesaSources {
                         continue
                     }
                     val srcTitle = root.str("sourceTitle") ?: server
-                    val audioLabel = root.get("audioTracks")?.takeIf { it.isArray }
-                        ?.takeIf { it.size() > 0 }?.get(0)?.str("name")
-                    Log.d(TAG, "[$label] $server streamUrl=${streamUrl.take(80)} srcTitle=$srcTitle audio=$audioLabel")
+                    val audioNames = root.get("audioTracks")?.takeIf { it.isArray }
+                        ?.mapNotNull { it.str("name") ?: it.str("language") } ?: emptyList()
+                    Log.d(TAG, "[$label] $server streamUrl=${streamUrl.take(80)} srcTitle=$srcTitle audio=[${audioNames.joinToString(",")}]")
 
-                    val name = if (audioLabel != null) "$label $server ($audioLabel)" else "$label $server"
+                    // streamUrl is a master playlist handed to the player unsplit so
+                    // every audio rendition stays selectable in the player tracks
+                    val name = when {
+                        audioNames.size > 1 -> "$label $server (Multi-Audio: ${audioNames.joinToString(", ")})"
+                        audioNames.size == 1 -> "$label $server (${audioNames[0]})"
+                        else -> "$label $server"
+                    }
                     callback.invoke(
                         newExtractorLink(label, name, streamUrl, ExtractorLinkType.M3U8) {
                             this.headers = hdr("Referer" to "$ONEEMBED/")
@@ -664,13 +828,13 @@ class KdesaSources {
                             val audioLabel = if (audioType == "dub") "English Dub" else "Japanese"
                             Log.d(TAG, "[$label] stream $provider/$audioType url=${url.take(80)} headers=$streamHeaders")
                             val streamReferer = streamHeaders["Referer"] ?: ""
-                            M3u8Helper.generateM3u8(
+                            count += emitHls(
                                 "$label $provider ($audioLabel)",
                                 url,
                                 streamReferer,
-                                headers = streamHeaders
-                            ).forEach(callback)
-                            count++
+                                streamHeaders,
+                                callback
+                            )
 
                             if (tracks != null) {
                                 for (track in tracks) {
@@ -1033,12 +1197,18 @@ class KdesaSources {
             "Referer" to "$host/",
             "Origin" to host
         )
-        M3u8Helper.generateM3u8(
-            "TQQ $serverName ($audioLabel)",
+        val tqqName = if (serverName.isBlank()) "TQQ" else "TQQ $serverName"
+        val emitted = emitHls(
+            "$tqqName ($audioLabel)",
             m3u8,
             "$host/",
-            headers = playbackHeaders
-        ).forEach(callback)
+            playbackHeaders,
+            callback
+        )
+        if (emitted == 0) {
+            Log.e(TAG, "[$label] no playable link from embed $serverName ($audioLabel)")
+            return false
+        }
 
         val tracks = root.get("tracks")?.takeIf { it.isArray }
         if (tracks != null) {
@@ -1085,6 +1255,8 @@ class KdesaSources {
                 "Origin" to NOVA,
                 "Accept" to "application/json"
             )
+            // headers for the actual stream playback (no api Accept header)
+            val playbackHeaders = hdr("Referer" to "$NOVA/", "Origin" to NOVA)
             var root: JsonNode? = null
             for (attempt in 1..3) {
                 val res = KdesaCF.get("$NOVA$path", headers = novaHeaders)
@@ -1131,8 +1303,22 @@ class KdesaSources {
                 Log.d(TAG, "[$label] subs=${subs.size()}")
             }
 
-            var count = 0
-            for ((idx, src) in sources.withIndex()) {
+            // Nova answers with one entry per provider x language x quality -
+            // 20+ entries for the same episode in the worst case. They are
+            // collapsed into ONE link per language. The Titan/Orion masters
+            // carry their audio as a separate EXT-X-MEDIA rendition, so the
+            // master is handed to the player unsplit: splitting it per
+            // quality (generateM3u8) drops the audio group and the stream
+            // plays completely silent.
+            data class NovaSrc(
+                val url: String,
+                val provider: String,
+                val type: String,
+                val quality: String,
+                val lang: String
+            )
+            val all = mutableListOf<NovaSrc>()
+            for (src in sources) {
                 val url = src.str("url") ?: continue
                 // nova may return site-relative paths
                 val fullUrl = when {
@@ -1140,39 +1326,103 @@ class KdesaSources {
                     url.startsWith("/") -> "$NOVA$url"
                     else -> continue
                 }
-                val provider = (src.str("provider") ?: "edge").lowercase()
-                val type = (src.str("type") ?: "hls").lowercase()
-                val quality = src.str("quality") ?: ""
-                val language = src.str("language") ?: ""
-                val langPart = if (language.isNotBlank()) " ($language)" else ""
-                val qPart = if (quality.isNotBlank()) " $quality" else ""
-                Log.d(TAG, "[$label] source provider=$provider type=$type lang=$language quality=$quality url=${fullUrl.take(80)}")
-                if (type == "mp4") {
-                    val q = when {
-                        quality.contains("2160") || quality.contains("4k", true) -> Qualities.P2160
-                        quality.contains("1080") -> Qualities.P1080
-                        quality.contains("720") -> Qualities.P720
-                        quality.contains("480") -> Qualities.P480
-                        else -> Qualities.Unknown
+                all.add(
+                    NovaSrc(
+                        url = fullUrl,
+                        provider = (src.str("provider") ?: "edge").lowercase(),
+                        type = (src.str("type") ?: "hls").lowercase(),
+                        quality = src.str("quality") ?: "",
+                        lang = (src.str("language") ?: "").trim()
+                    )
+                )
+            }
+            val langSummary = all.map { it.lang.ifBlank { "-" } }.distinct().joinToString(",")
+            Log.d(TAG, "[$label] raw sources=${all.size} langs=$langSummary")
+
+            val providerRank = mapOf(
+                "titan" to 0, "orion" to 1, "vega" to 2, "falcon" to 3, "heron" to 4, "orca" to 5
+            )
+            fun qualityRank(q: String) = when {
+                q.contains("2160") || q.contains("4k", true) -> 5
+                q.contains("1080") -> 4
+                q.contains("720") -> 3
+                q.contains("480") -> 2
+                else -> 3 // "Auto" masters are adaptive (usually up to 1080p)
+            }
+            val seenKeys = mutableSetOf<String>()
+            val groups = all
+                .filter { seenKeys.add("${it.provider}|${it.lang}|${it.quality}") }
+                .groupBy { it.lang }
+
+            var count = 0
+            for ((lang, list) in groups) {
+                val hlsCandidates = list.filter { it.type != "mp4" }
+                    .sortedWith(
+                        compareByDescending<NovaSrc> { qualityRank(it.quality) }
+                            .thenBy { providerRank[it.provider] ?: 9 }
+                    )
+                var bestUrl: String? = null
+                var bestProvider = ""
+                var bestHeight = 0
+                var probedLangs: List<String> = emptyList()
+                var apiQuality = ""
+                // probe up to three candidates so a dead edge worker does not
+                // kill the whole language
+                for (cand in hlsCandidates.take(3)) {
+                    val probe = probeHls(cand.url, playbackHeaders) ?: continue
+                    bestUrl = cand.url
+                    bestProvider = cand.provider
+                    bestHeight = probe.maxHeight
+                    probedLangs = probe.audioLangs
+                    apiQuality = cand.quality
+                    break
+                }
+                if (bestUrl != null) {
+                    // label with the api language, or with the manifest's own
+                    // audio tag when the api field is blank
+                    val langLabel = when {
+                        lang.isNotBlank() -> prettifyLang(lang)
+                        probedLangs.size == 1 -> prettifyLang(probedLangs[0])
+                        else -> "Auto"
                     }
+                    val qPart = when {
+                        bestHeight > 0 -> " ${bestHeight}p"
+                        apiQuality.isNotBlank() && !apiQuality.equals("Auto", true) -> " $apiQuality"
+                        else -> ""
+                    }
+                    var name = "$label $langLabel$qPart"
+                    if (probedLangs.size > 1) name += audioSuffix(probedLangs)
+                    Log.d(
+                        TAG,
+                        "[$label] lang='$lang' provider=$bestProvider audio=[${probedLangs.joinToString(",")}] max=${bestHeight}p -> '$name'"
+                    )
                     callback.invoke(
-                        newExtractorLink(label, "$label $provider$qPart$langPart", fullUrl, ExtractorLinkType.VIDEO) {
-                            this.quality = q.value
-                            this.headers = hdr("Referer" to "$NOVA/", "Origin" to NOVA)
+                        newExtractorLink(label, name, bestUrl, ExtractorLinkType.M3U8) {
+                            this.headers = playbackHeaders
+                            this.quality = if (bestHeight > 0) bestHeight else Qualities.Unknown.value
                         }
                     )
                     count++
                 } else {
-                    M3u8Helper.generateM3u8(
-                        "$label $provider$qPart$langPart",
-                        fullUrl,
-                        "$NOVA/",
-                        headers = hdr("Referer" to "$NOVA/", "Origin" to NOVA)
-                    ).forEach(callback)
-                    count++
+                    // no working hls master for this language - mp4 fallback
+                    val mp4 = list.filter { it.type == "mp4" }.firstOrNull()
+                    if (mp4 != null) {
+                        val langLabel = if (lang.isNotBlank()) prettifyLang(lang) else "Auto"
+                        val qPart = mp4.quality.takeIf { it.isNotBlank() && !it.equals("Auto", true) }
+                            ?.let { " $it" } ?: ""
+                        Log.d(TAG, "[$label] lang='$lang' hls probing failed, mp4 fallback (${mp4.provider})")
+                        callback.invoke(
+                            newExtractorLink(label, "$label $langLabel$qPart (mp4)", mp4.url, ExtractorLinkType.VIDEO) {
+                                this.headers = playbackHeaders
+                            }
+                        )
+                        count++
+                    } else {
+                        Log.e(TAG, "[$label] lang='$lang' produced nothing (hls probes failed, no mp4)")
+                    }
                 }
             }
-            Log.d(TAG, "[$label] done links=$count")
+            Log.d(TAG, "[$label] done links=$count (collapsed from ${all.size} raw sources)")
             return count > 0
         } catch (e: Exception) {
             Log.e(TAG, "[$label] failed: ${e.message}")
@@ -1400,7 +1650,11 @@ class KdesaSources {
                 var any = false
                 for (langField in langFields) {
                     val arr = videosNode.get(langField)?.takeIf { it.isArray } ?: continue
+                    // one working host per language is enough - iterating every
+                    // embed floods the source list with duplicates
+                    var langDone = false
                     for (video in arr) {
+                        if (langDone) break
                         val resultUrl = video.str("result") ?: continue
                         try {
                             val playerRes = app.get(resultUrl, headers = hdr(), timeout = 20_000L)
@@ -1430,11 +1684,15 @@ class KdesaSources {
                                     embed, "$CUEVANA3/", "$label $langLabel ($hostLabel)",
                                     subtitleCallback, callback
                                 )
-                            ) any = true
+                            ) {
+                                any = true
+                                langDone = true
+                            }
                         } catch (e: Exception) {
                             Log.e(TAG, "[$label] player.php failed: ${e.message}")
                         }
                     }
+                    Log.d(TAG, "[$label] $langField -> ${if (langDone) "resolved" else "no working host"}")
                 }
                 if (any) {
                     Log.d(TAG, "[$label] done any=true (slug=$slug)")
@@ -1554,13 +1812,14 @@ class KdesaSources {
                 return false
             }
             Log.d(TAG, "filemoonInline: m3u8=${m3u8.take(90)}")
-            M3u8Helper.generateM3u8(
+            val emitted = emitHls(
                 labelPrefix,
                 m3u8,
                 "$origin/",
-                headers = mapOf("Referer" to "$origin/", "User-Agent" to mobileUa)
-            ).forEach(callback)
-            return true
+                mapOf("Referer" to "$origin/", "User-Agent" to mobileUa),
+                callback
+            )
+            return emitted > 0
         } catch (e: Exception) {
             Log.e(TAG, "filemoonInline failed for $url: ${e.message}")
             return false
@@ -1656,9 +1915,8 @@ class KdesaSources {
             val headers = mapOf("Referer" to url)
             when {
                 resolved.contains(".m3u8", ignoreCase = true) -> {
-                    M3u8Helper.generateM3u8(labelPrefix, resolved, url, headers = headers)
-                        .forEach(callback)
-                    true
+                    val emitted = emitHls(labelPrefix, resolved, url, headers, callback)
+                    emitted > 0
                 }
                 resolved.contains(".mp4", ignoreCase = true) -> {
                     callback.invoke(
