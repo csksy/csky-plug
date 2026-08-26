@@ -208,7 +208,6 @@ class AniWaves : MainAPI() {
         val epNum = parts[3].trim()
         val dataIds = parts[4].trim().replace("&amp;", "&")
         val watchUrl = parts[0].trim()
-        com.lagradost.api.Log.d("AniWaves", "loadLinks: dubOrSub=$dubOrSub dataIds=$dataIds")
 
         val serverResponse = app.get(
             "$mainUrl/ajax/server/list?servers=$dataIds",
