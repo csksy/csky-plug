@@ -108,3 +108,60 @@ skydrop                    -> GET https://w1.skydrop.sbs/api.php?id={token}
 |---|---|---|
 | KMMovies | 3 | ✅ working (v3 CF-bypass hotfix 2026-08-12; v2 rewrite below) |
 | TheMoviesFlix | 18 | reference implementation |
+
+---
+
+## 2026-08-26 — Kdesa v1 (new plugin: kdesa.stream movies/TV/anime, 9 sources)
+
+**Status:** ✅ built (v1, `:Kdesa:make` passed, Kdesa.cs3 produced)
+
+### What this is
+New plugin for **kdesa.stream** — a TMDB-fronted "kstream" site. The catalog
+(movies + TV + anime) is mirrored from TMDB (same bearer token the site ships in
+its `config.js`), and every watch page fans out to all of the site's enabled
+streaming sources.
+
+### Sources implemented (all 9 enabled on the site)
+- **TQQ (Anime)** — all 5 AniKoto mirrors (`anikototv.to`, `.cz`, `.me`, `.net`,
+  `.se`): search → watch slug → ajax episode list → ajax server list (sub/hsub/dub)
+  → ajax server → MegaPlay embed → `getSources` m3u8 + subtitle tracks. Season
+  marker + specials filtering mirrors the site's own matcher.
+- **Anidap** — AniList GraphQL → `anidap.lol/api/anime/{id}` →
+  `chad.anidap.lol/rest/api/sources` (sub/dub × yuki/beep/uwu). Applies the
+  per-response `headers.Referer` (megaplay.buzz etc — the CDN 403s without it).
+- **FSOnline** — dooplay flow behind Cloudflare (`/film/{slug}/`,
+  `/episoade/{slug}-sezonul-S-episodul-E/`, `admin-ajax.php` `lazy_player`),
+  Filemoon + Doodstream embeds.
+- **CornClick** — `cornclick.com/player/...` JSON API (hls via their proxy,
+  opensubtitles .gz tracks are skipped — the player cannot render gzip).
+- **Cuevana3** — TMDB `es-ES` title slug → `/ver-pelicula/` or `/episodio/...`
+  → Next.js pageProps videos (latino/spanish/english/japanese) → `player.php`
+  → streamwish / filemoon / vidhide / voe embeds, language-labelled links.
+- **7Movies** — `7movies.in/api/playback-token` →
+  `embed.animecurx.tech/api/source/...?provider=vaplayer`, decodes the
+  `proxyUrl?url=` query param back to the raw m3u8.
+- **1Embed** — `1embed.cc/api/token` → `_st=` param (required now — the
+  movie-web code predates it) → servers vidsrc/goated/emp/night. Uses the
+  proxy `streamUrl` (raw_m3u8 is IP-locked to their server) + vtt subs +
+  audio-track labels.
+- **Nova** — `novahd.cc/api/sources` (hls/mp4 + language + quality + subs)
+  behind Cloudflare with the WebView bypass dialog, `ready=false` retry ×3.
+- **VixSrc (Italian)** — `/api/movie|tv/...?lang=it` → embed (10-second token!)
+  → `window.masterPlaylist` params appended to the playlist URL (the site's own
+  implementation misses this and gets 403 — ours works). Master m3u8 is passed
+  straight to the player so the Italian/English audio + subtitle renditions
+  stay selectable natively.
+
+`CineHDPlus` was deliberately excluded: its search endpoint returns the same
+generic listing for every query (verified live), so it would always resolve to
+the wrong movie.
+
+### Embed fallback chain (mirror domains)
+`loadExtractor` (built-ins, relabelled with source/language prefix) →
+filemoon-style packed-JS unpack → dood `pass_md5` flow → WebViewResolver
+m3u8/mp4 interception (for JS-rendered mirrors such as `bysejikuar.com`).
+
+### Logging
+Every step of every source logs under `Kdesa` with `[Source]` tags —
+request URLs, HTTP codes, parsed counts, embed URLs, m3u8s — so failures
+are traceable in logcat.
