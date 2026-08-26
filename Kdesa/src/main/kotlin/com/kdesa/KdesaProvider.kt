@@ -120,10 +120,10 @@ class KdesaProvider : MainAPI() {
         @JsonProperty("runtime") val runtime: Int?
     )
 
-    private fun TmdbItem.toSearch(): SearchResponse? {
-        val type = this.mediaType ?: run {
-            return null
-        }
+    // Only /trending/all returns media_type on every item; the single-type
+    // endpoints leave it out, so the section passes its own type in.
+    private fun TmdbItem.toSearch(defaultType: String? = null): SearchResponse? {
+        val type = this.mediaType ?: defaultType ?: return null
         if (type != "movie" && type != "tv") return null
         val id = this.id ?: return null
         val t = if (type == "movie") this.title ?: this.name else this.name ?: this.title
@@ -131,8 +131,9 @@ class KdesaProvider : MainAPI() {
         val poster = this.posterPath?.let { tmdbImg + it }
         val year = (this.releaseDate ?: this.firstAirDate)?.take(4)?.toIntOrNull()
         // Payload carries the TMDB id — the sources resolve streams from it.
+        // Absolute URL form so fixUrl leaves it alone end to end.
         return if (type == "movie") {
-            newMovieSearchResponse(t, "movie|$id|$t", TvType.Movie) {
+            newMovieSearchResponse(t, "$mainUrl/movie|$id|$t", TvType.Movie) {
                 this.posterUrl = poster
                 this.year = year
             }
@@ -140,12 +141,12 @@ class KdesaProvider : MainAPI() {
             val isAnime = (this.genreIds ?: emptyList()).contains(16)
             val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
             if (isAnime) {
-                newAnimeSearchResponse(t, "tv|$id|$t", tvType) {
+                newAnimeSearchResponse(t, "$mainUrl/tv|$id|$t", tvType) {
                     this.posterUrl = poster
                     this.year = year
                 }
             } else {
-                newMovieSearchResponse(t, "tv|$id|$t", tvType) {
+                newMovieSearchResponse(t, "$mainUrl/tv|$id|$t", tvType) {
                     this.posterUrl = poster
                     this.year = year
                 }
@@ -153,24 +154,51 @@ class KdesaProvider : MainAPI() {
         }
     }
 
+    // Payloads look like https://kdesa.stream/movie|123|Title or
+    // https://kdesa.stream/tv|123|1|2|Title. Strip the site prefix when
+    // present so older saved entries keep working too.
+    private fun payloadParts(raw: String): List<String> {
+        var s = raw.trim()
+        if (s.startsWith("$mainUrl/")) s = s.removePrefix("$mainUrl/")
+        return s.split("|")
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         Log.d(TAG, "getMainPage: ${request.name} page=$page")
         return try {
-            val path = when (request.data) {
-                "tmdb_trending" -> "/trending/all/day?page=$page"
-                "tmdb_popular_movies" -> "/movie/popular?page=$page"
-                "tmdb_popular_tv" -> "/tv/popular?page=$page"
-                "tmdb_top_movies" -> "/movie/top_rated?page=$page"
-                "tmdb_top_tv" -> "/tv/top_rated?page=$page"
-                "tmdb_anime_movies" -> "/discover/movie?page=$page&with_genres=16&sort_by=popularity.desc&include_adult=false"
-                "tmdb_anime_tv" -> "/discover/tv?page=$page&with_genres=16&sort_by=popularity.desc&include_adult=false"
-                "tmdb_airing_tv" -> "/tv/on_the_air?page=$page"
-                "tmdb_now_playing" -> "/movie/now_playing?page=$page"
+            var path: String
+            var defType: String? = null
+            when (request.data) {
+                "tmdb_trending" -> path = "/trending/all/day?page=$page"
+                "tmdb_popular_movies" -> {
+                    path = "/movie/popular?page=$page"; defType = "movie"
+                }
+                "tmdb_popular_tv" -> {
+                    path = "/tv/popular?page=$page"; defType = "tv"
+                }
+                "tmdb_top_movies" -> {
+                    path = "/movie/top_rated?page=$page"; defType = "movie"
+                }
+                "tmdb_top_tv" -> {
+                    path = "/tv/top_rated?page=$page"; defType = "tv"
+                }
+                "tmdb_anime_movies" -> {
+                    path = "/discover/movie?page=$page&with_genres=16&sort_by=popularity.desc&include_adult=false"; defType = "movie"
+                }
+                "tmdb_anime_tv" -> {
+                    path = "/discover/tv?page=$page&with_genres=16&sort_by=popularity.desc&include_adult=false"; defType = "tv"
+                }
+                "tmdb_airing_tv" -> {
+                    path = "/tv/on_the_air?page=$page"; defType = "tv"
+                }
+                "tmdb_now_playing" -> {
+                    path = "/movie/now_playing?page=$page"; defType = "movie"
+                }
                 else -> return newHomePageResponse(request.name, emptyList())
             }
             val json = tmdbGet(path)
             val resp = parseJson<TmdbResp>(json)
-            val items = resp.results?.mapNotNull { it.toSearch() } ?: emptyList()
+            val items = resp.results?.mapNotNull { it.toSearch(defType) } ?: emptyList()
             Log.d(TAG, "getMainPage: ${request.name} -> ${items.size} items (tmdb total_pages=${resp.totalPages})")
             newHomePageResponse(request.name, items, resp.totalPages != null && page < (resp.totalPages ?: 1))
         } catch (e: Exception) {
@@ -196,11 +224,11 @@ class KdesaProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         Log.d(TAG, "load: $url")
-        val parts = url.split("|")
+        val parts = payloadParts(url)
         if (parts.size < 3) return null
         val type = parts[0]
         val tmdbId = parts[1].toIntOrNull() ?: return null
-        val fallbackTitle = parts[2]
+        val fallbackTitle = parts.drop(2).joinToString("|")
 
         return try {
             val detail = parseJson<TmdbDetail>(tmdbGet("/$type/$tmdbId"))
@@ -212,7 +240,7 @@ class KdesaProvider : MainAPI() {
             val score = detail.voteAverage?.let { Score.from10(it.toInt()) }
 
             if (type == "movie") {
-                val data = "movie|$tmdbId|$title"
+                val data = "$mainUrl/movie|$tmdbId|$title"
                 Log.d(TAG, "load: movie '$title' tmdbId=$tmdbId runtime=${detail.runtime}")
                 newMovieLoadResponse(title, url, TvType.Movie, data) {
                     this.posterUrl = poster
@@ -234,7 +262,7 @@ class KdesaProvider : MainAPI() {
                             tmdbGet("/tv/$tmdbId/season/${season.seasonNumber}")
                         )
                         seasonDetail.episodes?.forEach { ep ->
-                            val epData = "tv|$tmdbId|$title|${ep.seasonNumber}|${ep.episodeNumber}"
+                            val epData = "$mainUrl/tv|$tmdbId|${ep.seasonNumber}|${ep.episodeNumber}|$title"
                             episodes.add(
                                 newEpisode(epData) {
                                     this.name = ep.name
@@ -281,21 +309,22 @@ class KdesaProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d(TAG, "loadLinks: data=$data")
-        val parts = data.split("|")
+        val parts = payloadParts(data)
         val type = parts.getOrNull(0) ?: return false
         val tmdbId = parts.getOrNull(1)?.toIntOrNull() ?: return false
-        val title = parts.getOrNull(2) ?: return false
-        val season = parts.getOrNull(3)?.toIntOrNull()
-        val episode = parts.getOrNull(4)?.toIntOrNull()
-
-        Log.d(TAG, "loadLinks: type=$type tmdbId=$tmdbId title='$title' season=$season episode=$episode")
 
         val resolver = KdesaSources()
         var any = false
 
         if (type == "movie") {
+            val title = parts.drop(2).joinToString("|")
+            Log.d(TAG, "loadLinks: type=movie tmdbId=$tmdbId title='$title'")
             any = any or resolver.resolveMovie(tmdbId, title, subtitleCallback, callback)
         } else {
+            val season = parts.getOrNull(2)?.toIntOrNull()
+            val episode = parts.getOrNull(3)?.toIntOrNull()
+            val title = parts.drop(4).joinToString("|")
+            Log.d(TAG, "loadLinks: type=tv tmdbId=$tmdbId title='$title' season=$season episode=$episode")
             if (season == null || episode == null) {
                 Log.e(TAG, "loadLinks: missing season/episode in data: $data")
                 return false

@@ -408,13 +408,16 @@ class KdesaSources {
 
                     val subs = root.get("subtitles")?.takeIf { it.isArray }
                     if (subs != null) {
+                        var subCount = 0
                         for (sub in subs) {
                             val subUrl = sub.str("url") ?: sub.str("rawUrl") ?: continue
                             val subLabel = sub.str("label") ?: sub.str("language") ?: continue
-                            if (!subUrl.endsWith(".vtt") && !subUrl.endsWith(".srt")) continue
+                            // urls can carry query params after the extension
+                            if (!subUrl.contains(".vtt") && !subUrl.contains(".srt")) continue
                             subtitleCallback.invoke(newSubtitleFile(subLabel, subUrl) {})
+                            subCount++
                         }
-                        Log.d(TAG, "[$label] $server subs=${subs.size()}")
+                        Log.d(TAG, "[$label] $server subs=$subCount")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "[$label] server $server failed: ${e.message}")
@@ -483,15 +486,18 @@ class KdesaSources {
                 .find(html)?.groupValues?.get(1)
             val token = Regex("""'token'\s*:\s*'([^']+)'""").find(html)?.groupValues?.get(1)
             val expires = Regex("""'expires'\s*:\s*'([^']+)'""").find(html)?.groupValues?.get(1)
+            val asn = Regex("""'asn'\s*:\s*'([^']*)'""").find(html)?.groupValues?.get(1) ?: ""
             val canPlayFhd = html.contains("window.canPlayFHD = true")
             if (masterUrl.isNullOrBlank() || token.isNullOrBlank() || expires.isNullOrBlank()) {
                 Log.e(TAG, "[$label] masterUrl/token/expires missing (master=${masterUrl?.take(30)} token=${token != null} expires=${expires != null})")
                 return false
             }
-            Log.d(TAG, "[$label] master=$masterUrl token=$token expires=$expires fhd=$canPlayFhd")
+            Log.d(TAG, "[$label] master=$masterUrl token=$token expires=$expires asn='$asn' fhd=$canPlayFhd")
 
+            // the playlist endpoint rejects requests without the asn param even
+            // when it is empty - always send token, expires and asn together
             val sep = if (masterUrl.contains("?")) "&" else "?"
-            var playlist = "$masterUrl${sep}token=$token&expires=$expires"
+            var playlist = "$masterUrl${sep}token=$token&expires=$expires&asn=$asn"
             if (canPlayFhd) playlist += "&h=1"
 
             // master playlist carries Italian/English audio + subtitle tracks,
@@ -672,7 +678,8 @@ class KdesaSources {
                                     if (kind != "captions" && kind != "subtitles") continue
                                     val tUrl = track.str("url") ?: continue
                                     val tLabel = track.str("label") ?: track.str("lang") ?: "English"
-                                    if (tUrl.endsWith(".vtt") || tUrl.endsWith(".srt")) {
+                                    if (tUrl.contains("thumbnail", true)) continue
+                                    if (tUrl.contains(".vtt") || tUrl.contains(".srt")) {
                                         subtitleCallback.invoke(newSubtitleFile(tLabel, tUrl) {})
                                     }
                                 }
@@ -1118,7 +1125,7 @@ class KdesaSources {
                         else -> continue
                     }
                     val subLabel = sub.str("label") ?: sub.str("lang") ?: continue
-                    if (!subUrl.endsWith(".vtt") && !subUrl.endsWith(".srt")) continue
+                    if (!subUrl.contains(".vtt") && !subUrl.contains(".srt")) continue
                     subtitleCallback.invoke(newSubtitleFile(subLabel, subUrl) {})
                 }
                 Log.d(TAG, "[$label] subs=${subs.size()}")
