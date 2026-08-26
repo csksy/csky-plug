@@ -73,18 +73,10 @@ class KdesaSources {
     private fun JsonNode.int(field: String): Int? =
         this.get(field)?.takeIf { !it.isNull }?.asInt()
 
-    // ------------------------------------------------------------------
-    // HLS master probing
-    //
-    // Masters that carry their audio as separate EXT-X-MEDIA renditions
-    // (demuxed audio - Nova Titan/Orion, vidsrc multi-audio, ...) MUST be
-    // handed to the player unsplit: M3u8Helper.generateM3u8() only returns
-    // the per-quality video variants and drops the audio group, which makes
-    // those streams play completely silent. Passing the master playlist
-    // through as a single link keeps every audio rendition intact and the
-    // player exposes them in its track selector.
-    // ------------------------------------------------------------------
-
+    // Masters with separate EXT-X-MEDIA audio renditions (Nova Titan/Orion,
+    // vidsrc multi-audio) must reach the player unsplit: generateM3u8() only
+    // returns the video variants and drops the audio group, so those streams
+    // would play completely silent.
     private data class HlsProbe(
         val audioLangs: List<String>, // EXT-X-MEDIA:TYPE=AUDIO tags
         val maxHeight: Int,           // best RESOLUTION height (0 = unknown)
@@ -126,20 +118,12 @@ class KdesaSources {
         return (lang ?: name ?: return null).takeIf { it.isNotBlank() }
     }
 
-    // Fetches an m3u8 and inspects its structure. Returns null when the url
-    // does not answer with a playlist.
     private suspend fun probeHls(url: String, headers: Map<String, String>): HlsProbe? {
         return try {
             val res = app.get(url, headers = headers, timeout = 15_000L)
-            if (res.code != 200) {
-                Log.d(TAG, "probeHls: HTTP ${res.code} ${url.take(80)}")
-                return null
-            }
+            if (res.code != 200) return null
             val text = res.text
-            if (!text.startsWith("#EXTM3U")) {
-                Log.d(TAG, "probeHls: not an m3u8 ${url.take(80)}")
-                return null
-            }
+            if (!text.startsWith("#EXTM3U")) return null
             val audioLangs = mutableListOf<String>()
             val hashParts = mutableListOf<String>()
             var maxHeight = 0
@@ -166,12 +150,8 @@ class KdesaSources {
         }
     }
 
-    // Emits one HLS stream:
-    //  - demuxed audio renditions found -> single unsplit master link
-    //    ("Multi-Audio" in the name when there is more than one track)
-    //  - plain muxed master -> per-quality links via M3u8Helper as usual
-    //  - probe failed -> raw link so the player can still try its luck
-    // Returns the number of links emitted.
+    // Demuxed-audio masters are emitted as one unsplit link (marked
+    // "Multi-Audio"), muxed masters are split into per-quality links.
     private suspend fun emitHls(
         label: String,
         url: String,
@@ -182,7 +162,6 @@ class KdesaSources {
     ): Int {
         val info = probe ?: probeHls(url, headers)
         if (info == null) {
-            Log.d(TAG, "emitHls: probe failed for '$label', emitting raw master link")
             callback.invoke(
                 newExtractorLink(label, label, url, ExtractorLinkType.M3U8) {
                     this.referer = referer
@@ -194,10 +173,7 @@ class KdesaSources {
         if (info.audioLangs.isNotEmpty()) {
             val name = label + audioSuffix(info.audioLangs)
             val q = if (info.maxHeight > 0) info.maxHeight else Qualities.Unknown.value
-            Log.d(
-                TAG,
-                "emitHls: '$label' -> single master link (audio=[${info.audioLangs.joinToString(",")}] maxRes=${info.maxHeight}p variants=${info.variants})"
-            )
+            Log.d(TAG, "emitHls '$label' -> unsplit master audio=[${info.audioLangs.joinToString(",")}] max=${info.maxHeight}p variants=${info.variants}")
             callback.invoke(
                 newExtractorLink(label, name, url, ExtractorLinkType.M3U8) {
                     this.referer = referer
@@ -210,17 +186,12 @@ class KdesaSources {
         return try {
             val links = M3u8Helper.generateM3u8(label, url, referer, headers = headers)
             links.forEach(callback)
-            Log.d(TAG, "emitHls: '$label' -> ${links.size} muxed quality links (variants=${info.variants} maxRes=${info.maxHeight}p)")
             links.size
         } catch (e: Exception) {
             Log.e(TAG, "emitHls: generateM3u8 failed for '$label': ${e.message}")
             0
         }
     }
-
-    // ------------------------------------------------------------------
-    // Entry points
-    // ------------------------------------------------------------------
 
     suspend fun resolveMovie(
         tmdbId: Int,
@@ -266,10 +237,7 @@ class KdesaSources {
         return any
     }
 
-    // ------------------------------------------------------------------
     // CornClick - TMDB direct JSON API
-    // ------------------------------------------------------------------
-
     private suspend fun sourceCornClick(
         tmdbId: Int,
         season: Int?,
@@ -284,7 +252,6 @@ class KdesaSources {
             } else {
                 "/player/movie/$tmdbId"
             }
-            Log.d(TAG, "[$label] GET $CORNCLICK$path")
             val res = app.get(
                 "$CORNCLICK$path",
                 headers = hdr(
@@ -314,7 +281,6 @@ class KdesaSources {
                 val provider = src.get("provider")?.str("id") ?: "vaplayer"
                 val quality = src.str("quality") ?: ""
                 val type = src.str("type") ?: "hls"
-                Log.d(TAG, "[$label] stream provider=$provider quality=$quality type=$type url=${url.take(90)}")
                 if (type.equals("hls", true)) {
                     count += emitHls(
                         "$label $provider",
@@ -337,16 +303,13 @@ class KdesaSources {
                 for (sub in subs) {
                     val url = sub.str("url") ?: continue
                     val subLabel = sub.str("label") ?: sub.str("lang") ?: "English"
-                    if (url.endsWith(".gz")) {
-                        // opensubtitles gz files are gzip-compressed srt and cannot be
-                        // rendered by the player, skip them
-                        continue
-                    }
+                    // opensubtitles .gz subs are gzip-compressed srt the player cannot render
+                    if (url.endsWith(".gz")) continue
                     subtitleCallback.invoke(newSubtitleFile(subLabel, url) {})
                     subCount++
                 }
             }
-            Log.d(TAG, "[$label] done links=$count subs=$subCount (gz subs skipped)")
+            Log.d(TAG, "[$label] links=$count subs=$subCount")
             return count > 0
         } catch (e: Exception) {
             Log.e(TAG, "[$label] failed: ${e.message}")
@@ -354,10 +317,7 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
     // 7Movies - playback token + source API
-    // ------------------------------------------------------------------
-
     private suspend fun sourceSevenMovies(
         tmdbId: Int,
         season: Int?,
@@ -373,7 +333,6 @@ class KdesaSources {
             } else {
                 mapOf("tmdbId" to tmdbId, "type" to "movie")
             }
-            Log.d(TAG, "[$label] POST $SEVENMOVIES/api/playback-token body=$body")
             val tokenRes = app.post(
                 "$SEVENMOVIES/api/playback-token",
                 json = body,
@@ -394,15 +353,12 @@ class KdesaSources {
                 Log.e(TAG, "[$label] no token in response")
                 return false
             }
-            Log.d(TAG, "[$label] got token len=${token.length}")
-
             val srcPath = if (isShow) {
                 "/api/source/tv/$tmdbId/$season/$episode"
             } else {
                 "/api/source/movie/$tmdbId"
             }
             val srcUrl = "$SEVENMOVIES_EMBED$srcPath?token=${URLEncoder.encode(token, "UTF-8")}&provider=vaplayer"
-            Log.d(TAG, "[$label] GET $srcUrl")
             val srcRes = app.get(
                 srcUrl,
                 headers = hdr(
@@ -444,17 +400,9 @@ class KdesaSources {
                 }
                 val provider = stream.str("provider") ?: "stream$idx"
                 val quality = root.str("quality")
-                Log.d(TAG, "[$label] stream provider=$provider url=${url.take(90)}")
-                // probe the manifest: masters with demuxed audio renditions must
-                // stay unsplit (splitting drops the audio track) and identical
-                // mirrors of the same content are deduped
+                // dedupe identical mirrors; demuxed-audio masters must stay unsplit
                 val probe = probeHls(url, hdr())
-                if (probe != null) {
-                    if (!seenSignature.add(probe.signature)) {
-                        Log.d(TAG, "[$label] skipping duplicate $provider stream (identical manifest content)")
-                        continue
-                    }
-                }
+                if (probe != null && !seenSignature.add(probe.signature)) continue
                 count += emitHls(
                     "$label $provider${if (quality != null) " $quality" else ""}",
                     url,
@@ -464,7 +412,7 @@ class KdesaSources {
                     probe
                 )
             }
-            Log.d(TAG, "[$label] done links=$count")
+            Log.d(TAG, "[$label] links=$count")
             return count > 0
         } catch (e: Exception) {
             Log.e(TAG, "[$label] failed: ${e.message}")
@@ -472,10 +420,7 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
     // 1Embed - token + server API (vidsrc, goated, emp, night)
-    // ------------------------------------------------------------------
-
     private var oneEmbedToken: Pair<String, Long>? = null
 
     private suspend fun oneEmbedToken(): String? {
@@ -497,7 +442,6 @@ class KdesaSources {
                 return null
             }
             oneEmbedToken = token to (System.currentTimeMillis() + 25 * 60 * 1000)
-            Log.d(TAG, "[1Embed] got token len=${token.length}")
             token
         } catch (e: Exception) {
             Log.e(TAG, "[1Embed] token failed: ${e.message}")
@@ -524,7 +468,6 @@ class KdesaSources {
                     } else {
                         "/server/$server/id=$tmdbId?type=movie&_st=$token"
                     }
-                    Log.d(TAG, "[$label] GET $ONEEMBED$path")
                     val res = app.get(
                         "$ONEEMBED$path",
                         headers = hdr(
@@ -551,13 +494,11 @@ class KdesaSources {
                         Log.e(TAG, "[$label] $server no streamUrl")
                         continue
                     }
-                    val srcTitle = root.str("sourceTitle") ?: server
                     val audioNames = root.get("audioTracks")?.takeIf { it.isArray }
                         ?.mapNotNull { it.str("name") ?: it.str("language") } ?: emptyList()
-                    Log.d(TAG, "[$label] $server streamUrl=${streamUrl.take(80)} srcTitle=$srcTitle audio=[${audioNames.joinToString(",")}]")
 
-                    // streamUrl is a master playlist handed to the player unsplit so
-                    // every audio rendition stays selectable in the player tracks
+                    // the master playlist is handed to the player unsplit so every
+                    // audio rendition stays selectable in its track selector
                     val name = when {
                         audioNames.size > 1 -> "$label $server (Multi-Audio: ${audioNames.joinToString(", ")})"
                         audioNames.size == 1 -> "$label $server (${audioNames[0]})"
@@ -572,16 +513,13 @@ class KdesaSources {
 
                     val subs = root.get("subtitles")?.takeIf { it.isArray }
                     if (subs != null) {
-                        var subCount = 0
                         for (sub in subs) {
                             val subUrl = sub.str("url") ?: sub.str("rawUrl") ?: continue
                             val subLabel = sub.str("label") ?: sub.str("language") ?: continue
                             // urls can carry query params after the extension
                             if (!subUrl.contains(".vtt") && !subUrl.contains(".srt")) continue
                             subtitleCallback.invoke(newSubtitleFile(subLabel, subUrl) {})
-                            subCount++
                         }
-                        Log.d(TAG, "[$label] $server subs=$subCount")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "[$label] server $server failed: ${e.message}")
@@ -595,10 +533,7 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
-    // VixSrc (Italian) - api -> embed page -> master playlist w/ token
-    // ------------------------------------------------------------------
-
+    // VixSrc (Italian) - api -> embed page -> master playlist with token
     private suspend fun sourceVixSrc(
         tmdbId: Int,
         season: Int?,
@@ -613,7 +548,6 @@ class KdesaSources {
             } else {
                 "/api/movie/$tmdbId?lang=it"
             }
-            Log.d(TAG, "[$label] GET $VIXSRC$apiPath")
             val apiRes = app.get(
                 "$VIXSRC$apiPath",
                 headers = hdr(
@@ -633,8 +567,7 @@ class KdesaSources {
                 return false
             }
             val embedUrl = if (src.startsWith("http")) src else "$VIXSRC$src"
-            // embed token expires ~10s after the api call, fetch immediately
-            Log.d(TAG, "[$label] GET embed $embedUrl")
+            // the embed token expires ~10s after the api call, fetch immediately
             val embedRes = app.get(
                 embedUrl,
                 headers = hdr("Referer" to "$VIXSRC/", "Origin" to VIXSRC),
@@ -656,7 +589,7 @@ class KdesaSources {
                 Log.e(TAG, "[$label] masterUrl/token/expires missing (master=${masterUrl?.take(30)} token=${token != null} expires=${expires != null})")
                 return false
             }
-            Log.d(TAG, "[$label] master=$masterUrl token=$token expires=$expires asn='$asn' fhd=$canPlayFhd")
+            Log.d(TAG, "[$label] master=$masterUrl fhd=$canPlayFhd")
 
             // the playlist endpoint rejects requests without the asn param even
             // when it is empty - always send token, expires and asn together
@@ -671,7 +604,6 @@ class KdesaSources {
                     this.headers = hdr("Referer" to "$VIXSRC/", "Origin" to VIXSRC)
                 }
             )
-            Log.d(TAG, "[$label] done playlist=${playlist.take(100)}")
             return true
         } catch (e: Exception) {
             Log.e(TAG, "[$label] failed: ${e.message}")
@@ -679,10 +611,7 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
     // Anidap - AniList search -> anidap api -> chad sources (sub/dub)
-    // ------------------------------------------------------------------
-
     private fun normalizeAnimeTitle(t: String): String =
         Normalizer.normalize(t, Normalizer.Form.NFD)
             .replace(Regex("[\\p{Mn}]"), "")
@@ -784,7 +713,6 @@ class KdesaSources {
                 Log.e(TAG, "[$label] anime not on Anidap")
                 return false
             }
-            Log.d(TAG, "[$label] anidap id=$animeId ep=$episode")
 
             var count = 0
             outer@ for (audioType in listOf("sub", "dub")) {
@@ -826,7 +754,6 @@ class KdesaSources {
                                 else -> hdr()
                             }
                             val audioLabel = if (audioType == "dub") "English Dub" else "Japanese"
-                            Log.d(TAG, "[$label] stream $provider/$audioType url=${url.take(80)} headers=$streamHeaders")
                             val streamReferer = streamHeaders["Referer"] ?: ""
                             count += emitHls(
                                 "$label $provider ($audioLabel)",
@@ -855,7 +782,7 @@ class KdesaSources {
                     }
                 }
             }
-            Log.d(TAG, "[$label] done links=$count")
+            Log.d(TAG, "[$label] links=$count")
             return count > 0
         } catch (e: Exception) {
             Log.e(TAG, "[$label] failed: ${e.message}")
@@ -863,10 +790,7 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
     // TQQ (Anime) - AniKoto mirrors with sub/hsub/dub servers
-    // ------------------------------------------------------------------
-
     private data class TqqAnime(val slug: String, val title: String, val altTitle: String?, val animeId: String?)
 
     private fun tqqNormalize(t: String): String =
@@ -933,11 +857,7 @@ class KdesaSources {
             try {
                 Log.d(TAG, "[$label] trying mirror $base")
                 val ok = tqqResolveMirror(base, title, season, episode, subtitleCallback, callback)
-                if (ok) {
-                    Log.d(TAG, "[$label] mirror $base produced links")
-                    return true
-                }
-                Log.d(TAG, "[$label] mirror $base gave nothing, trying next")
+                if (ok) return true
             } catch (e: Exception) {
                 Log.e(TAG, "[$label] mirror $base failed: ${e.message}")
             }
@@ -958,12 +878,9 @@ class KdesaSources {
         if (season > 1) {
             candidates = candidates + tqqSearch(base, "$title Season $season")
         }
-        if (candidates.isEmpty()) {
-            Log.d(TAG, "[$label] no search results on $base")
-            return false
-        }
-        // season-aware pool selection: season > 1 prefers entries carrying the season
-        // marker, season 1 skips specials/ova/ona/movie entries
+        if (candidates.isEmpty()) return false
+        // season > 1 prefers entries with a season marker, season 1 skips
+        // specials/ova/ona/movie entries
         val seasonMarked = candidates.filter { c ->
             listOf(c.title, c.altTitle).filterNotNull().any { tqqHasSeasonMarker(it, season) }
         }
@@ -1007,7 +924,6 @@ class KdesaSources {
             Log.e(TAG, "[$label] could not resolve anime id")
             return false
         }
-        Log.d(TAG, "[$label] animeId=$animeId")
 
         val ajaxHeaders = hdr(
             "Referer" to "$base/watch/${anime.slug}",
@@ -1036,7 +952,6 @@ class KdesaSources {
             Log.e(TAG, "[$label] episode $episode not found")
             return false
         }
-        Log.d(TAG, "[$label] episode $episode serverIds len=${serverIds.length}")
 
         val listRes = app.get(
             "$base/ajax/server/list?servers=${URLEncoder.encode(serverIds, "UTF-8")}",
@@ -1115,7 +1030,6 @@ class KdesaSources {
                 // per-type rewrite: swap /sub and /dub path segments to the requested audio
                 if (server.type == "dub") embedUrl = embedUrl.replace("/sub/", "/dub/")
                 else if (embedUrl.contains("/dub/") && server.type != "dub") embedUrl = embedUrl.replace("/dub/", "/sub/")
-                Log.d(TAG, "[$label] embed ${server.type}/${server.name} -> $embedUrl")
 
                 if (tqqResolveEmbed(embedUrl, server.type, server.name, subtitleCallback, callback)) {
                     emitted++
@@ -1125,7 +1039,6 @@ class KdesaSources {
                 Log.e(TAG, "[$label] server ${server.type}/${server.name} failed: ${e.message}")
             }
         }
-        Log.d(TAG, "[$label] mirror done emitted=$emitted")
         return emitted > 0
     }
 
@@ -1227,15 +1140,11 @@ class KdesaSources {
                     this.headers = subHeaders
                 })
             }
-            Log.d(TAG, "[$label] subs=${tracks.size()}")
         }
         return true
     }
 
-    // ------------------------------------------------------------------
     // Nova - novahd.cc API behind Cloudflare
-    // ------------------------------------------------------------------
-
     private suspend fun sourceNova(
         tmdbId: Int,
         season: Int?,
@@ -1270,7 +1179,6 @@ class KdesaSources {
                     continue
                 }
                 if (parsed.get("ready")?.asBoolean() == false) {
-                    Log.d(TAG, "[$label] ready=false, waiting (attempt $attempt)")
                     delay(1200)
                     continue
                 }
@@ -1300,16 +1208,10 @@ class KdesaSources {
                     if (!subUrl.contains(".vtt") && !subUrl.contains(".srt")) continue
                     subtitleCallback.invoke(newSubtitleFile(subLabel, subUrl) {})
                 }
-                Log.d(TAG, "[$label] subs=${subs.size()}")
             }
 
-            // Nova answers with one entry per provider x language x quality -
-            // 20+ entries for the same episode in the worst case. They are
-            // collapsed into ONE link per language. The Titan/Orion masters
-            // carry their audio as a separate EXT-X-MEDIA rendition, so the
-            // master is handed to the player unsplit: splitting it per
-            // quality (generateM3u8) drops the audio group and the stream
-            // plays completely silent.
+            // the api returns provider x language x quality entries (20+ for the
+            // same episode) - collapse them into one link per language
             data class NovaSrc(
                 val url: String,
                 val provider: String,
@@ -1336,8 +1238,6 @@ class KdesaSources {
                     )
                 )
             }
-            val langSummary = all.map { it.lang.ifBlank { "-" } }.distinct().joinToString(",")
-            Log.d(TAG, "[$label] raw sources=${all.size} langs=$langSummary")
 
             val providerRank = mapOf(
                 "titan" to 0, "orion" to 1, "vega" to 2, "falcon" to 3, "heron" to 4, "orca" to 5
@@ -1362,24 +1262,20 @@ class KdesaSources {
                             .thenBy { providerRank[it.provider] ?: 9 }
                     )
                 var bestUrl: String? = null
-                var bestProvider = ""
                 var bestHeight = 0
                 var probedLangs: List<String> = emptyList()
                 var apiQuality = ""
-                // probe up to three candidates so a dead edge worker does not
-                // kill the whole language
+                // probe up to three candidates so one dead edge does not kill the language
                 for (cand in hlsCandidates.take(3)) {
                     val probe = probeHls(cand.url, playbackHeaders) ?: continue
                     bestUrl = cand.url
-                    bestProvider = cand.provider
                     bestHeight = probe.maxHeight
                     probedLangs = probe.audioLangs
                     apiQuality = cand.quality
                     break
                 }
                 if (bestUrl != null) {
-                    // label with the api language, or with the manifest's own
-                    // audio tag when the api field is blank
+                    // fall back to the manifest's own audio tag when the api language is blank
                     val langLabel = when {
                         lang.isNotBlank() -> prettifyLang(lang)
                         probedLangs.size == 1 -> prettifyLang(probedLangs[0])
@@ -1392,10 +1288,6 @@ class KdesaSources {
                     }
                     var name = "$label $langLabel$qPart"
                     if (probedLangs.size > 1) name += audioSuffix(probedLangs)
-                    Log.d(
-                        TAG,
-                        "[$label] lang='$lang' provider=$bestProvider audio=[${probedLangs.joinToString(",")}] max=${bestHeight}p -> '$name'"
-                    )
                     callback.invoke(
                         newExtractorLink(label, name, bestUrl, ExtractorLinkType.M3U8) {
                             this.headers = playbackHeaders
@@ -1404,13 +1296,12 @@ class KdesaSources {
                     )
                     count++
                 } else {
-                    // no working hls master for this language - mp4 fallback
+                    // no working hls master for this language, fall back to mp4
                     val mp4 = list.filter { it.type == "mp4" }.firstOrNull()
                     if (mp4 != null) {
                         val langLabel = if (lang.isNotBlank()) prettifyLang(lang) else "Auto"
                         val qPart = mp4.quality.takeIf { it.isNotBlank() && !it.equals("Auto", true) }
                             ?.let { " $it" } ?: ""
-                        Log.d(TAG, "[$label] lang='$lang' hls probing failed, mp4 fallback (${mp4.provider})")
                         callback.invoke(
                             newExtractorLink(label, "$label $langLabel$qPart (mp4)", mp4.url, ExtractorLinkType.VIDEO) {
                                 this.headers = playbackHeaders
@@ -1418,11 +1309,11 @@ class KdesaSources {
                         )
                         count++
                     } else {
-                        Log.e(TAG, "[$label] lang='$lang' produced nothing (hls probes failed, no mp4)")
+                        Log.e(TAG, "[$label] no playable stream for lang=$lang")
                     }
                 }
             }
-            Log.d(TAG, "[$label] done links=$count (collapsed from ${all.size} raw sources)")
+            Log.d(TAG, "[$label] links=$count (from ${all.size} raw sources)")
             return count > 0
         } catch (e: Exception) {
             Log.e(TAG, "[$label] failed: ${e.message}")
@@ -1430,10 +1321,7 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
     // FSOnline - dooplay site behind Cloudflare (Filemoon/Doodstream)
-    // ------------------------------------------------------------------
-
     private fun fsoSlug(title: String): String =
         Normalizer.normalize(title.trim(), Normalizer.Form.NFD)
             .lowercase()
@@ -1455,7 +1343,6 @@ class KdesaSources {
             val slugs = mutableListOf<String>()
             if (year != null) slugs.add(fsoSlug("$title $year"))
             slugs.add(fsoSlug(title))
-            Log.d(TAG, "[$label] tmdbId=$tmdbId year=$year slugs=$slugs")
 
             val pageHeaders = hdr(
                 "Referer" to "$FSONLINE/",
@@ -1473,7 +1360,6 @@ class KdesaSources {
                 } else {
                     "$FSONLINE/film/$slug/"
                 }
-                Log.d(TAG, "[$label] GET $url")
                 val res = KdesaCF.get(url, headers = pageHeaders)
                 if (res.code != 200) {
                     Log.e(TAG, "[$label] HTTP ${res.code} for slug '$slug'")
@@ -1484,13 +1370,11 @@ class KdesaSources {
                     usedSlug = slug
                     break
                 }
-                Log.d(TAG, "[$label] no movie-id on page for slug '$slug'")
             }
             if (movieId == null) {
                 Log.e(TAG, "[$label] movie not found on fsonline")
                 return false
             }
-            Log.d(TAG, "[$label] movieID=$movieId (slug=$usedSlug)")
 
             val ajaxRes = KdesaCF.post(
                 "$FSONLINE/wp-admin/admin-ajax.php",
@@ -1513,12 +1397,11 @@ class KdesaSources {
                 val vs = li.attr("data-vs").takeIf { it.isNotBlank() } ?: return@forEach
                 options[name] = vs
             }
-            Log.d(TAG, "[$label] lazy_player options=${options.keys}")
+            Log.d(TAG, "[$label] player options=${options.keys}")
 
             var any = false
             for (hostName in listOf("Filemoon", "Doodstream")) {
                 val embed = options[hostName] ?: continue
-                Log.d(TAG, "[$label] resolving $hostName: $embed")
                 val loaded = resolveEmbed(embed, "$FSONLINE/", "$label $hostName", subtitleCallback, callback)
                 if (loaded) any = true
             }
@@ -1530,10 +1413,7 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Cuevana3 - Spanish dooplay-ish site (streamwish/filemoon/vidhide/voe)
-    // ------------------------------------------------------------------
-
+    // Cuevana3 - Spanish site with streamwish/filemoon/vidhide/voe embeds
     private suspend fun tmdbTitle(type: String, tmdbId: Int, language: String): String? {
         return try {
             val res = app.get(
@@ -1572,6 +1452,7 @@ class KdesaSources {
             val date = root.str("release_date") ?: root.str("first_air_date") ?: return null
             return date.take(4).toIntOrNull()
         } catch (e: Exception) {
+            Log.e(TAG, "tmdbYear failed: ${e.message}")
             return null
         }
     }
@@ -1616,7 +1497,6 @@ class KdesaSources {
                 } else {
                     "$CUEVANA3/ver-pelicula/$slug"
                 }
-                Log.d(TAG, "[$label] GET $url")
                 val res = app.get(url, headers = hdr(), timeout = 30_000L)
                 if (res.code != 200) {
                     Log.e(TAG, "[$label] HTTP ${res.code} for slug '$slug'")
@@ -1674,12 +1554,8 @@ class KdesaSources {
                                 host.contains("streamwish") -> "StreamWish"
                                 host.contains("vidhide") -> "VidHide"
                                 host.contains("voe") -> "Voe"
-                                else -> {
-                                    Log.d(TAG, "[$label] skipping unsupported host $host")
-                                    continue
-                                }
+                                else -> continue
                             }
-                            Log.d(TAG, "[$label] $langLabel $hostLabel -> $embed")
                             if (resolveEmbed(
                                     embed, "$CUEVANA3/", "$label $langLabel ($hostLabel)",
                                     subtitleCallback, callback
@@ -1692,13 +1568,8 @@ class KdesaSources {
                             Log.e(TAG, "[$label] player.php failed: ${e.message}")
                         }
                     }
-                    Log.d(TAG, "[$label] $langField -> ${if (langDone) "resolved" else "no working host"}")
                 }
-                if (any) {
-                    Log.d(TAG, "[$label] done any=true (slug=$slug)")
-                    return true
-                }
-                Log.d(TAG, "[$label] slug '$slug' produced nothing, trying next candidate")
+                if (any) return true
             }
             Log.e(TAG, "[$label] no playable embeds")
             return false
@@ -1708,12 +1579,9 @@ class KdesaSources {
         }
     }
 
-    // ------------------------------------------------------------------
     // Shared embed resolution: built-in extractors first, then inline
     // fallbacks for mirror domains the built-ins do not cover
-    // ------------------------------------------------------------------
 
-    // loadExtractor with a relabeled prefix on every produced link
     private suspend fun loadExtractorRelabeled(
         url: String,
         referer: String,

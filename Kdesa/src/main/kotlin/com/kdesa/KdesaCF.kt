@@ -71,7 +71,7 @@ internal object KdesaCF {
     fun saveSession(host: String, cookies: String, ua: String) {
         sessions[host] = CfSession(cookies, ua, System.currentTimeMillis())
         prefs?.edit()?.putString("cf_$host", "$host|||$cookies|||$ua")?.apply()
-        Log.d(TAG, "saved CF session for $host (cookies len=${cookies.length})")
+        Log.d(TAG, "saved CF session for $host")
     }
 
     fun clearSession(host: String) {
@@ -121,29 +121,21 @@ internal object KdesaCF {
     ): NiceResponse {
         val host = Uri.parse(url).host ?: ""
         var res = app.get(url, headers = buildHeaders(url, headers), timeout = timeout)
-        if (!isBlocked(res)) {
-            Log.d(TAG, "GET $url -> ${res.code} (direct)")
-            return res
-        }
+        if (!isBlocked(res)) return res
         Log.e(TAG, "GET $url -> ${res.code} blocked by Cloudflare, starting bypass")
 
         bypassMutex.withLock {
             validSession(host)?.let {
                 res = app.get(url, headers = buildHeaders(url, headers), timeout = timeout)
-                if (!isBlocked(res)) {
-                    Log.d(TAG, "GET $url -> ${res.code} (cached cookies)")
-                    return res
-                }
+                if (!isBlocked(res)) return res
             }
             clearSession(host)
-            val ok = showBypassDialog("https://$host/")
-            if (!ok) {
-                Log.e(TAG, "CF bypass dialog failed/cancelled for $host")
+            if (!showBypassDialog("https://$host/")) {
+                Log.e(TAG, "CF bypass dialog failed for $host")
                 return res
             }
-            for (attempt in 1..2) {
+            repeat(2) {
                 res = app.get(url, headers = buildHeaders(url, headers), timeout = timeout)
-                Log.d(TAG, "GET $url retry $attempt after bypass -> ${res.code}")
                 if (!isBlocked(res)) return res
             }
         }
@@ -158,29 +150,21 @@ internal object KdesaCF {
     ): NiceResponse {
         val host = Uri.parse(url).host ?: ""
         var res = app.post(url, headers = buildHeaders(url, headers), data = data, timeout = timeout)
-        if (!isBlocked(res)) {
-            Log.d(TAG, "POST $url -> ${res.code} (direct)")
-            return res
-        }
+        if (!isBlocked(res)) return res
         Log.e(TAG, "POST $url -> ${res.code} blocked by Cloudflare, starting bypass")
 
         bypassMutex.withLock {
             validSession(host)?.let {
                 res = app.post(url, headers = buildHeaders(url, headers), data = data, timeout = timeout)
-                if (!isBlocked(res)) {
-                    Log.d(TAG, "POST $url -> ${res.code} (cached cookies)")
-                    return res
-                }
+                if (!isBlocked(res)) return res
             }
             clearSession(host)
-            val ok = showBypassDialog("https://$host/")
-            if (!ok) {
-                Log.e(TAG, "CF bypass dialog failed/cancelled for $host")
+            if (!showBypassDialog("https://$host/")) {
+                Log.e(TAG, "CF bypass dialog failed for $host")
                 return res
             }
-            for (attempt in 1..2) {
+            repeat(2) {
                 res = app.post(url, headers = buildHeaders(url, headers), data = data, timeout = timeout)
-                Log.d(TAG, "POST $url retry $attempt after bypass -> ${res.code}")
                 if (!isBlocked(res)) return res
             }
         }
