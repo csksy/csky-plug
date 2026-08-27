@@ -94,7 +94,33 @@ class AniKuro : MainAPI() {
     )
 
     private val apiBase: String
-        get() = mainUrl.trimEnd('/')
+        get() = resolvedHost ?: mainUrl.trimEnd('/')
+
+    /** The site rotates domains (anikuro.site is the announced fallback) — remember the live one. */
+    @Volatile
+    private var resolvedHost: String? = null
+
+    /**
+     * GETs an API path trying the current host first, then the failover list.
+     * On success the working host is remembered for the session.
+     */
+    private suspend fun apiGet(path: String, timeout: Long): String? {
+        val primary = resolvedHost ?: mainUrl.trimEnd('/')
+        val hosts = listOf(primary) + FAILOVER_HOSTS.filter { !it.equals(primary, true) }
+        for (host in hosts) {
+            try {
+                val text = app.get("$host$path", headers = apiHeaders, timeout = timeout).text
+                resolvedHost = host
+                if (primary != host) Log.i(TAG, "failover: now using $host")
+                return text
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "host $host failed for $path: ${e.message}")
+            }
+        }
+        return null
+    }
 
     // ------------------------------------------------------------------ DTOs
 
@@ -283,8 +309,7 @@ class AniKuro : MainAPI() {
         return when (kind) {
             "recent" -> {
                 val items = try {
-                    parseJson<RecentEnvelope>(app.get("$apiBase/api/v1/discovery/recent", headers = apiHeaders, timeout = 20_000L).text)
-                        .data?.items
+                    apiGet("/api/v1/discovery/recent", 20_000L)?.let { parseJson<RecentEnvelope>(it) }?.data?.items
                 } catch (e: Exception) {
                     Log.e(TAG, "recent failed: ${e.message}")
                     null
@@ -294,8 +319,7 @@ class AniKuro : MainAPI() {
             }
             "discovery" -> {
                 val items = try {
-                    parseJson<CatalogEnvelope>(app.get("$apiBase/api/v1/discovery/$rest", headers = apiHeaders, timeout = 20_000L).text)
-                        .data?.items
+                    apiGet("/api/v1/discovery/$rest", 20_000L)?.let { parseJson<CatalogEnvelope>(it) }?.data?.items
                 } catch (e: Exception) {
                     Log.e(TAG, "discovery/$rest failed: ${e.message}")
                     null
@@ -304,9 +328,9 @@ class AniKuro : MainAPI() {
                 newHomePageResponse(request.name, home, hasNext = false)
             }
             else -> { // filter:<sort>:<formats>
-                val url = buildFilterUrl(page = page, sort = rest.first, formats = rest.second, perPage = 20)
                 val env = try {
-                    parseJson<FilterEnvelope>(app.get(url, headers = apiHeaders, timeout = 20_000L).text)
+                    apiGet(buildFilterPath(page = page, sort = rest.first, formats = rest.second, perPage = 20), 20_000L)
+                        ?.let { parseJson<FilterEnvelope>(it) }
                 } catch (e: Exception) {
                     Log.e(TAG, "filter failed: ${e.message}")
                     null
@@ -330,8 +354,8 @@ class AniKuro : MainAPI() {
         else -> "recent" to ("" to "")
     }
 
-    private fun buildFilterUrl(page: Int, sort: String, formats: String, perPage: Int, query: String = ""): String {
-        val sb = StringBuilder("$apiBase/api/v1/discovery/filter?page=$page&perPage=$perPage")
+    private fun buildFilterPath(page: Int, sort: String, formats: String, perPage: Int, query: String = ""): String {
+        val sb = StringBuilder("/api/v1/discovery/filter?page=$page&perPage=$perPage")
         if (query.isNotBlank()) sb.append("&q=").append(java.net.URLEncoder.encode(query, "UTF-8"))
         if (sort.isNotBlank()) sb.append("&sort=").append(sort)
         if (formats.isNotBlank()) sb.append("&formats=").append(formats)
@@ -346,10 +370,10 @@ class AniKuro : MainAPI() {
     }
 
     private suspend fun searchPaged(query: String, page: Int): List<SearchResponse> {
-        val url = buildFilterUrl(page = page, sort = "POPULARITY_DESC", formats = "", perPage = 20, query = query)
         return try {
-            val env = parseJson<FilterEnvelope>(app.get(url, headers = apiHeaders, timeout = 20_000L).text)
-            env.data?.items.orEmpty().mapNotNull { it.toSearchResponse() }
+            val env = apiGet(buildFilterPath(page = page, sort = "POPULARITY_DESC", formats = "", perPage = 20, query = query), 20_000L)
+                ?.let { parseJson<FilterEnvelope>(it) }
+            env?.data?.items.orEmpty().mapNotNull { it.toSearchResponse() }
         } catch (e: Exception) {
             Log.e(TAG, "search failed: ${e.message}")
             emptyList()
@@ -379,14 +403,14 @@ class AniKuro : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val id = url.substringAfterLast("/").substringBefore("?").toIntOrNull() ?: return null
         val full = try {
-            parseJson<FullEnvelope>(app.get("$apiBase/api/v1/anime/$id/full", headers = apiHeaders, timeout = 25_000L).text).data
+            apiGet("/api/v1/anime/$id/full", 25_000L)?.let { parseJson<FullEnvelope>(it) }?.data
         } catch (e: Exception) {
             Log.e(TAG, "full failed for $id: ${e.message}")
             null
         }
 
         val episodeList = try {
-            parseJson<EpisodesEnvelope>(app.get("$apiBase/api/v1/anime/$id/episodes", headers = apiHeaders, timeout = 30_000L).text).data
+            apiGet("/api/v1/anime/$id/episodes", 30_000L)?.let { parseJson<EpisodesEnvelope>(it) }?.data
         } catch (e: Exception) {
             Log.e(TAG, "episodes failed for $id: ${e.message}")
             null
@@ -511,14 +535,14 @@ class AniKuro : MainAPI() {
             "$apiBase/api/v1/sources/${provider.key}/$animeId:$ep"
         }
         val text = try {
-            app.get(endpoint, headers = apiHeaders, timeout = 45_000L).text
+            apiGet(endpoint, 45_000L)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.d(TAG, "${provider.label} request failed: ${e.message}")
             return null
         }
-        if (text.isBlank() || text.length > 6_000_000) return null
+        if (text.isNullOrBlank() || text.length > 6_000_000) return null
 
         val env = try {
             parseJson<SourceEnvelope>(text)
