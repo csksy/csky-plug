@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 android {
     buildFeatures {
@@ -7,7 +7,7 @@ android {
 }
 
 cloudstream {
-    description = "AniKuro - Anime (sub/dub, real episode titles, 12 servers, multi-language subs)"
+    description = "AniKuro - Anime & Movies from anikuro.ru (sub/dub selection for anime AND movies, real episode titles, 12 servers, multi-language subtitles). v3: fixed source extraction + dub badges"
     authors = listOf("csksy")
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")

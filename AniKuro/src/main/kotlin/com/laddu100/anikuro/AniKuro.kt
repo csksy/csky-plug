@@ -36,23 +36,38 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * AniKuro (anikuro.ru) — AniList-keyed anime site with a Django JSON API.
  *
- * Verified live (2026-08):
- *  - Catalog:  /api/v1/discovery/{trending,top-airing,upcoming,recent} + paginated /api/v1/discovery/filter
- *  - Details:  /api/v1/anime/{anilistId}/full
- *  - Episodes: /api/v1/anime/{anilistId}/episodes  (real ani.zip/TVDB titles, per-episode sub/dub variants)
- *  - Sources:  12 providers; five use /api/v1/{p}/video/{id}/{ep}, seven use /api/v1/sources/{p}/{id}:{ep}
- *  - Playback: animepower = own CDN (needs Referer https://anikuro.ru/), most others are
- *              https://proxy.anikuro.ru/{base64(masterUrl|referer)}.m3u8 (self-contained, headerless)
- *              or direct CDN masters with Referer: https://megaplay.buzz/
- *  - Subtitles: API subtitle arrays + #EXT-X-MEDIA:TYPE=SUBTITLES renditions inside the masters (WebVTT .txt)
+ * v3 fixes (all verified against live site):
+ *  1. "No links found" — the source endpoints (/api/v1/sources/... and /api/v1/{p}/video/...)
+ *     now return the provider payload BARE (normalized/raw at top level, no {ok,data} wrapper).
+ *     The plugin now accepts BOTH the enveloped and the bare shape.
+ *  2. NiceHttp `timeout` is SECONDS, not ms — 45_000L meant 12.5h hangs. Now uses seconds.
+ *  3. A provider can return MULTIPLE normalized blocks for the same variant (several servers);
+ *     all blocks are now collected and merged (previously only the first was emitted).
+ *  4. Movies: CloudStream hides the Sub/Dub selector for TvType.AnimeMovie and always plays the
+ *     first map entry (sub). MOVIE format is now emitted as TvType.Anime with the single movie
+ *     episode, so the Sub/Dub dropdown appears and each variant plays its own stream.
+ *  5. Poster DUB badge: the catalog API's hasDub is broken server-side (always false). Dub
+ *     existence is now resolved via batched AniList GraphQL (English voice actors) — the same
+ *     method the site's own frontend uses — with a session cache, plus per-episode variant truth
+ *     learned in load().
+ *
+ * Still true from v1/v2:
+ *  - Catalog: /api/v1/discovery/... + /api/v1/discovery/filter
+ *  - Details: /api/v1/anime/{id}/full, Episodes: /api/v1/anime/{id}/episodes (real ani.zip titles)
+ *  - 12 providers; five /api/v1/{p}/video/{id}/{ep}, seven /api/v1/sources/{p}/{id}:{ep}
+ *  - proxy.anikuro.ru links are self-contained (headerless); animepower CDN needs Referer
+ *    https://anikuro.ru/; direct upstream masters need their upstreamReferer.
  */
 class AniKuro : MainAPI() {
     override var mainUrl = "https://anikuro.ru"
@@ -65,6 +80,13 @@ class AniKuro : MainAPI() {
     companion object {
         const val TAG = "AniKuro"
         val FAILOVER_HOSTS = listOf("https://anikuro.ru", "https://anikuro.site")
+
+        // NiceHttp timeouts are SECONDS (verified in NiceHttp Requests.kt) — do not pass ms!
+        const val TIMEOUT_CATALOG = 15L
+        const val TIMEOUT_DETAILS = 20L
+        const val TIMEOUT_EPISODES = 30L
+        const val TIMEOUT_SOURCES = 60L
+        const val TIMEOUT_MASTER = 12L
 
         /** Site playback order (from the site's own WATCH_SOURCE_PROVIDERS). */
         val PROVIDERS = listOf(
@@ -81,6 +103,30 @@ class AniKuro : MainAPI() {
             ProviderDef("animix", "AnimiX"),
             ProviderDef("senshi", "Senshi"),
         )
+
+        private const val ANILIST_API = "https://graphql.anilist.co"
+
+        // NOTE: AniList only resolves voiceActors when the edge also selects node —
+        // verified live: without node { id } the voiceActors arrays come back EMPTY.
+        private val ANILIST_DUB_QUERY = """
+            query (${"$"}ids: [Int]) {
+              Page(perPage: 50) {
+                media(id_in: ${"$"}ids, type: ANIME) {
+                  id
+                  characters(perPage: 20) {
+                    edges {
+                      voiceActors {
+                        languageV2
+                      }
+                      node {
+                        id
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        """.trimIndent()
     }
 
     data class ProviderDef(val key: String, val label: String, val special: Boolean = false)
@@ -102,7 +148,8 @@ class AniKuro : MainAPI() {
 
     /**
      * GETs an API path trying the current host first, then the failover list.
-     * On success the working host is remembered for the session.
+     * Non-JSON bodies (HTML error pages / interstitials) count as failure so the next
+     * host is tried. On success the working host is remembered for the session.
      */
     private suspend fun apiGet(path: String, timeout: Long): String? {
         val primary = resolvedHost ?: mainUrl.trimEnd('/')
@@ -110,6 +157,11 @@ class AniKuro : MainAPI() {
         for (host in hosts) {
             try {
                 val text = app.get("$host$path", headers = apiHeaders, timeout = timeout).text
+                val trimmed = text.trimStart()
+                if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+                    Log.d(TAG, "host $host non-JSON for $path (${trimmed.take(60)})")
+                    continue
+                }
                 resolvedHost = host
                 if (primary != host) Log.i(TAG, "failover: now using $host")
                 return text
@@ -233,20 +285,33 @@ class AniKuro : MainAPI() {
         val variants: List<String>? = null,
     )
 
-    // --- sources DTOs (three tolerated shapes, same as the site's own JS) ---
+    // --- sources DTOs.
+    // The backend is inconsistent: catalog routes wrap in {ok, data}, while the provider
+    // routes return the payload BARE (normalized/raw at top level). SourceRoot tolerates both.
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class SourceEnvelope(val ok: Boolean? = null, val data: SourceData? = null, val error: ApiError? = null)
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class ApiError(val code: String? = null, val message: String? = null)
+    data class SourceRoot(
+        val ok: Boolean? = null,
+        val data: SourceData? = null,
+        // bare-shape fields (present when there is no `data` wrapper):
+        val normalized: List<VariantBlock>? = null,
+        val raw: RawBlock? = null,
+        val provider: String? = null,
+    ) {
+        /** The effective payload regardless of envelope style. */
+        fun effective(): SourceData? {
+            data?.let { return it }
+            return if (normalized != null || raw != null) {
+                SourceData(provider = provider, normalized = normalized, raw = raw)
+            } else null
+        }
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class SourceData(
         val provider: String? = null,
         val normalized: List<VariantBlock>? = null,
         val raw: RawBlock? = null,
-        val error: String? = null,
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -255,8 +320,13 @@ class AniKuro : MainAPI() {
         val sources: List<SourceItem>? = null,
         val subtitles: List<SubtitleItem>? = null,
         val headers: Map<String, String>? = null,
-        val error: String? = null,
-    )
+        // legacy raw-block fields (shape 2):
+        val default: String? = null,
+        val quality: String? = null,
+        val originalUrl: String? = null,
+    ) {
+        fun hasSources(): Boolean = !sources.isNullOrEmpty() || !default.isNullOrBlank()
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class SourceItem(
@@ -277,18 +347,125 @@ class AniKuro : MainAPI() {
         val sub: VariantBlock? = null,
         val dub: VariantBlock? = null,
         val providerResult: ProviderResult? = null,
-        val error: String? = null,
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class ProviderResult(
         val ok: Boolean? = null,
         val variants: List<VariantBlock>? = null,
-        val error: String? = null,
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class LinkData(val id: Int, val ep: Int, val variant: String)
+
+    // --- AniList dub detection DTOs
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListResp(val data: AniListData? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListData(val page: AniListPage? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListPage(val media: List<AniListMedia>? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListMedia(val id: Int? = null, val characters: AniListCharacters? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListCharacters(val edges: List<AniListEdge>? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListEdge(val voiceActors: List<AniListVoiceActor>? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListVoiceActor(val languageV2: String? = null)
+
+    // ------------------------------------------------- dub cache (AniList-backed)
+
+    /**
+     * The catalog API's hasDub flag is broken (always false server-side as of 2026-09), so cards
+     * would all show "SUB". The site's own frontend derives dub existence from AniList character
+     * voiceActors (any English VA). This cache batch-queries AniList for a page of ids and
+     * remembers the result for the session; load() also feeds per-episode variant truth in.
+     */
+    object DubCache {
+        private const val TTL_MS = 6 * 60 * 60 * 1000L // 6h
+        private const val MAX_ENTRIES = 10_000
+        private val map = ConcurrentHashMap<Int, Pair<Boolean, Long>>() // anilistId -> (hasDub, at)
+        private val mutex = Mutex()
+
+        fun peek(id: Int?): Boolean? {
+            if (id == null) return null
+            val entry = map[id] ?: return null
+            return if (System.currentTimeMillis() - entry.second < TTL_MS) entry.first else null
+        }
+
+        fun put(id: Int, hasDub: Boolean) {
+            if (map.size > MAX_ENTRIES) map.clear()
+            map[id] = Pair(hasDub, System.currentTimeMillis())
+        }
+
+        /** Batch-fetches dub status for ids not cached yet. Never throws. */
+        suspend fun annotate(rawIds: Collection<Int?>) {
+            val ids = rawIds.filterNotNull().filter { it > 0 }.distinct()
+            if (ids.isEmpty()) return
+            val now = System.currentTimeMillis()
+            val missing = ids.filter { id ->
+                val entry = map[id]
+                entry == null || (now - entry.second >= TTL_MS)
+            }
+            if (missing.isEmpty()) return
+            try {
+                mutex.withLock {
+                    val now2 = System.currentTimeMillis()
+                    val still = missing.filter { id ->
+                        val entry = map[id]
+                        entry == null || (now2 - entry.second >= TTL_MS)
+                    }
+                    if (still.isEmpty()) return
+                    for (chunk in still.chunked(50)) {
+                        val resp = try {
+                            app.post(
+                                ANILIST_API,
+                                headers = mapOf(
+                                    "Accept" to "application/json",
+                                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                                ),
+                                json = mapOf(
+                                    "query" to ANILIST_DUB_QUERY,
+                                    "variables" to mapOf("ids" to chunk),
+                                ),
+                                timeout = TIMEOUT_CATALOG,
+                            ).text
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.d(TAG, "anilist dub batch failed: ${e.message}")
+                            null
+                        } ?: continue
+                        val parsed = try {
+                            parseJson<AniListResp>(resp)
+                        } catch (e: Exception) {
+                            Log.d(TAG, "anilist dub parse failed: ${e.message}")
+                            null
+                        } ?: continue
+                        for (media in parsed.data?.page?.media.orEmpty()) {
+                            val id = media.id ?: continue
+                            val hasDub = media.characters?.edges.orEmpty().any { edge ->
+                                edge.voiceActors.orEmpty().any { it.languageV2.equals("English", true) }
+                            }
+                            put(id, hasDub)
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "dub annotate error: ${e.message}")
+            }
+        }
+    }
 
     // ------------------------------------------------------------- main page
 
@@ -309,38 +486,44 @@ class AniKuro : MainAPI() {
         return when (kind) {
             "recent" -> {
                 val items = try {
-                    apiGet("/api/v1/discovery/recent", 20_000L)?.let { parseJson<RecentEnvelope>(it) }?.data?.items
+                    apiGet("/api/v1/discovery/recent", TIMEOUT_CATALOG)?.let { parseJson<RecentEnvelope>(it) }?.data?.items
                 } catch (e: Exception) {
                     Log.e(TAG, "recent failed: ${e.message}")
                     null
                 }
-                val home = items.orEmpty().mapNotNull { it.media?.toSearchResponse() }
+                val home = annotateAndMap(items.orEmpty().mapNotNull { it.media })
                 newHomePageResponse(request.name, home, hasNext = false)
             }
             "discovery" -> {
                 val items = try {
-                    apiGet("/api/v1/discovery/$rest", 20_000L)?.let { parseJson<CatalogEnvelope>(it) }?.data?.items
+                    apiGet("/api/v1/discovery/$rest", TIMEOUT_CATALOG)?.let { parseJson<CatalogEnvelope>(it) }?.data?.items
                 } catch (e: Exception) {
                     Log.e(TAG, "discovery/$rest failed: ${e.message}")
                     null
                 }
-                val home = items.orEmpty().mapNotNull { it.toSearchResponse() }
+                val home = annotateAndMap(items.orEmpty())
                 newHomePageResponse(request.name, home, hasNext = false)
             }
             else -> { // filter:<sort>:<formats>
                 val env = try {
-                    apiGet(buildFilterPath(page = page, sort = rest.first, formats = rest.second, perPage = 20), 20_000L)
+                    apiGet(buildFilterPath(page = page, sort = rest.first, formats = rest.second, perPage = 20), TIMEOUT_CATALOG)
                         ?.let { parseJson<FilterEnvelope>(it) }
                 } catch (e: Exception) {
                     Log.e(TAG, "filter failed: ${e.message}")
                     null
                 }
                 val data = env?.data
-                val home = data?.items.orEmpty().mapNotNull { it.toSearchResponse() }
+                val home = annotateAndMap(data?.items.orEmpty())
                 val hasNext = data?.pageInfo?.hasNextPage ?: (home.size >= 20)
                 newHomePageResponse(request.name, home, hasNext = hasNext)
             }
         }
+    }
+
+    /** Resolves real dub existence for the page (batched) then maps to search responses. */
+    private suspend fun annotateAndMap(items: List<CatalogItem>): List<SearchResponse> {
+        DubCache.annotate(items.map { it.anilistId ?: it.id })
+        return items.mapNotNull { it.toSearchResponse() }
     }
 
     private fun parseRowKey(data: String): Pair<String, Pair<String, String>> = when {
@@ -371,9 +554,9 @@ class AniKuro : MainAPI() {
 
     private suspend fun searchPaged(query: String, page: Int): List<SearchResponse> {
         return try {
-            val env = apiGet(buildFilterPath(page = page, sort = "POPULARITY_DESC", formats = "", perPage = 20, query = query), 20_000L)
+            val env = apiGet(buildFilterPath(page = page, sort = "POPULARITY_DESC", formats = "", perPage = 20, query = query), TIMEOUT_CATALOG)
                 ?.let { parseJson<FilterEnvelope>(it) }
-            env?.data?.items.orEmpty().mapNotNull { it.toSearchResponse() }
+            annotateAndMap(env?.data?.items.orEmpty())
         } catch (e: Exception) {
             Log.e(TAG, "search failed: ${e.message}")
             emptyList()
@@ -387,15 +570,22 @@ class AniKuro : MainAPI() {
         val t = title
         val display = t?.english ?: t?.romaji ?: t?.userPreferred ?: t?.native ?: return null
         val tvType = formatToTvType(format)
+        // catalog hasDub is broken server-side; OR with the AniList/variants-backed cache
+        val dub = hasDub == true || DubCache.peek(id) == true
         return newAnimeSearchResponse(display, "$mainUrl/watch/$id", tvType) {
             this.posterUrl = images?.cover
             this.otherName = t?.native
-            addDubStatus(dubExist = hasDub == true, subExist = true)
+            addDubStatus(dubExist = dub, subExist = true)
         }
     }
 
+    /**
+     * MOVIE format intentionally maps to TvType.Anime: CloudStream hides the Sub/Dub selector for
+     * TvType.AnimeMovie (isMovieType) and always plays the first episodes-map entry, which would
+     * force sub for every movie. As a plain anime with one "Complete Movie" episode per dub
+     * status, the Sub/Dub dropdown appears and each status plays its own variant.
+     */
     private fun formatToTvType(format: String?): TvType = when (format?.uppercase()) {
-        "MOVIE" -> TvType.AnimeMovie
         "OVA", "ONA", "SPECIAL", "MUSIC" -> TvType.OVA
         else -> TvType.Anime
     }
@@ -403,20 +593,34 @@ class AniKuro : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val id = url.substringAfterLast("/").substringBefore("?").toIntOrNull() ?: return null
         val full = try {
-            apiGet("/api/v1/anime/$id/full", 25_000L)?.let { parseJson<FullEnvelope>(it) }?.data
+            apiGet("/api/v1/anime/$id/full", TIMEOUT_DETAILS)?.let { parseJson<FullEnvelope>(it) }?.data
         } catch (e: Exception) {
             Log.e(TAG, "full failed for $id: ${e.message}")
             null
         }
 
         val episodeList = try {
-            apiGet("/api/v1/anime/$id/episodes", 30_000L)?.let { parseJson<EpisodesEnvelope>(it) }?.data
+            apiGet("/api/v1/anime/$id/episodes", TIMEOUT_EPISODES)?.let { parseJson<EpisodesEnvelope>(it) }?.data
         } catch (e: Exception) {
             Log.e(TAG, "episodes failed for $id: ${e.message}")
             null
         }
 
-        val eps = episodeList?.episodes.orEmpty()
+        var eps = episodeList?.episodes.orEmpty()
+        if (eps.isEmpty() && full != null) {
+            // Robustness fallback: single "Complete Movie"/finale entry when the episodes API
+            // returns nothing but details exist (mirrors the site's own movie page).
+            val variants = if (full.hasDub == true) listOf("sub", "dub") else listOf("sub")
+            eps = listOf(
+                EpisodeItem(
+                    id = "$id:1",
+                    number = 1,
+                    displayNumber = "1",
+                    title = if (full.format?.uppercase() == "MOVIE") "Complete Movie" else "Episode 1",
+                    variants = variants,
+                )
+            )
+        }
         if (full == null && eps.isEmpty()) return null
 
         val t = full?.title
@@ -427,7 +631,6 @@ class AniKuro : MainAPI() {
         val dubEps = mutableListOf<Episode>()
         for (ep in eps) {
             val num = ep.number ?: continue
-            val data = LinkData(id = id, ep = num, variant = "").toJson()
             val variants = ep.variants.orEmpty()
             val name = ep.title?.takeIf { it.isNotBlank() } ?: "Episode $num"
             val poster = ep.thumbnail ?: ep.image
@@ -441,8 +644,13 @@ class AniKuro : MainAPI() {
                 if (airDate != null) this.addDate(airDate)
                 if (ep.filler == true) this.description = (this.description.orEmpty() + "\n\n[Filler]").trim()
             }
-            if (variants.isEmpty() || variants.contains("sub")) subEps.add(newEpisode(data, builder))
+            if (variants.isEmpty() || variants.contains("sub")) subEps.add(newEpisode(LinkData(id = id, ep = num, variant = "sub").toJson(), builder))
             if (variants.contains("dub")) dubEps.add(newEpisode(LinkData(id = id, ep = num, variant = "dub").toJson(), builder))
+        }
+
+        // Feed the truth learned from per-episode variants back into the card cache.
+        if (subEps.isNotEmpty() || dubEps.isNotEmpty()) {
+            DubCache.put(id, dubEps.isNotEmpty())
         }
 
         return newAnimeLoadResponse(display, url, tvType) {
@@ -494,81 +702,89 @@ class AniKuro : MainAPI() {
             Log.e(TAG, "bad link data: ${e.message}")
             return false
         }
-        // Episode-level variant was stamped at load(); empty means "sub" default list.
         val variant = link.variant.ifBlank { "sub" }
 
-        // All 12 providers fire in parallel; every source that answers gets emitted.
-        val results = coroutineScope {
+        // All 12 providers fire in parallel and emit as soon as they answer (streaming UX):
+        // animepower replies in <1s, upstream scrapers can take 25s+.
+        val seenUrls = HashSet<String>()
+        val seenSubUrls = HashSet<String>()
+        coroutineScope {
             PROVIDERS.amap { provider ->
                 async {
-                    try {
-                        fetchProviderVariant(provider, link.id, link.ep, variant)
+                    val blocks = try {
+                        fetchProviderBlocks(provider, link.id, link.ep, variant)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         Log.d(TAG, "${provider.label} failed: ${e.message}")
-                        null
+                        emptyList()
+                    }
+                    try {
+                        emitProvider(provider, blocks, seenUrls, seenSubUrls, subtitleCallback, callback)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.d(TAG, "${provider.label} emit failed: ${e.message}")
                     }
                 }
-            }.awaitAll()
-        }
-
-        val seenSubUrls = HashSet<String>()
-        results.forEachIndexed { index, block ->
-            val provider = PROVIDERS[index]
-            if (block == null) return@forEachIndexed
-            emitVariant(provider, block, seenSubUrls, subtitleCallback, callback)
+            }
         }
         return true
     }
 
-    /** Hits one provider and returns the matching sub/dub block (tolerates all 3 response shapes). */
-    private suspend fun fetchProviderVariant(
+    /**
+     * Hits one provider and returns EVERY block matching the variant (a provider may expose
+     * several servers as separate normalized blocks). Tolerates all response shapes:
+     * enveloped {ok,data} and bare payloads, normalized[] / raw.sub|raw.dub / providerResult.
+     */
+    private suspend fun fetchProviderBlocks(
         provider: ProviderDef,
         animeId: Int,
         ep: Int,
         variant: String,
-    ): VariantBlock? {
+    ): List<VariantBlock> {
         val endpoint = if (provider.special) {
             "$apiBase/api/v1/${provider.key}/video/$animeId/$ep"
         } else {
             "$apiBase/api/v1/sources/${provider.key}/$animeId:$ep"
         }
         val text = try {
-            apiGet(endpoint, 45_000L)
+            apiGet(endpoint, TIMEOUT_SOURCES)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.d(TAG, "${provider.label} request failed: ${e.message}")
-            return null
+            return emptyList()
         }
-        if (text.isNullOrBlank() || text.length > 6_000_000) return null
+        if (text.isNullOrBlank() || text.length > 6_000_000) return emptyList()
 
-        val env = try {
-            parseJson<SourceEnvelope>(text)
+        val root = try {
+            parseJson<SourceRoot>(text)
         } catch (e: Exception) {
             Log.d(TAG, "${provider.label} parse failed: ${e.message}")
-            return null
+            return emptyList()
         }
-        val root = env.data ?: return null
+        val root0 = root.effective() ?: return emptyList()
 
-        // Shape 1: normalized[] blocks
-        root.normalized.orEmpty()
-            .firstOrNull { it.variant.equals(variant, true) && !it.sources.isNullOrEmpty() }
-            ?.let { return it }
+        val match: (VariantBlock) -> Boolean = { block ->
+            block.variant.equals(variant, true) && block.hasSources()
+        }
 
-        val raw = root.raw ?: return null
+        // Shape 1: normalized[] — collect ALL matching blocks (multi-server support)
+        val normalized = root0.normalized.orEmpty().filter(match)
+        if (normalized.isNotEmpty()) return normalized
 
-        // Shape 2: legacy raw.sub / raw.dub
+        val raw = root0.raw ?: return emptyList()
+
+        // Shape 2: legacy raw.sub / raw.dub (may carry `default` instead of sources[])
         val legacy = if (variant.equals("dub", true)) raw.dub else raw.sub
-        if (legacy != null && (!legacy.sources.isNullOrEmpty() || rawHasDefault(legacy))) return legacy
+        if (legacy != null && (legacy.variant == null || legacy.variant.equals(variant, true)) && legacy.hasSources()) {
+            return listOf(legacy)
+        }
 
         // Shape 3: providerResult.variants
-        return raw.providerResult?.variants.orEmpty()
-            .firstOrNull { it.variant.equals(variant, true) && !it.sources.isNullOrEmpty() }
+        return raw.providerResult?.variants.orEmpty().filter(match)
     }
-
-    private fun rawHasDefault(block: VariantBlock): Boolean = block.sources.orEmpty().any { !it.url.isNullOrBlank() }
 
     // ------------------------------------------------------------- emission
 
@@ -581,79 +797,99 @@ class AniKuro : MainAPI() {
         val referer: String?,
         val headers: Map<String, String>,
         val quality: String?,
-        val isProxy: Boolean,
     )
 
-    private suspend fun emitVariant(
+    private suspend fun emitProvider(
         provider: ProviderDef,
-        block: VariantBlock,
+        blocks: List<VariantBlock>,
+        seenUrls: MutableSet<String>,
         seenSubUrls: MutableSet<String>,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ) {
-        val sources = block.sources.orEmpty().filter { !it.url.isNullOrBlank() }
-        if (sources.isEmpty()) return
+        if (blocks.isEmpty()) return
 
         val links = ArrayList<PlayLink>()
-        val seen = HashSet<String>()
+        for (block in blocks) {
+            val blockHeaders = block.headers.orEmpty()
+            val blockSources = block.sources.orEmpty().filter { !it.url.isNullOrBlank() }
+            val effective = if (blockSources.isEmpty() && !block.default.isNullOrBlank()) {
+                listOf(SourceItem(url = block.default, quality = block.quality))
+            } else blockSources
 
-        for (s in sources) {
-            val url = s.url ?: continue
-            val orig = s.originalUrl?.takeIf { it.startsWith("http") && it != url }
-            val upstreamRef = s.upstreamReferer?.takeIf { it.startsWith("http") }
-                ?: s.headers.orEmpty()["Referer"]?.takeIf { it.startsWith("http") }
+            for (s in effective) {
+                val url = s.url ?: continue
+                val orig = (s.originalUrl ?: block.originalUrl)
+                    ?.takeIf { it.startsWith("http") && it != url }
+                val upstreamRef = s.upstreamReferer?.takeIf { it.startsWith("http") }
+                    ?: s.headers.orEmpty()["Referer"]?.takeIf { it.startsWith("http") }
+                    ?: blockHeaders["Referer"]?.takeIf { it.startsWith("http") }
 
-            // Direct upstream master (needs the upstream Referer) — preferred.
-            if (orig != null && seen.add(orig)) {
-                links.add(
-                    PlayLink(
-                        url = orig,
-                        referer = upstreamRef ?: siteRefererFor(orig),
-                        headers = s.headers.orEmpty().filterKeys { it != "Referer" },
-                        quality = s.quality,
-                        isProxy = false,
+                // Direct upstream master (needs the upstream Referer) — preferred.
+                if (orig != null && seenUrls.add(orig)) {
+                    links.add(
+                        PlayLink(
+                            url = orig,
+                            referer = upstreamRef ?: siteRefererFor(orig),
+                            headers = s.headers.orEmpty().filterKeys { !it.equals("Referer", true) },
+                            quality = s.quality ?: block.quality,
+                        )
                     )
-                )
-            }
-            // The API URL itself (proxy.anikuro.ru links are headerless + CORS-open).
-            if (seen.add(url)) {
-                val isProxy = url.contains("proxy.anikuro.ru") || url.contains("/proxy.") || url.contains("?proxy=")
-                links.add(
-                    PlayLink(
-                        url = url,
-                        referer = if (isProxy) siteRefererFor(url) else (upstreamRef ?: siteRefererFor(url)),
-                        headers = if (isProxy && siteRefererFor(url) == null) emptyMap() else s.headers.orEmpty().filterKeys { it != "Referer" },
-                        quality = s.quality,
-                        isProxy = isProxy,
+                }
+                // The API URL itself (proxy.anikuro.ru links are headerless + CORS-open).
+                if (seenUrls.add(url)) {
+                    links.add(
+                        PlayLink(
+                            url = url,
+                            referer = upstreamRef ?: siteRefererFor(url),
+                            headers = s.headers.orEmpty().filterKeys { !it.equals("Referer", true) },
+                            quality = s.quality ?: block.quality,
+                        )
                     )
-                )
+                }
             }
         }
         if (links.isEmpty()) return
 
-        // Keep the site's own label; append quality when the API gave a real one.
+        // Label: provider name + server number when a provider exposes several distinct masters,
+        // + real quality when the API provides one (e.g. "AniKuro · 1080p").
+        val needsServerSuffix = links.size > 1
         fun linkName(l: PlayLink): String {
             val q = l.quality?.takeIf { it.isNotBlank() && !it.equals("default", true) }
-            val base = if (l.isProxy && links.size > 1) "${provider.label} (proxy)" else provider.label
+            val base = if (needsServerSuffix) "${provider.label} · ${links.indexOf(l) + 1}" else provider.label
             return if (q != null) "$base · $q" else base
         }
 
-        // Subtitles: API list first, then #EXT-X-MEDIA renditions from the first master.
-        val subs = ArrayList<Triple<String, String, Map<String, String>>>() // label, url, headers
-        for (st in block.subtitles.orEmpty()) {
-            val u = st.url ?: continue
-            if (!u.startsWith("http")) continue
-            if (!seenSubUrls.add(u)) continue
-            val siteRef = siteRefererFor(u)
-            subs.add(Triple(st.label ?: "Subtitle", u, if (siteRef != null) mapOf("Referer" to siteRef) else emptyMap()))
+        // Subtitles: API lists from every block first, then #EXT-X-MEDIA renditions from the
+        // first master. All deduped by URL across providers.
+        for (block in blocks) {
+            for (st in block.subtitles.orEmpty()) {
+                val u = st.url ?: continue
+                if (!u.startsWith("http")) continue
+                if (!seenSubUrls.add(u)) continue
+                val siteRef = siteRefererFor(u)
+                val blockRef = block.headers?.get("Referer")?.takeIf { it.startsWith("http") }
+                subtitleCallback.invoke(
+                    newSubtitleFile(st.label ?: "Subtitle", u) {
+                        this.headers = when {
+                            siteRef != null -> mapOf("Referer" to siteRef)
+                            blockRef != null -> mapOf("Referer" to blockRef)
+                            else -> emptyMap()
+                        }
+                    }
+                )
+            }
         }
         links.firstOrNull()?.let { first ->
             parseMasterSubtitles(first).forEach { (label, url) ->
-                if (seenSubUrls.add(url)) subs.add(Triple(label, url, first.headers))
+                if (seenSubUrls.add(url)) {
+                    subtitleCallback.invoke(
+                        newSubtitleFile(label, url) {
+                            this.headers = first.headers
+                        }
+                    )
+                }
             }
-        }
-        for ((label, url, headers) in subs) {
-            subtitleCallback.invoke(newSubtitleFile(label, url) { this.headers = headers })
         }
 
         for (l in links) {
@@ -679,7 +915,7 @@ class AniKuro : MainAPI() {
             putAll(link.headers)
         }
         val body = try {
-            app.get(link.url, headers = headers, timeout = 10_000L).text
+            app.get(link.url, headers = headers, timeout = TIMEOUT_MASTER).text
         } catch (e: Exception) {
             return out
         }
