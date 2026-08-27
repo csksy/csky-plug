@@ -258,3 +258,27 @@ some are slow" effect.
   coroutine; the 1Embed token is fetched before the server fan-out.
 - Same links, same names, same dedupe rules as v3 - only the order in which
   they appear changed (each lands as soon as its own source finishes).
+
+## RaghavAnime v49 — re-added from raghav, per-source logging, Kyren source
+
+Copied the RaghavAnime module back from the raghav repo (current state) and
+worked on it here.
+
+### What changed
+- Every source in `loadLinks` now runs through a `runSource` wrapper that
+  logs start, each emitted link, final link/subtitle counts and duration
+  (or the failure). All the empty `if` branches that used to swallow
+  results now log the exact reason a source produced nothing (load null,
+  no episode list, episode missing, no title match).
+- `findEpisodeData` logs search counts per title, matched candidates with
+  scores, and whether the episode was found in each candidate.
+- Granular logging added inside every source provider: AniSuge, AniWaves,
+  Anikai, AniDb, AniKage, Anineko, 2DHive, AniKoto, Enma, Animo, Anidap,
+  Senshi, AniNami, AniDao, AniChan, Miruro (+ utils/extractors) and the
+  Cloudflare bypass helpers. Silent catches log their errors now. Logic,
+  requests and parsing are untouched - only log lines.
+- New source **Kyren** (kyren.moe): resolves directly by AniList id, no
+  title search. Tries three servers - `megaplay-direct` (direct 1080p HLS
+  + subtitles), `megaplay` (embed, resolved through the existing MegaPlay
+  extractor) and `tryembed` (embed attempt, logged when unsupported).
+  Works for sub and dub.
