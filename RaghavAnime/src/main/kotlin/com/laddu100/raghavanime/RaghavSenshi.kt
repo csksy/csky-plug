@@ -57,7 +57,7 @@ class RaghavSenshi : MainAPI() {
         var hasSub = false
         var hasDub = false
         try {
-            val res = cfGet("$mainUrl/episode-embeds/$malId/1", headers = getHeaders, timeout = 10_000L)
+            val res = cfGet("$mainUrl/episode-embeds/$malId/1", headers = getHeaders, timeout = 10L)
             if (res.code == 200) {
                 val embeds = parseJson<List<StreamEmbed>>(res.text)
                 embeds.forEach { emb ->

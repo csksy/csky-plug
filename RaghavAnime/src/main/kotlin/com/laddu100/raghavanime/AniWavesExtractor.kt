@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.loadExtractor
 
 class AniWavesWebView(private val sourceName: String, private val baseUrl: String) : ExtractorApi() {
     override val name = sourceName
@@ -31,7 +32,7 @@ class AniWavesWebView(private val sourceName: String, private val baseUrl: Strin
                 additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
                 script = """document.querySelector('button,[role="button"],.jw-icon-display,.vds-play-button')?.click();""",
                 useOkhttp = false,
-                timeout = 30_000L
+                timeout = 20_000L
             )
             val resolved = app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url
             Log.d("RaghavAnime", "[AniWaves] WebView extractor ($name): resolved ${resolved.take(80)}")
@@ -56,7 +57,13 @@ class AniWavesWebView(private val sourceName: String, private val baseUrl: Strin
                     )
                 }
                 else -> {
-                    Log.e("RaghavAnime", "[AniWaves] WebView extractor ($name): resolved url is neither m3u8 nor mp4: ${resolved.take(80)}")
+                    Log.e("RaghavAnime", "[AniWaves] WebView extractor ($name): resolved url is neither m3u8 nor mp4: ${resolved.take(80)}, trying loadExtractor fallback")
+                    try {
+                        val loaded = loadExtractor(resolved, url, subtitleCallback, callback)
+                        Log.d("RaghavAnime", "[AniWaves] WebView extractor ($name): loadExtractor fallback on resolved url loaded=$loaded")
+                    } catch (e: Exception) {
+                        Log.e("RaghavAnime", "[AniWaves] WebView extractor ($name): loadExtractor fallback failed: ${e.message}")
+                    }
                 }
             }
         }.onFailure { error ->

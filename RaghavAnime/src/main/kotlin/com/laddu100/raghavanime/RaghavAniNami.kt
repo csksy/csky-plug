@@ -10,6 +10,10 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import java.util.concurrent.ConcurrentHashMap
 
 class RaghavAniNami : MainAPI() {
     override var mainUrl = "https://www.aninami.site"
@@ -68,7 +72,16 @@ class RaghavAniNami : MainAPI() {
         @JsonProperty("url") val url: String? = null,
         @JsonProperty("type") val type: String? = null,
         @JsonProperty("quality") val quality: String? = null,
-        @JsonProperty("referer") val referer: String? = null
+        @JsonProperty("referer") val referer: String? = null,
+        @JsonProperty("server") val server: String? = null
+    )
+
+    private data class AniNamiEntry(
+        val provider: String,
+        val anilistId: String,
+        val audioType: String,
+        val slug: String,
+        val watchUrl: String
     )
 
     override suspend fun load(url: String): LoadResponse? {
@@ -159,84 +172,107 @@ class RaghavAniNami : MainAPI() {
         Log.d("RaghavAnime", "[AniNami] loadLinks audio=$requestedAudio epIds=${epIds.size}")
 
 
-        var found = false
-        val seenUrls = mutableSetOf<String>()
+        val seenUrls = ConcurrentHashMap.newKeySet<String>()
 
-        for (epId in epIds) {
+        val entries = epIds.mapNotNull { epId ->
             val parts = epId.split("/")
             if (parts.size < 5 || parts[0] != "watch") {
                 Log.d("RaghavAnime", "[AniNami] skip malformed epId: ${epId.take(60)}")
-                continue
+                return@mapNotNull null
             }
             val provider = parts[1]
             val anilistId = parts[2]
             val audioType = parts[3]
             val slug = parts.drop(4).joinToString("/")
-            Log.d("RaghavAnime", "[AniNami] epId provider=$provider anilistId=$anilistId audio=$audioType")
-            if (provider.isEmpty() || slug.isEmpty()) continue
+            AniNamiEntry(
+                provider = provider,
+                anilistId = anilistId,
+                audioType = audioType,
+                slug = slug,
+                watchUrl = "$mainUrl/api/watch/$provider/$anilistId/$audioType/$slug"
+            )
+        }
 
-            val watchUrl = "$mainUrl/api/watch/$provider/$anilistId/$audioType/$slug"
-            Log.d("RaghavAnime", "[AniNami] fetching streams: $watchUrl")
-            val streamsText = try {
-                app.get(watchUrl, headers = apiHeaders).text
-            } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniNami] watch fetch failed provider=$provider: ${e.message}")
-                continue
-            }
-            val streams = try {
-                parseJson<StreamResponse>(streamsText).results?.streams
-            } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniNami] streams parse failed provider=$provider: ${e.message}")
-                continue
-            }
-            if (streams == null) {
-                Log.d("RaghavAnime", "[AniNami] no streams for provider=$provider (body length=${streamsText.length})")
-                continue
-            }
-            Log.d("RaghavAnime", "[AniNami] provider=$provider streams=${streams.size}")
+        val found = coroutineScope {
+            entries.map { entry ->
+                async { processEntry(entry, seenUrls, subtitleCallback, callback) }
+            }.awaitAll().any { it }
+        }
 
+        Log.d("RaghavAnime", "[AniNami] loadLinks done found=$found uniqueUrls=${seenUrls.size}")
+        return found
+    }
 
-            for (stream in streams) {
-                val streamUrl = stream.url ?: continue
-                if (streamUrl.isBlank() || !seenUrls.add(streamUrl)) continue
-                val referer = stream.referer?.takeIf { it.isNotBlank() } ?: "$mainUrl/"
-                val qualityLabel = stream.quality?.takeIf { it.isNotBlank() } ?: "Auto"
-                val label = "AniNami $qualityLabel"
+    private suspend fun processEntry(
+        entry: AniNamiEntry,
+        seenUrls: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val provider = entry.provider
+        Log.d("RaghavAnime", "[AniNami] epId provider=$provider anilistId=${entry.anilistId} audio=${entry.audioType}")
+        if (provider.isEmpty() || entry.slug.isEmpty()) return false
 
-                when (stream.type?.lowercase()) {
-                    "hls" -> {
-                        Log.d("RaghavAnime", "[AniNami] hls link $label: ${streamUrl.take(80)}")
-                        callback.invoke(
-                            newExtractorLink(label, label, streamUrl, ExtractorLinkType.M3U8) {
-                                this.quality = parseQuality(stream.quality)
-                                this.headers = mapOf("Referer" to referer)
-                            }
-                        )
+        val watchUrl = entry.watchUrl
+        Log.d("RaghavAnime", "[AniNami] fetching streams: $watchUrl")
+        val streamsText = try {
+            app.get(watchUrl, headers = apiHeaders).text
+        } catch (e: Exception) {
+            Log.e("RaghavAnime", "[AniNami] watch fetch failed provider=$provider: ${e.message}")
+            return false
+        }
+        val streams = try {
+            parseJson<StreamResponse>(streamsText).results?.streams
+        } catch (e: Exception) {
+            Log.e("RaghavAnime", "[AniNami] streams parse failed provider=$provider: ${e.message}")
+            return false
+        }
+        if (streams == null) {
+            Log.d("RaghavAnime", "[AniNami] no streams for provider=$provider (body length=${streamsText.length})")
+            return false
+        }
+        Log.d("RaghavAnime", "[AniNami] provider=$provider streams=${streams.size}")
+
+        var found = false
+        for (stream in streams) {
+            val streamUrl = stream.url ?: continue
+            if (streamUrl.isBlank() || !seenUrls.add(streamUrl)) continue
+            val referer = stream.referer?.takeIf { it.isNotBlank() } ?: "$mainUrl/"
+            val qualityLabel = stream.quality?.takeIf { it.isNotBlank() } ?: "Auto"
+            val serverName = stream.server?.takeIf { it.isNotBlank() }
+            val label = if (serverName != null) "AniNami $serverName $qualityLabel" else "AniNami $qualityLabel"
+
+            when (stream.type?.lowercase()) {
+                "hls" -> {
+                    Log.d("RaghavAnime", "[AniNami] hls link $label: ${streamUrl.take(80)}")
+                    callback.invoke(
+                        newExtractorLink(label, label, streamUrl, ExtractorLinkType.M3U8) {
+                            this.quality = parseQuality(stream.quality)
+                            this.headers = mapOf("Referer" to referer)
+                        }
+                    )
+                    found = true
+                }
+                "embed" -> {
+                    try {
+                        Log.d("RaghavAnime", "[AniNami] embed extractor: ${streamUrl.take(80)}")
+                        loadExtractor(streamUrl, referer, subtitleCallback, callback)
                         found = true
+                    } catch (e: Exception) {
+                        Log.e("RaghavAnime", "[AniNami] embed extractor failed: ${e.message}")
                     }
-                    "embed" -> {
-                        try {
-                            Log.d("RaghavAnime", "[AniNami] embed extractor: ${streamUrl.take(80)}")
-                            loadExtractor(streamUrl, referer, subtitleCallback, callback)
-                            found = true
-                        } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[AniNami] embed extractor failed: ${e.message}")
-                        }
-                    }
-                    else -> {
-                        try {
-                            Log.d("RaghavAnime", "[AniNami] type=${stream.type} extractor: ${streamUrl.take(80)}")
-                            loadExtractor(streamUrl, referer, subtitleCallback, callback)
-                            found = true
-                        } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[AniNami] extractor failed: ${e.message}")
-                        }
+                }
+                else -> {
+                    try {
+                        Log.d("RaghavAnime", "[AniNami] type=${stream.type} extractor: ${streamUrl.take(80)}")
+                        loadExtractor(streamUrl, referer, subtitleCallback, callback)
+                        found = true
+                    } catch (e: Exception) {
+                        Log.e("RaghavAnime", "[AniNami] extractor failed: ${e.message}")
                     }
                 }
             }
         }
-
-        Log.d("RaghavAnime", "[AniNami] loadLinks done found=$found uniqueUrls=${seenUrls.size}")
         return found
     }
 

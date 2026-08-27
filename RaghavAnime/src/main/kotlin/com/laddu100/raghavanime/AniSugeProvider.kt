@@ -476,7 +476,7 @@ class AniSugeProvider : MainAPI() {
                                     additionalUrls = listOf(Regex("""\.m3u8""")),
                                     script = """document.querySelector('.jw-icon-display')?.click();""",
                                     useOkhttp = false,
-                                    timeout = 30_000L
+                                    timeout = 15_000L
                                 )
                                 val m3u8 = app.get(playerUrl, referer = "$baseUrl/", interceptor = resolver).url
                                 if (m3u8.contains(".m3u8")) {
@@ -508,7 +508,7 @@ class AniSugeProvider : MainAPI() {
                                     additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
                                     script = """document.querySelector('button,[role="button"],.jw-icon-display,.vds-play-button')?.click();""",
                                     useOkhttp = false,
-                                    timeout = 30_000L
+                                    timeout = 20_000L
                                 )
                                 val resolved = app.get(playerUrl, referer = "$baseUrl/", interceptor = resolver).url
                                 Log.d("RaghavAnime", "[AniSuge] server '$serverName' WebViewResolver resolved: ${resolved.take(80)}")

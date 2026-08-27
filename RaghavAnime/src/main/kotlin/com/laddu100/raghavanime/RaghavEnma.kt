@@ -15,7 +15,11 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 
 class RaghavEnma : MainAPI() {
     override var mainUrl = "https://www.enma.lol"
@@ -419,57 +423,63 @@ class RaghavEnma : MainAPI() {
         Log.d("RaghavAnime", "[Enma] trying servers: ${serverNames.joinToString(",").take(80)}")
 
         var found = false
-        val seenUrls = mutableSetOf<String>()
+        val seenUrls = ConcurrentHashMap.newKeySet<String>()
 
-        for (serverName in serverNames) {
-            try {
-                val encodedId = URLEncoder.encode(episodeId, "UTF-8")
-                val streamUrl = "$apiUrl/stream?id=$encodedId&server=$serverName&type=$type"
-                Log.d("RaghavAnime", "[Enma] server '$serverName': GET /api/stream?id=${encodedId.take(24)}&server=$serverName&type=$type")
-                val streamText = fetchApi(streamUrl)
-                if (streamText == null) {
-                    Log.e("RaghavAnime", "[Enma] server '$serverName': stream fetch returned null")
-                    continue
-                }
-                val streamData = parseJson<EnmaStreamResponse>(streamText)
-                val iframe = streamData.results?.streamingLink?.iframe
-                if (iframe == null) {
-                    Log.e("RaghavAnime", "[Enma] server '$serverName': no iframe in stream response")
-                    continue
-                }
-
-                if (!seenUrls.add(iframe)) {
-                    Log.d("RaghavAnime", "[Enma] server '$serverName': duplicate iframe, skipping")
-                    continue
-                }
-
-                val domain = Regex("""https?://([^/]+)""").find(iframe)?.groupValues?.get(1) ?: ""
-                val displayType = if (type == "dub") "DUB" else "SUB"
-                Log.d("RaghavAnime", "[Enma] server '$serverName' iframe host=$domain")
-
-                val resolved = when {
-                    domain.contains("megaplay", ignoreCase = true) ->
-                        resolveMegaPlay(iframe, serverName, type, subtitleCallback, callback)
-                    domain.contains("4animo", ignoreCase = true) ->
-                        resolve4Animo(iframe, serverName, displayType, subtitleCallback, callback)
-                    domain.contains("vidnest", ignoreCase = true) ->
-                        resolveVidnest(iframe, serverName, displayType, subtitleCallback, callback)
-                    domain.contains("tryembed", ignoreCase = true) ->
-                        resolveTryEmbed(iframe, serverName, displayType, subtitleCallback, callback)
-                    else -> {
-                        try {
-                            loadExtractor(iframe, "$mainUrl/", subtitleCallback, callback)
-                        } catch (e: Exception) {
-                            false
+        val results = coroutineScope {
+            serverNames.map { serverName ->
+                async {
+                    try {
+                        val encodedId = URLEncoder.encode(episodeId, "UTF-8")
+                        val streamUrl = "$apiUrl/stream?id=$encodedId&server=$serverName&type=$type"
+                        Log.d("RaghavAnime", "[Enma] server '$serverName': GET /api/stream?id=${encodedId.take(24)}&server=$serverName&type=$type")
+                        val streamText = fetchApi(streamUrl)
+                        if (streamText == null) {
+                            Log.e("RaghavAnime", "[Enma] server '$serverName': stream fetch returned null")
+                            return@async false
                         }
+                        val streamData = parseJson<EnmaStreamResponse>(streamText)
+                        val iframe = streamData.results?.streamingLink?.iframe
+                        if (iframe == null) {
+                            Log.e("RaghavAnime", "[Enma] server '$serverName': no iframe in stream response")
+                            return@async false
+                        }
+
+                        if (!seenUrls.add(iframe)) {
+                            Log.d("RaghavAnime", "[Enma] server '$serverName': duplicate iframe, skipping")
+                            return@async false
+                        }
+
+                        val domain = Regex("""https?://([^/]+)""").find(iframe)?.groupValues?.get(1) ?: ""
+                        val displayType = if (type == "dub") "DUB" else "SUB"
+                        Log.d("RaghavAnime", "[Enma] server '$serverName' iframe host=$domain")
+
+                        val resolved = when {
+                            domain.contains("megaplay", ignoreCase = true) ->
+                                resolveMegaPlay(iframe, serverName, type, subtitleCallback, callback)
+                            domain.contains("4animo", ignoreCase = true) ->
+                                resolve4Animo(iframe, serverName, displayType, subtitleCallback, callback)
+                            domain.contains("vidnest", ignoreCase = true) ->
+                                resolveVidnest(iframe, serverName, displayType, subtitleCallback, callback)
+                            domain.contains("tryembed", ignoreCase = true) ->
+                                resolveTryEmbed(iframe, serverName, displayType, subtitleCallback, callback)
+                            else -> {
+                                try {
+                                    loadExtractor(iframe, "$mainUrl/", subtitleCallback, callback)
+                                } catch (e: Exception) {
+                                    false
+                                }
+                            }
+                        }
+                        Log.d("RaghavAnime", "[Enma] server '$serverName' resolved=$resolved")
+                        resolved
+                    } catch (e: Exception) {
+                        Log.d("Enma", "Failed to resolve $serverName: ${e.message}")
+                        false
                     }
                 }
-                Log.d("RaghavAnime", "[Enma] server '$serverName' resolved=$resolved")
-                if (resolved) found = true
-            } catch (e: Exception) {
-                Log.d("Enma", "Failed to resolve $serverName: ${e.message}")
-            }
+            }.awaitAll()
         }
+        if (results.any { it }) found = true
 
         Log.d("RaghavAnime", "[Enma] loadLinks done: found=$found (tried ${serverNames.size} servers)")
         return found

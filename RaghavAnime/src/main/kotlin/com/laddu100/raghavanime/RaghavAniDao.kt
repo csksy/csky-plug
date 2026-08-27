@@ -159,19 +159,23 @@ class RaghavAniDao : MainAPI() {
         var start = 1
         while (start <= maxListPages) {
             val end = minOf(start + listBatch - 1, maxListPages)
+            val batchStartMs = System.currentTimeMillis()
             val batch = coroutineScope {
                 (start..end).map { p -> async { parseListPage(p) } }.awaitAll()
             }
             var added = 0
-            for (entries in batch) {
-                for (e in entries) {
-                    if (seen.add(e.url)) {
-                        results.add(e)
-                        added++
+            synchronized(results) {
+                for (entries in batch) {
+                    for (e in entries) {
+                        if (seen.add(e.url)) {
+                            results.add(e)
+                            added++
+                        }
                     }
                 }
             }
             Log.d("RaghavAnime", "[AniDao] buildIndex: pages $start-$end added $added entries (total ${results.size})")
+            Log.d("RaghavAnime", "[AniDao] buildIndex: batch pages $start-$end done in ${System.currentTimeMillis() - batchStartMs}ms")
             if (added == 0) {
                 Log.d("RaghavAnime", "[AniDao] buildIndex: no new entries at page $start, stopping")
                 break

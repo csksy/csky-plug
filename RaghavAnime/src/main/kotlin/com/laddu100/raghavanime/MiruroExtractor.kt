@@ -50,28 +50,23 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 return@runCatching
             }
             Log.d("RaghavAnime", "[Miruro] $name extractor: extracted player id=$id")
-            val response = app.get("$mainUrl/stream/getSources?id=$id", headers = headers).parsedSafe<Response>()
-            if (response == null) {
-                Log.e("RaghavAnime", "[Miruro] $name extractor: getSources response failed to parse for id=$id")
-                return@runCatching
-            }
-            val m3u8 = response.sources?.file
+            val rawText = app.get("$mainUrl/stream/getSources?id=$id", headers = headers).text
+            Log.d("RaghavAnime", "[Miruro] $name extractor: getSources raw text fetched (len=${rawText.length})")
+            val m3u8 = extractM3u8FromResponse(rawText)
             if (m3u8 == null) {
-                Log.e("RaghavAnime", "[Miruro] $name extractor: no m3u8 file in getSources for id=$id")
+                Log.e("RaghavAnime", "[Miruro] $name extractor: raw-text m3u8 extraction failed for id=$id (len=${rawText.length})")
                 return@runCatching
             }
             Log.d("RaghavAnime", "[Miruro] $name extractor: m3u8 found: ${m3u8.take(80)}")
 
-            Log.d("RaghavAnime", "[Miruro] $name extractor: generating m3u8 links, ${response.tracks.size} tracks")
+            val vttMatches = Regex(""""file"\s*:\s*"([^"]+\.vtt[^"]*)"""").findAll(rawText).toList()
+            Log.d("RaghavAnime", "[Miruro] $name extractor: generating m3u8 links, ${vttMatches.size} vtt tracks")
             generateM3u8(name, m3u8, mainUrl, headers = headers).forEach(callback)
-            response.tracks.forEach { track ->
-                val file = track.file ?: return@forEach
-                if (track.kind == "captions" || track.kind == "subtitles") {
-                    Log.d("RaghavAnime", "[Miruro] $name extractor: subtitle '${track.label ?: "Subtitle"}'")
-                    subtitleCallback(newSubtitleFile(track.label ?: "Subtitle", file) {
-                        this.headers = mapOf("Referer" to "$mainUrl/")
-                    })
-                }
+            vttMatches.forEach { m ->
+                Log.d("RaghavAnime", "[Miruro] $name extractor: subtitle 'English'")
+                subtitleCallback(newSubtitleFile("English", m.groupValues[1]) {
+                    this.headers = mapOf("Referer" to "$mainUrl/")
+                })
             }
         }.onFailure { error ->
             Log.e("RaghavAnime", "[Miruro] $name extractor: direct resolve failed (${error.message}), trying WebViewResolver")
@@ -80,7 +75,7 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 additionalUrls = listOf(Regex("""\.m3u8""")),
                 script = """document.querySelector('.jw-icon-display')?.click();""",
                 useOkhttp = false,
-                timeout = 30_000L
+                timeout = 15_000L
             )
             val m3u8 = app.get(url, referer = mainUrl, interceptor = resolver).url
             Log.d("RaghavAnime", "[Miruro] $name extractor: WebViewResolver resolved ${m3u8.take(80)}")
@@ -90,6 +85,34 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 Log.e("RaghavAnime", "[Miruro] $name extractor: WebViewResolver found no m3u8 for ${url.take(80)}")
             }
         }
+    }
+
+    private fun extractM3u8FromResponse(raw: String): String? {
+        val parsed = try {
+            com.lagradost.cloudstream3.utils.AppUtils.parseJson<Response>(raw)
+        } catch (_: Exception) { null }
+
+        val directFile = parsed?.sources?.file
+        if (directFile != null && directFile.startsWith("http")) {
+            return directFile
+        }
+
+        Regex(""""(links\.hls\d+)"""").findAll(raw).toList().reversed().forEach { m ->
+            val key = m.groupValues[1]
+            val parts = key.split(".")
+            if (parts.size == 2) {
+                val obj = parts[0]
+                val prop = parts[1]
+                val pattern = """"$obj"\s*:\s*\{[^}]*"$prop"\s*:\s*"([^"]+)""""
+                Regex(pattern).find(raw)?.let { return it.groupValues[1] }
+            }
+        }
+
+        Regex(""""file"\s*:\s*"(https?://[^"]+\.m3u8[^"]*)"""").find(raw)?.let { return it.groupValues[1] }
+
+        Regex("""(https?://[^\s"\\<>]+\.m3u8[^\s"\\<>]*)""").find(raw)?.let { return it.groupValues[1] }
+
+        return null
     }
 
     data class Response(
@@ -124,7 +147,7 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
                 script = """document.querySelector('button,[role="button"],.jw-icon-display,.vds-play-button')?.click();""",
                 useOkhttp = false,
-                timeout = 30_000L
+                timeout = 20_000L
             )
             val resolved = app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url
             Log.d("RaghavAnime", "[Miruro] WebView extractor ($name): resolved ${resolved.take(80)}")

@@ -414,7 +414,7 @@ internal fun buildSenshiHeaders(extra: Map<String, String> = emptyMap()): Map<St
 internal suspend fun cfGet(
     url: String,
     headers: Map<String, String> = emptyMap(),
-    timeout: Long = 30_000L
+    timeout: Long = 15L
 ): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)
@@ -465,7 +465,7 @@ internal suspend fun cfPost(
     url: String,
     body: String,
     headers: Map<String, String> = emptyMap(),
-    timeout: Long = 30_000L
+    timeout: Long = 15L
 ): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)
