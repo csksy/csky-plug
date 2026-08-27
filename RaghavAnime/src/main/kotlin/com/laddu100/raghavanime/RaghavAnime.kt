@@ -416,6 +416,7 @@ class RaghavAnime : MainAPI() {
                     var matchedData: String? = null
                     for (t in searchTitles) {
                         val searchResults = try { aniWaves.search(t) } catch (e: Throwable) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
                             Log.e("RaghavAnime", "[AniWaves] search failed for '$t': ${e.message}")
                             continue
                         }
@@ -454,6 +455,7 @@ class RaghavAnime : MainAPI() {
                                 matchedData = ep.data
                                 break
                             } catch (e: Throwable) {
+                                if (e is kotlinx.coroutines.CancellationException) throw e
                                 Log.e("RaghavAnime", "[AniWaves] load failed for '${result.name}': ${e.message}")
                                 continue
                             }
@@ -755,6 +757,10 @@ class RaghavAnime : MainAPI() {
         var totalSearchResults = 0
         for (t in searchTitles) {
             val searchResults = try { doSearch(t) } catch (e: Throwable) {
+                // a cancelled scope must not be treated as a search failure -
+                // retrying inside it would instantly fail again and misreport
+                // the source as broken
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("RaghavAnime", "[$sourceTag] search failed for '$t': ${e.message}")
                 continue
             }
@@ -807,6 +813,7 @@ class RaghavAnime : MainAPI() {
                     Log.d("RaghavAnime", "[$sourceTag] '${cand.result.name}' has no episode $episode in ${if (isDub) "dub" else "sub"} list (${epList?.size ?: 0} episodes)")
                 }
             } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("RaghavAnime", "[$sourceTag] load failed for '${cand.result.name}': ${e.message}")
             }
         }

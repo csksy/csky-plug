@@ -240,14 +240,25 @@ class RaghavEnma : MainAPI() {
         for (query in searchQueries) {
             val encoded = URLEncoder.encode(query, "UTF-8")
             Log.d("RaghavAnime", "[Enma] searching '${query.take(40)}' for anilistId=$anilistId")
-            val response = try {
-                fetchApi("$apiUrl/search?keyword=$encoded&page=1")
-            } catch (e: Exception) {
-                Log.e("RaghavAnime", "[Enma] search fetch failed for '${query.take(40)}': ${e.message}")
-                continue
+            // fetchApi can return null while the decryptor WebView is still
+            // warming up (cold start) - retry a couple of times before giving up
+            var response: String? = null
+            for (attempt in 1..3) {
+                response = try {
+                    fetchApi("$apiUrl/search?keyword=$encoded&page=1")
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Log.e("RaghavAnime", "[Enma] search fetch failed for '${query.take(40)}' (attempt $attempt): ${e.message}")
+                    null
+                }
+                if (response != null) break
+                if (attempt < 3) {
+                    Log.d("RaghavAnime", "[Enma] search fetch returned null for '${query.take(40)}' (attempt $attempt), retrying")
+                    kotlinx.coroutines.delay(400L)
+                }
             }
             if (response == null) {
-                Log.e("RaghavAnime", "[Enma] search fetch returned null for '${query.take(40)}'")
+                Log.e("RaghavAnime", "[Enma] search fetch returned null for '${query.take(40)}' after retries")
                 continue
             }
             val parsed = try { parseJson<EnmaSearchResponse>(response) } catch (e: Exception) {

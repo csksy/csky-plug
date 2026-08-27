@@ -4,7 +4,6 @@ import com.lagradost.api.Log
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.JsonNode
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.newSubtitleFile
 import org.jsoup.Jsoup
@@ -298,16 +297,19 @@ class RaghavTwoDHive : MainAPI() {
         val html = quickGet(epUrl)
         val soup = Jsoup.parse(html)
 
+        // the player island carries the mal id and episode number; the component
+        // was renamed from MultiServerPlayer to EpisodePlayer, match both.
+        // When the island/props are missing, fall back to the url params
+        // (same behaviour as the working standalone plugin).
         val island = soup.select("astro-island").firstOrNull {
             val cu = it.attr("component-url")
             cu.contains("EpisodePlayer", ignoreCase = true) || cu.contains("MultiServerPlayer", ignoreCase = true)
         }
         if (island == null) {
-            Log.e("RaghavAnime", "[2DHive] loadLinks: no EpisodePlayer/MultiServerPlayer island for '${epUrl.take(80)}'")
-            return@coroutineScope false
+            Log.d("RaghavAnime", "[2DHive] loadLinks: no EpisodePlayer/MultiServerPlayer island, falling back to url params")
         }
 
-        val propsStr = island.attr("props").takeIf { it.isNotEmpty() }
+        val propsStr = island?.attr("props")?.takeIf { it.isNotEmpty() }
         if (propsStr == null) {
             Log.d("RaghavAnime", "[2DHive] loadLinks: player island has empty props, falling back to url params")
         }
@@ -315,7 +317,7 @@ class RaghavTwoDHive : MainAPI() {
 
         val malId = decoded?.get("animeIdOrName")?.let { node ->
             if (node.isNumber) node.asInt() else node.asText().toIntOrNull()
-        } ?: epUrl.substringAfter("anime=").substringBefore("&").substringBefore("/").toIntOrNull()
+        } ?: epUrl.substringAfter("anime=").substringBefore("&").toIntOrNull()
 
         val epNum = decoded?.get("epNum")?.asInt()
             ?: epUrl.substringAfter("ep_num=").substringBefore("&").toIntOrNull()
@@ -327,6 +329,9 @@ class RaghavTwoDHive : MainAPI() {
         }
         Log.d("RaghavAnime", "[2DHive] loadLinks: malId=$malId epNum=$epNum type=$type")
 
+        // BabaStream removed - it is not a real anime episodes source (it resolves
+        // to a generic google static marketing file, not actual episodes).
+        // MegaPlay is the only real 2DHive provider.
         val results = mutableListOf<Deferred<Boolean>>()
 
         results.add(async {
@@ -334,15 +339,6 @@ class RaghavTwoDHive : MainAPI() {
                 resolveMegaPlay(malId, epNum, type, epUrl, subtitleCallback, callback)
             } catch (e: Exception) {
                 Log.e("RaghavAnime", "[2DHive] MegaPlay resolve failed: ${e.message}")
-                false
-            }
-        })
-
-        results.add(async {
-            try {
-                resolveBabaStream(malId, epNum, type, epUrl, callback)
-            } catch (e: Exception) {
-                Log.e("RaghavAnime", "[2DHive] BabaStream resolve failed: ${e.message}")
                 false
             }
         })
@@ -430,36 +426,4 @@ class RaghavTwoDHive : MainAPI() {
         return true
     }
 
-    private suspend fun resolveBabaStream(
-        malId: Int, epNum: Int, type: String, epUrl: String,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val embedUrl = "https://babastream.top/embed/$malId/$epNum/$type"
-        Log.d("RaghavAnime", "[2DHive] BabaStream: resolving embed '$embedUrl'")
-        return try {
-            val resolver = WebViewResolver(
-                interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
-                additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
-                script = """document.querySelector('button,[role="button"],.jw-icon-display,.vds-play-button')?.click();""",
-                useOkhttp = false, timeout = 15_000L
-            )
-            val resolved = app.get(embedUrl, referer = epUrl, interceptor = resolver).url
-            if (resolved.contains(".m3u8") || resolved.contains(".mp4")) {
-                Log.d("RaghavAnime", "[2DHive] BabaStream: resolved '${resolved.take(80)}'")
-                val linkType = if (resolved.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                callback(
-                    newExtractorLink("BabaStream", "BabaStream", resolved, type = linkType) {
-                        this.headers = mapOf("User-Agent" to userAgent, "Referer" to "https://babastream.top/")
-                    }
-                )
-                true
-            } else {
-                Log.d("RaghavAnime", "[2DHive] BabaStream: resolved url is not m3u8/mp4: '${resolved.take(80)}'")
-                false
-            }
-        } catch (e: Exception) {
-            Log.e("RaghavAnime", "[2DHive] BabaStream: resolve failed: ${e.message}")
-            false
-        }
-    }
 }

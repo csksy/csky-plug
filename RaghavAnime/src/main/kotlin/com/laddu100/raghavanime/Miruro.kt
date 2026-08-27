@@ -326,6 +326,27 @@ class Miruro : MainAPI() {
             e.message
         }
 
+        // Fallback: when the pipe is unavailable (Cloudflare blocking it), resolve
+        // episodes directly through MegaPlay's anilist endpoint:
+        //   https://megaplay.buzz/stream/ani/{anilistId}/{epNum}/{sub|dub}
+        // This needs no Cloudflare bypass at all and always carries sub+dub.
+        if (subEpisodes.isEmpty() && dubEpisodes.isEmpty()) {
+            val epCount = media.episodes
+                ?: media.nextAiringEpisode?.episode?.minus(1)?.takeIf { it > 0 }
+                ?: 1
+            Log.d("RaghavAnime", "[Miruro] load: no episodes from pipe, using MegaPlay direct fallback ($epCount eps) for anilistId=$anilistId")
+            for (num in 1..epCount) {
+                subEpisodes.add(newEpisode("sub|$anilistId|megaplay-direct:$num:sub") {
+                    this.name = "Episode $num"
+                    this.episode = num
+                })
+                dubEpisodes.add(newEpisode("dub|$anilistId|megaplay-direct:$num:dub") {
+                    this.name = "Episode $num"
+                    this.episode = num
+                })
+            }
+        }
+
         Log.d("RaghavAnime", "[Miruro] load: '$title' (anilistId=$anilistId) -> ${subEpisodes.size} sub / ${dubEpisodes.size} dub episodes")
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = posterUrl
@@ -411,6 +432,26 @@ class Miruro : MainAPI() {
     ): Boolean? {
         val displayName = providerDisplayNames[provider] ?: provider
         Log.d("RaghavAnime", "[Miruro] provider '$displayName': requesting sources (episodeId=$episodeId, category=$category)")
+
+        // Direct MegaPlay fallback entry (built when the CF pipe is unavailable):
+        // resolve straight through megaplay.buzz's anilist endpoint, no pipe needed.
+        if (provider.equals("megaplay-direct", ignoreCase = true)) {
+            if (anilistId == null) return null
+            val cat = if (category.equals("dub", true)) "dub" else "sub"
+            val streamUrl = "https://megaplay.buzz/stream/ani/$anilistId/$episodeId/$cat"
+            Log.d("RaghavAnime", "[Miruro] provider '$displayName': resolving MegaPlay direct $streamUrl")
+            return try {
+                val found = java.util.concurrent.atomic.AtomicBoolean(false)
+                MiruroMegaPlay().getUrl(streamUrl, null, subtitleCallback) { link ->
+                    found.set(true)
+                    callback(link)
+                }
+                if (found.get()) true else null
+            } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Miruro] provider '$displayName': MegaPlay direct failed: ${e.message}")
+                null
+            }
+        }
 
         try {
             val queryMap = mutableMapOf<String, Any>(
@@ -511,10 +552,32 @@ class Miruro : MainAPI() {
                         found = true
                     } else {
                         try {
-                            Log.d("RaghavAnime", "[Miruro] provider '$displayName': loadExtractor for ${embedUrl.take(80)}")
-                            loadExtractor(embedUrl, referer, subtitleCallback, callback)
-                            found = true
+                            // fast paths for the dood-style hosts generic extractors
+                            // need 20-45s on (direct m3u8 scan + jsunpacker)
+                            val fastM3u8 = fastEmbedM3u8(embedUrl, referer)
+                            if (fastM3u8 != null) {
+                                Log.d("RaghavAnime", "[Miruro] provider '$displayName': fast embed m3u8 ${fastM3u8.take(80)}")
+                                callback.invoke(
+                                    newExtractorLink(
+                                        source = "Miruro",
+                                        name = displayName,
+                                        url = fastM3u8,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.headers = mapOf(
+                                            "Referer" to embedUrl,
+                                            "User-Agent" to "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+                                        )
+                                    }
+                                )
+                                found = true
+                            } else {
+                                Log.d("RaghavAnime", "[Miruro] provider '$displayName': loadExtractor for ${embedUrl.take(80)}")
+                                loadExtractor(embedUrl, referer, subtitleCallback, callback)
+                                found = true
+                            }
                         } catch (e: Exception) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
                             Log.e("RaghavAnime", "[Miruro] provider '$displayName': loadExtractor failed for ${embedUrl.take(80)}: ${e.message}")
                             val host = try { java.net.URL(embedUrl).host } catch (_: Exception) { "" }
                             if (host.isNotEmpty()) {
@@ -527,6 +590,7 @@ class Miruro : MainAPI() {
                         }
                     }
                 } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     Log.e("RaghavAnime", "[Miruro] provider '$displayName': embed failed: ${e.message}")
                     e.message
                 }
@@ -553,5 +617,27 @@ class Miruro : MainAPI() {
             .replace(Regex("\\s+"), "-")
             .replace(Regex("-+"), "-")
             .trim('-')
+    }
+
+    private val fastEmbedM3u8Pattern = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""")
+
+    /**
+     * Fast m3u8 extraction for the dood-style hosts that generic extractors
+     * are extremely slow on (20-45s). Same approach AniDao/Anikai use:
+     * raw m3u8 scan with a jsunpacker fallback for packed players.
+     */
+    private suspend fun fastEmbedM3u8(embedUrl: String, referer: String): String? {
+        val handled = embedUrl.contains("vivibebe.site") || embedUrl.contains("bibiemb.xyz") ||
+            embedUrl.contains("otakuhg.site") || embedUrl.contains("otakuvid.online")
+        if (!handled) return null
+        return try {
+            val html = app.get(embedUrl, headers = mapOf("Referer" to referer)).text
+            fastEmbedM3u8Pattern.find(html)?.value
+                ?: JsPacker.parseAndUnpack(html)?.let { fastEmbedM3u8Pattern.find(it)?.value }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.d("RaghavAnime", "[Miruro] fast embed scan failed for ${embedUrl.take(60)}: ${e.message}")
+            null
+        }
     }
 }

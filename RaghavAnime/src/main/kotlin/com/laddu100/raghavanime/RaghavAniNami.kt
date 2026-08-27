@@ -256,9 +256,17 @@ class RaghavAniNami : MainAPI() {
                 "embed" -> {
                     try {
                         Log.d("RaghavAnime", "[AniNami] embed extractor: ${streamUrl.take(80)}")
-                        loadExtractor(streamUrl, referer, subtitleCallback, callback)
-                        found = true
+                        // fast paths for the dood-style hosts the generic extractors
+                        // need 20-45s on (direct m3u8 scan + jsunpacker, same as AniDao)
+                        val fastResolved = resolveEmbedFast(streamUrl, referer, label, parseQuality(stream.quality), callback)
+                        if (fastResolved) {
+                            found = true
+                        } else {
+                            loadExtractor(streamUrl, referer, subtitleCallback, callback)
+                            found = true
+                        }
                     } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
                         Log.e("RaghavAnime", "[AniNami] embed extractor failed: ${e.message}")
                     }
                 }
@@ -274,6 +282,49 @@ class RaghavAniNami : MainAPI() {
             }
         }
         return found
+    }
+
+    private val m3u8Pattern = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""")
+
+    /**
+     * Fast embed resolution for hosts that generic extractors are extremely slow
+     * on (otakuhg/otakuvid took 20-45s each in the wild). Same approach AniDao
+     * uses: raw m3u8 scan, with a jsunpacker fallback for packed players.
+     */
+    private suspend fun resolveEmbedFast(
+        embedUrl: String,
+        referer: String,
+        label: String,
+        quality: Int,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        return try {
+            val handled = embedUrl.contains("vivibebe.site") || embedUrl.contains("bibiemb.xyz") ||
+                embedUrl.contains("otakuhg.site") || embedUrl.contains("otakuvid.online")
+            if (!handled) return false
+
+            Log.d("RaghavAnime", "[AniNami] fast embed path for ${embedUrl.take(60)}")
+            val html = app.get(embedUrl, headers = mapOf("Referer" to referer)).text
+            val m3u8 = m3u8Pattern.find(html)?.value
+                ?: JsPacker.parseAndUnpack(html)?.let { m3u8Pattern.find(it)?.value }
+            if (m3u8 != null) {
+                Log.d("RaghavAnime", "[AniNami] fast embed path m3u8 found: ${m3u8.take(80)}")
+                callback.invoke(
+                    newExtractorLink(label, label, m3u8, ExtractorLinkType.M3U8) {
+                        this.quality = quality
+                        this.headers = mapOf("Referer" to embedUrl)
+                    }
+                )
+                true
+            } else {
+                Log.d("RaghavAnime", "[AniNami] fast embed path found no m3u8 for ${embedUrl.take(60)}")
+                false
+            }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.d("RaghavAnime", "[AniNami] fast embed path failed for ${embedUrl.take(60)}: ${e.message}")
+            false
+        }
     }
 
     private fun parseQuality(q: String?): Int {

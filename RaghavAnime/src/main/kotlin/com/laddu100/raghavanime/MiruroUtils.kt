@@ -546,7 +546,19 @@ object MiruroCloudflare {
     }
 }
 
+// When the Cloudflare pipe fails completely, skip it for a while so callers can
+// fall back to direct resolution (MegaPlay) quickly instead of waiting 30s+
+// on every single episode switch.
+@Volatile private var miruroPipeBrokenUntil: Long = 0L
+private const val MIRURO_PIPE_RETRY_DELAY_MS = 5 * 60 * 1000L
+
+fun miruroPipeKnownBroken(): Boolean = System.currentTimeMillis() < miruroPipeBrokenUntil
+
 suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
+    if (System.currentTimeMillis() < miruroPipeBrokenUntil) {
+        Log.d("RaghavAnime", "[Miruro] pipe request /$path skipped - pipe known broken (cooldown)")
+        throw Exception("Pipe on cooldown after repeated failures")
+    }
     Log.d("RaghavAnime", "[Miruro] pipe request /$path query=${query.toJson().take(80)}")
     val enrichedQuery = query.toMutableMap()
     enrichedQuery["live"] = "true"
@@ -566,10 +578,12 @@ suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
     val webBody = MiruroCloudflare.fetchPipe(Miruro.context, domain, pipeUrl)
     if (webBody != null && webBody.isNotEmpty()) {
         Log.d("RaghavAnime", "[Miruro] pipe request /$path succeeded via session on $domain (len=${webBody.length})")
+        miruroPipeBrokenUntil = 0L
         return decodePipeResponseAuto(webBody)
     }
 
-    Log.e("RaghavAnime", "[Miruro] pipe request /$path failed on $domain")
+    miruroPipeBrokenUntil = System.currentTimeMillis() + MIRURO_PIPE_RETRY_DELAY_MS
+    Log.e("RaghavAnime", "[Miruro] pipe request /$path failed on $domain - entering cooldown")
     throw Exception("Failed on $domain for /$path")
 }
 
