@@ -4,6 +4,41 @@ Tracked plugin updates for this repository.
 
 ---
 
+## 2026-08-27 — AniKuro v1 (NEW plugin: anikuro.ru — full site analysis + build)
+
+**Status:** ✅ built locally (`:AniKuro:make` passed, AniKuro.cs3 produced) — CI will build on push
+
+### Site architecture (reverse-engineered live, zero guesswork)
+- Django JSON API behind Cloudflare, **no anti-bot** for API GETs (plain OkHttp works — no WebView/CF dialog needed).
+- Metadata = **AniList** (anilistId/malId everywhere) + **ani.zip/TVDB** for episodes.
+- Endpoints (all verified with live requests):
+  - Catalog: `/api/v1/discovery/{trending,top-airing,upcoming,recent}` + **paginated** `/api/v1/discovery/filter?page&perPage&sort&formats&q` (sorts POPULARITY_DESC/SCORE_DESC/TRENDING_DESC/…, formats TV/MOVIE/OVA/ONA/SPECIAL; `data.pageInfo.hasNextPage` drives pagination)
+  - Details: `/api/v1/anime/{anilistId}/full`
+  - Episodes: `/api/v1/anime/{anilistId}/episodes` → **real TVDB titles** + per-episode `variants:["sub","dub"]` (One Piece: all 1180 episodes with names)
+  - Sources: **12 providers** — 5 special `/api/v1/{p}/video/{id}/{ep}` (animepower, animegg, anidb, animedunya, animeverse) + 7 standard `/api/v1/sources/{p}/{id}:{ep}` (animepahe, anikoto, reanime, animedao, allanime, animix, senshi)
+
+### Source response handling (3 tolerated shapes, mirrors the site's own JS)
+`normalized:[{variant,sources,subtitles,headers}]` → `raw.sub/raw.dub` → `providerResult.variants`.
+Sources carry `url` (often `proxy.anikuro.ru/{base64(master|referer)}.m3u8`), optional `originalUrl` + `upstreamReferer`.
+
+### Playback (verified byte-level)
+- **animepower** (site's own CDN, freevideoupload.xyz): master→index→`seg-00001.txt`, **needs `Referer: https://anikuro.ru/`** (403 without — injected by the plugin for its links AND subtitles).
+- **anikoto/animix**: proxy links play headerless (CORS *, segments also proxied); direct `originalUrl` needs `Referer: https://megaplay.buzz/` (upstream verified: cdn.kryntal.top playlists, j2khh.orphiq.top/o3sjw.watching.onl segments disguised as .jpg/.txt, MPEG-TS 0x47 confirmed). Plugin emits **both** proxy + direct links.
+- Currently live: animepower ✅, anikoto ✅ (sub+dub), animix ✅ (sub+dub). animepahe/reanime/animedao/allanime/senshi return not_found and animegg/anidb/animedunya/animeverse 500 **backend-side right now** — the plugin calls ALL 12 every time so they auto-heal when the site fixes them.
+
+### Subtitles ("perfect subs" requirement)
+1. API `subtitles[]` per variant (WebVTT via proxy, headerless) — anikoto alone returns up to 28 tracks incl. CC + Forced + CR languages.
+2. `#EXT-X-MEDIA:TYPE=SUBTITLES` renditions parsed from the first emitted master (animepower exposes ~10 languages: Arabic/English/French/German/Italian/Portuguese-BR/Russian/Spanish/Spanish-LatAm), relative URIs resolved, link headers applied.
+3. Deduped by URL. Masters are emitted **unsplit** (no M3u8Helper splitting) so audio renditions stay intact.
+
+### Sub/dub separation
+Per-episode `variants` drive `DubStatus.Subbed` / `DubStatus.Dubbed` episode lists; loadLinks only emits the variant matching the selected episode's status. Movies (format=MOVIE, "Complete Movie" episode) get both statuses too.
+
+### Files
+- `AniKuro/build.gradle.kts` (v1), `AniKuro/src/main/kotlin/com/laddu100/anikuro/AniKuroPlugin.kt`, `AniKuro/src/main/kotlin/com/laddu100/anikuro/AniKuro.kt`
+
+---
+
 ## 2026-08-12 — KMMovies v3 hotfix (Cloudflare bypass actually wired in)
 
 **Status:** ✅ live (v3, CI build passed)
@@ -106,6 +141,7 @@ skydrop                    -> GET https://w1.skydrop.sbs/api.php?id={token}
 
 | Plugin | Version | Status |
 |---|---|---|
+| AniKuro | 1 | ✅ new (anikuro.ru full build 2026-08-27) |
 | KMMovies | 3 | ✅ working (v3 CF-bypass hotfix 2026-08-12; v2 rewrite below) |
 | TheMoviesFlix | 18 | reference implementation |
 
