@@ -9,5 +9,6 @@ class AniKagePlugin : Plugin() {
     override fun load(context: Context) {
         initProxCFBypass(context)
         registerMainAPI(AniKage())
+        // v3 build retry marker
     }
 }
