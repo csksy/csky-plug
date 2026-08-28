@@ -47,20 +47,27 @@ import kotlinx.coroutines.sync.withLock
 /**
  * AniKuro (anikuro.ru) — AniList-keyed anime site with a Django JSON API.
  *
- * v3 fixes (all verified against live site):
- *  1. "No links found" — the source endpoints (/api/v1/sources/... and /api/v1/{p}/video/...)
- *     now return the provider payload BARE (normalized/raw at top level, no {ok,data} wrapper).
- *     The plugin now accepts BOTH the enveloped and the bare shape.
- *  2. NiceHttp `timeout` is SECONDS, not ms — 45_000L meant 12.5h hangs. Now uses seconds.
- *  3. A provider can return MULTIPLE normalized blocks for the same variant (several servers);
- *     all blocks are now collected and merged (previously only the first was emitted).
- *  4. Movies: CloudStream hides the Sub/Dub selector for TvType.AnimeMovie and always plays the
- *     first map entry (sub). MOVIE format is now emitted as TvType.Anime with the single movie
- *     episode, so the Sub/Dub dropdown appears and each variant plays its own stream.
- *  5. Poster DUB badge: the catalog API's hasDub is broken server-side (always false). Dub
- *     existence is now resolved via batched AniList GraphQL (English voice actors) — the same
- *     method the site's own frontend uses — with a session cache, plus per-episode variant truth
- *     learned in load().
+ * v4 fixes (both root-caused with live probes against the real v3 artifact):
+ *  1. "No link found" for EVERY episode: fetchProviderBlocks() passed a FULL URL
+ *     ("$apiBase/api/v1/...") into apiGet(), which prepends the host again -> the app
+ *     actually requested "https://anikuro.ruhttps://anikuro.ru/api/v1/..." (DNS failure)
+ *     and all 12 providers silently returned nothing. Provider endpoints are now PATHS
+ *     (they also inherit domain failover for free), and apiGet() additionally normalizes
+ *     any absolute URL it receives so this class of bug can never recur.
+ *  2. DUB badge missing everywhere (except items whose truth was learned in load()):
+ *     AniList changed behavior — Page { media(id_in: [...]) } now returns an EMPTY list
+ *     for anonymous queries (verified live: even id_in: [21] -> []). The dub query was
+ *     rewritten to aliased singular Media fields (m0: Media(id: ...) { ... }), verified
+ *     9/9 + 30/30 against the site's own /episodes hasDub ground truth.
+ *
+ * Carried from v3 (still correct):
+ *  - Source payloads come in BOTH shapes: enveloped {ok,data} and bare top-level.
+ *  - NiceHttp `timeout` is SECONDS.
+ *  - A provider can return MULTIPLE normalized blocks (several servers) — all are emitted.
+ *  - Movies: TvType.Anime with one "Complete Movie" episode per dub status so the
+ *    Sub/Dub selector shows and each status plays its own variant.
+ *  - Catalog API hasDub is broken server-side (always false) — badges come from the
+ *    AniList voice-actor cache + per-episode variant truth learned in load().
  *
  * Still true from v1/v2:
  *  - Catalog: /api/v1/discovery/... + /api/v1/discovery/filter
@@ -106,27 +113,26 @@ class AniKuro : MainAPI() {
 
         private const val ANILIST_API = "https://graphql.anilist.co"
 
+        // AniList (verified live 2026): Page { media(id_in: [...]) } returns EMPTY for
+        // anonymous queries now — even a literal id_in: [21] resolves to []. Singular
+        // Media(id:) still works, so dub status is batched through ALIASED Media fields:
+        //   query { m0: Media(id: 21) {...} m1: Media(id: 182205) {...} }
+        // 30 aliases resolve in <2s and matched the site's /episodes hasDub 9/9 + 30/30.
+        private const val ANILIST_BATCH = 20
+
         // NOTE: AniList only resolves voiceActors when the edge also selects node —
         // verified live: without node { id } the voiceActors arrays come back EMPTY.
-        private val ANILIST_DUB_QUERY = """
-            query (${"$"}ids: [Int]) {
-              Page(perPage: 50) {
-                media(id_in: ${"$"}ids, type: ANIME) {
-                  id
-                  characters(perPage: 20) {
-                    edges {
-                      voiceActors {
-                        languageV2
-                      }
-                      node {
-                        id
-                      }
-                    }
-                  }
-                }
-              }
+        private const val ANILIST_MEDIA_FIELDS =
+            "id characters(perPage: 12) { edges { voiceActors { languageV2 } node { id } } }"
+
+        private fun buildDubQuery(ids: List<Int>): String = buildString {
+            append("query { ")
+            ids.forEachIndexed { i, id ->
+                append("m").append(i).append(": Media(id: ").append(id)
+                    .append(", type: ANIME) { ").append(ANILIST_MEDIA_FIELDS).append(" } ")
             }
-        """.trimIndent()
+            append("}")
+        }
     }
 
     data class ProviderDef(val key: String, val label: String, val special: Boolean = false)
@@ -139,9 +145,6 @@ class AniKuro : MainAPI() {
         "Origin" to "https://anikuro.ru",
     )
 
-    private val apiBase: String
-        get() = resolvedHost ?: mainUrl.trimEnd('/')
-
     /** The site rotates domains (anikuro.site is the announced fallback) — remember the live one. */
     @Volatile
     private var resolvedHost: String? = null
@@ -150,8 +153,16 @@ class AniKuro : MainAPI() {
      * GETs an API path trying the current host first, then the failover list.
      * Non-JSON bodies (HTML error pages / interstitials) count as failure so the next
      * host is tried. On success the working host is remembered for the session.
+     *
+     * v4 hardening: also accepts absolute URLs (strips scheme+host). The v3 "no link
+     * found" bug was exactly a full URL being passed here and getting the host prepended
+     * a second time ("https://anikuro.ruhttps://anikuro.ru/...") — this can never
+     * happen again regardless of the call-site.
      */
-    private suspend fun apiGet(path: String, timeout: Long): String? {
+    private suspend fun apiGet(pathOrUrl: String, timeout: Long): String? {
+        val path = if (pathOrUrl.startsWith("http")) {
+            "/" + pathOrUrl.substringAfter("://").substringAfter('/', "")
+        } else pathOrUrl
         val primary = resolvedHost ?: mainUrl.trimEnd('/')
         val hosts = listOf(primary) + FAILOVER_HOSTS.filter { !it.equals(primary, true) }
         for (host in hosts) {
@@ -358,16 +369,10 @@ class AniKuro : MainAPI() {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class LinkData(val id: Int, val ep: Int, val variant: String)
 
-    // --- AniList dub detection DTOs
+    // --- AniList dub detection DTOs (aliased singular Media query)
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListResp(val data: AniListData? = null)
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListData(val page: AniListPage? = null)
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListPage(val media: List<AniListMedia>? = null)
+    data class AniListAliasResp(val data: Map<String, AniListMedia?>? = null)
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AniListMedia(val id: Int? = null, val characters: AniListCharacters? = null)
@@ -388,6 +393,9 @@ class AniKuro : MainAPI() {
      * would all show "SUB". The site's own frontend derives dub existence from AniList character
      * voiceActors (any English VA). This cache batch-queries AniList for a page of ids and
      * remembers the result for the session; load() also feeds per-episode variant truth in.
+     *
+     * v4: uses ALIASED singular Media fields — AniList's Page.media(id_in:) filters stopped
+     * resolving for anonymous queries (verified live), which left every card stuck on "SUB".
      */
     object DubCache {
         private const val TTL_MS = 6 * 60 * 60 * 1000L // 6h
@@ -404,6 +412,47 @@ class AniKuro : MainAPI() {
         fun put(id: Int, hasDub: Boolean) {
             if (map.size > MAX_ENTRIES) map.clear()
             map[id] = Pair(hasDub, System.currentTimeMillis())
+        }
+
+        private fun hasEnglishVa(media: AniListMedia?): Boolean? {
+            if (media?.id == null) return null
+            return media.characters?.edges.orEmpty().any { edge ->
+                edge.voiceActors.orEmpty().any { it.languageV2.equals("English", true) }
+            }
+        }
+
+        /** One POST with one retry on 429/5xx. Returns the parsed alias map or null. Never throws. */
+        private suspend fun postAliasChunk(chunk: List<Int>): Map<String, AniListMedia?>? {
+            val headers = mapOf(
+                "Accept" to "application/json",
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            )
+            repeat(2) { attempt ->
+                try {
+                    val r = app.post(
+                        ANILIST_API,
+                        headers = headers,
+                        json = mapOf("query" to buildDubQuery(chunk)),
+                        timeout = TIMEOUT_CATALOG,
+                    )
+                    if (r.code == 429 || r.code >= 500) {
+                        kotlinx.coroutines.delay(1200L * (attempt + 1))
+                        return@repeat
+                    }
+                    return try {
+                        parseJson<AniListAliasResp>(r.text).data
+                    } catch (e: Exception) {
+                        Log.d(TAG, "anilist dub parse failed: ${e.message}")
+                        null
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.d(TAG, "anilist dub batch failed: ${e.message}")
+                    return null
+                }
+            }
+            return null
         }
 
         /** Batch-fetches dub status for ids not cached yet. Never throws. */
@@ -424,38 +473,12 @@ class AniKuro : MainAPI() {
                         entry == null || (now2 - entry.second >= TTL_MS)
                     }
                     if (still.isEmpty()) return
-                    for (chunk in still.chunked(50)) {
-                        val resp = try {
-                            app.post(
-                                ANILIST_API,
-                                headers = mapOf(
-                                    "Accept" to "application/json",
-                                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                                ),
-                                json = mapOf(
-                                    "query" to ANILIST_DUB_QUERY,
-                                    "variables" to mapOf("ids" to chunk),
-                                ),
-                                timeout = TIMEOUT_CATALOG,
-                            ).text
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Log.d(TAG, "anilist dub batch failed: ${e.message}")
-                            null
-                        } ?: continue
-                        val parsed = try {
-                            parseJson<AniListResp>(resp)
-                        } catch (e: Exception) {
-                            Log.d(TAG, "anilist dub parse failed: ${e.message}")
-                            null
-                        } ?: continue
-                        for (media in parsed.data?.page?.media.orEmpty()) {
-                            val id = media.id ?: continue
-                            val hasDub = media.characters?.edges.orEmpty().any { edge ->
-                                edge.voiceActors.orEmpty().any { it.languageV2.equals("English", true) }
-                            }
-                            put(id, hasDub)
+                    for (chunk in still.chunked(ANILIST_BATCH)) {
+                        val aliasMap = postAliasChunk(chunk) ?: continue
+                        for ((_, media) in aliasMap) {
+                            // Aliases for unknown/filtered ids come back null -> leave uncached.
+                            val verdict = hasEnglishVa(media) ?: continue
+                            put(media!!.id!!, verdict)
                         }
                     }
                 }
@@ -743,10 +766,13 @@ class AniKuro : MainAPI() {
         ep: Int,
         variant: String,
     ): List<VariantBlock> {
+        // PATH only — apiGet() resolves the host (with failover). v3 passed a full URL here
+        // and apiGet() prepended the host AGAIN, producing an invalid URL for every provider
+        // -> the app showed "no link found" for everything.
         val endpoint = if (provider.special) {
-            "$apiBase/api/v1/${provider.key}/video/$animeId/$ep"
+            "/api/v1/${provider.key}/video/$animeId/$ep"
         } else {
-            "$apiBase/api/v1/sources/${provider.key}/$animeId:$ep"
+            "/api/v1/sources/${provider.key}/$animeId:$ep"
         }
         val text = try {
             apiGet(endpoint, TIMEOUT_SOURCES)
