@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 android {
     buildFeatures {
@@ -7,7 +7,7 @@ android {
 }
 
 cloudstream {
-    description = "AniKage - Anime & Movies from anikage.cc (sub/dub selection for anime AND movies, real episode titles, all servers, multi-language subtitles). Sources: MegaPlay(Koto)/VidTube/VibeNeko + proxy-based Kiwi/Uwu"
+    description = "AniKage - Anime & Movies from anikage.cc (sub/dub selection for anime AND movies, real episode titles, all servers, multi-language subtitles). Sources: MegaPlay(Koto)/VidTube/VibeNeko/StreamHG/Earnvids with auto-recovery"
     authors = listOf("csksy")
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")

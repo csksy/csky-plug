@@ -60,21 +60,34 @@ import kotlinx.coroutines.sync.withLock
  *  Sources        : GET /api/media/anime/{slug}/episodes/{n}/sources?provider={id}&lang={sub|dub}&server={id}
  *                   -> {sources:[{url(encrypted token), quality, isM3U8, embedUrl, type}], subtitles, embeds}
  *
- *  Source handling (all verified live):
- *   - koto  : embedUrl on megaplay.buzz / vidtube.site (same MegaPlay software).
+ *  Source handling (re-verified live 2026-08-28, v2):
+ *   The /sources payload now carries THREE places an embed can appear — sources[].embedUrl,
+ *   top-level embeds[] and embedOptions[] — and they differ per provider. v2 merges all of
+ *   them (deduped) and routes every embed URL by host:
+ *
+ *   - koto  : megaplay.buzz / vidtube.site embeds (same MegaPlay software).
  *             embed page -> data-id -> {host}/stream/getSourcesNew?id={data-id} (X-Requested-With:
- *             XMLHttpRequest) -> {sources:{file: <m3u8>}, tracks:[{file,label}]} -> play with
- *             Referer https://{embedHost}/ (kryntal/akirax/shiora CDNs 403 without it).
- *   - neko  : embedUrl on vivibebe.site/{code}?sub={vtt} and bibiemb.xyz/{code}h?sub=...
- *             embed page inline: const src = "https://.../master.m3u8" (vivibebe constructible as
- *             /public/stream/{code}/master.m3u8; bibiemb serves via random *.vibevibe.workers.dev).
- *   - dib   : playeng.animeapps.top playsub.php — upstream currently DEAD (serves a parked page);
- *             generic m3u8 scan attempted so it recovers automatically if the host comes back.
- *   - wave  : play.echovideo.ru embed-1/{code} — generic m3u8 scan attempted (filecodes may expire).
- *   - kiwi / uwu("beep") : token-only sources (no embedUrl). The site plays them through
- *             https://prox.anikage.cc/m3u8/{token} (its resolver: Le(url, isM3U8?'m3u8':'stream')).
- *             Emitted as-is, best-effort, same as the site does.
- *   - any source without an embedUrl also goes through the prox resolver path.
+ *             XMLHttpRequest, Referer = the embed URL itself) -> {sources:{file:<m3u8>},
+ *             tracks:[{file,label}] (plaintext VTT subs)} -> play with Referer https://{embedHost}/
+ *             (kryntal/akirax/shiora CDNs 403 without it). vidtube files 404 individually when
+ *             expired; megaplay mirrors cover the episode.
+ *   - neko  : vivibebe.site/{code}?sub={vtt} + bibiemb.xyz/{code}h?sub=... (inline
+ *             const src = "https://.../master.m3u8", bibiemb via *.vibevibe.workers.dev)
+ *             PLUS StreamHG (otakuhg.site/e/{code}) and Earnvids (otakuvid.online/embed/{code}):
+ *             their pages carry an eval-packed JWPlayer setup whose unpacked JS defines
+ *             var links={"hls2":"https://...master.m3u8?t=...","hls3":"https://...master.txt"}
+ *             (verified 200 HLS with Referer https://{embedHost}/). Captions ride the embed
+ *             URL query (?sub= / caption_1=&sub_1=). playmogo.com (DoodStream) is Turnstile-
+ *             gated server-side and cannot be extracted by an HTTP client — skipped.
+ *   - dib   : playeng.animeapps.top upstream is DEAD (serves a parked Google Cloud page).
+ *   - wave  : embeds (echovideo 404 / gn1r5n "video not found" / myvidplay -> playmogo) are dead;
+ *             sources are prox-tokens (see below). Generic m3u8 scan kept so it self-recovers.
+ *   - kiwi / uwu / megg : token-only sources, no embeds anywhere. The site resolves them via
+ *             https://prox.anikage.cc/m3u8|stream/{token} — that prox now answers 400 "bad url"
+ *             for EVERY fresh token (verified repeatedly, browser-identical headers included),
+ *             so these servers are broken on anikage.cc itself. v2 does NOT emit dead prox
+ *             links (they were the "some error" links reported on v1); the generic embed scan
+ *             still runs so the servers recover automatically if the site fixes its prox.
  *
  *  Movies: format=MOVIE -> emitted as TvType.Anime with the single movie episode added under BOTH
  *  dub statuses, so CloudStream's Sub/Dub selector appears and each status plays its own variant
@@ -106,8 +119,6 @@ class AniKage : MainAPI() {
         const val TIMEOUT_SOURCES = 45L
         const val TIMEOUT_EMBED = 20L
         const val TIMEOUT_MASTER = 12L
-
-        const val PROXY_BASE = "https://prox.anikage.cc"
 
         /** The site's server ids (from /episodes/{n}/servers, live-verified). */
         val SERVERS = listOf("koto", "kiwi", "uwu", "neko", "megg", "dib", "wave")
@@ -275,6 +286,12 @@ class AniKage : MainAPI() {
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
+    data class EmbedItem(val url: String? = null, val type: String? = null, val server: String? = null, val status: String? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class EmbedOption(val key: String? = null, val label: String? = null, val url: String? = null)
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class SourcesEnvelope(
         val slug: String? = null,
         val number: Int? = null,
@@ -282,7 +299,8 @@ class AniKage : MainAPI() {
         val subType: String? = null,
         val sources: List<SourceItem>? = null,
         val subtitles: List<SourceSubtitle>? = null,
-        val embeds: List<SourceSubtitle>? = null,
+        val embeds: List<EmbedItem>? = null,
+        val embedOptions: List<EmbedOption>? = null,
         val headers: Map<String, String>? = null,
     )
 
@@ -650,89 +668,7 @@ class AniKage : MainAPI() {
         return true
     }
 
-    private suspend fun extractServer(
-        server: String,
-        slug: String,
-        ep: Int,
-        variant: String,
-        seenUrls: MutableSet<String>,
-        seenSubUrls: MutableSet<String>,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-    ) {
-        val env = try {
-            apiGet(
-                "/api/media/anime/$slug/episodes/$ep/sources?provider=$server&lang=$variant&server=$server",
-                TIMEOUT_SOURCES,
-            )?.let { parseJson<SourcesEnvelope>(it) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.d(TAG, "$server sources request failed: ${e.message}")
-            null
-        } ?: return
-
-        val sources = env.sources.orEmpty()
-        if (sources.isEmpty()) return
-
-        val label = serverLabel(server)
-        val emitted = ArrayList<PlayLink>()
-
-        for (s in sources) {
-            val embed = s.embedUrl
-            if (!embed.isNullOrBlank() && embed.startsWith("http")) {
-                val extracted = extractEmbed(label, embed, s.quality)
-                for (e in extracted.links) {
-                    if (seenUrls.add(e.url)) emitted.add(e)
-                }
-                for (sub in extracted.subs) {
-                    if (sub.url.startsWith("http") && seenSubUrls.add(sub.url)) {
-                        subtitleCallback.invoke(
-                            newSubtitleFile(sub.label, sub.url) {
-                                sub.referer?.let { this.headers = mapOf("Referer" to it) }
-                            }
-                        )
-                    }
-                }
-                // Neko-style embeds carry the subtitle in the ?sub= query param.
-                val subParam = embed.substringAfter("?sub=", "").substringBefore("&").takeIf { it.startsWith("http") }
-                if (subParam != null && seenSubUrls.add(subParam)) {
-                    subtitleCallback.invoke(newSubtitleFile("English", subParam))
-                }
-            } else {
-                // Token-only source (kiwi / uwu / anything without an embed) — the site
-                // plays these through its own proxy resolver; emit best-effort.
-                val tok = s.url ?: continue
-                val prox = "$PROXY_BASE/${if (s.isM3U8 != false) "m3u8" else "stream"}/$tok"
-                if (seenUrls.add(prox)) emitted.add(PlayLink(prox, "https://anikage.cc/", s.quality))
-            }
-        }
-
-        // Subtitles carried directly by the /sources payload are encrypted tokens
-        // (prox-resolved by the site). Emit them best-effort; plaintext subs come from
-        // the MegaPlay-family tracks below.
-        for (st in env.subtitles.orEmpty()) {
-            val label0 = st.label ?: st.lang ?: st.language ?: "English"
-            val proxied = st.file ?: st.url ?: continue
-            val url = if (proxied.startsWith("http")) proxied else "$PROXY_BASE/stream/$proxied"
-            if (url.startsWith("http") && seenSubUrls.add(url)) {
-                subtitleCallback.invoke(newSubtitleFile(label0, url) {
-                    this.headers = mapOf("Referer" to "https://anikage.cc/")
-                })
-            }
-        }
-
-        for (l in emitted) {
-            val name = qualityLabel(label, l.url, l.quality)
-            callback.invoke(
-                newExtractorLink(name, name, l.url, type = ExtractorLinkType.M3U8) {
-                    l.referer?.let { this.referer = it }
-                }
-            )
-        }
-    }
-
-    private data class PlayLink(val url: String, val referer: String?, val quality: String?)
+    private data class PlayLink(val url: String, val referer: String?, val quality: String?, val tag: String? = null)
     private data class PlaySub(val url: String, val label: String, val referer: String?)
     private data class ExtractResult(val links: List<PlayLink>, val subs: List<PlaySub>)
 
@@ -747,7 +683,7 @@ class AniKage : MainAPI() {
         else -> server.replaceFirstChar { it.uppercase() }
     }
 
-    private fun qualityLabel(base: String, url: String, quality: String?): String {
+    private fun qualityLabel(base: String, url: String, quality: String?, tag: String?): String {
         val q = when {
             quality.isNullOrBlank() -> null
             quality.equals("auto", true) -> null
@@ -756,17 +692,148 @@ class AniKage : MainAPI() {
             quality.contains("hd", true) -> quality.uppercase()
             else -> quality
         }
-        return if (q != null) "$base · $q" else base
+        var label = if (q != null) "$base \u00b7 $q" else base
+        if (tag != null) label = "$label \u00b7 $tag"
+        return label
+    }
+
+    /** GETs the /sources payload with retries — the API rate-limits hard (429s) under load. */
+    private suspend fun fetchSourcesEnvelope(
+        slug: String,
+        ep: Int,
+        server: String,
+        variant: String,
+    ): SourcesEnvelope? {
+        val path = "/api/media/anime/$slug/episodes/$ep/sources?provider=$server&lang=$variant&server=$server"
+        for (attempt in 0 until 3) {
+            val text = apiGet(path, TIMEOUT_SOURCES)
+            if (text != null) {
+                val parsed = try {
+                    parseJson<SourcesEnvelope>(text)
+                } catch (e: Exception) {
+                    Log.d(TAG, "$server sources parse failed: ${e.message}")
+                    null
+                }
+                if (parsed != null) return parsed
+            }
+            if (attempt < 2) kotlinx.coroutines.delay(1800L * (attempt + 1))
+        }
+        return null
+    }
+
+    /** Subtitles hidden in an embed URL's query string (?sub=, ?caption_1=&sub_1=, ?c1_file=&c1_label=). */
+    private fun embedQuerySubs(embedUrl: String): List<PlaySub> {
+        val out = ArrayList<PlaySub>()
+        val query = embedUrl.substringAfter("?", "")
+        if (query.isBlank()) return out
+        val decodedPairs = query.split("&").mapNotNull { pair ->
+            val k = pair.substringBefore("=")
+            val v = try {
+                java.net.URLDecoder.decode(pair.substringAfter("=", ""), "UTF-8")
+            } catch (e: Exception) {
+                pair.substringAfter("=", "")
+            }
+            k to v
+        }
+        fun param(name: String): String? = decodedPairs.firstOrNull { it.first == name }?.second
+        for ((k, v) in decodedPairs) {
+            if (!v.startsWith("http")) continue
+            val label = when (k) {
+                "sub" -> "English"
+                "caption_1" -> param("sub_1")?.takeIf { it.isNotBlank() } ?: "English"
+                "c1_file" -> param("c1_label")?.takeIf { it.isNotBlank() } ?: "English"
+                else -> null
+            } ?: continue
+            out.add(PlaySub(v, label, null))
+        }
+        return out
+    }
+
+    private suspend fun extractServer(
+        server: String,
+        slug: String,
+        ep: Int,
+        variant: String,
+        seenUrls: MutableSet<String>,
+        seenSubUrls: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val env = fetchSourcesEnvelope(slug, ep, server, variant) ?: return
+        val label = serverLabel(server)
+        val emitted = ArrayList<PlayLink>()
+
+        // The payload can carry embeds in THREE places; merge them all (order-stable, deduped):
+        //   1. sources[].embedUrl  — the canonical per-source embed
+        //   2. embedOptions[]      — the site's embed picker (E-Koto/E-Wish/E-Neko/E-Ken)
+        //   3. embeds[]            — full mirror list (StreamHG/Earnvids/Doodstream/...)
+        val candidates = LinkedHashSet<String>()
+        for (s in env.sources.orEmpty()) s.embedUrl?.takeIf { it.startsWith("http") }?.let { candidates.add(it) }
+        for (o in env.embedOptions.orEmpty()) o.url?.takeIf { it.startsWith("http") }?.let { candidates.add(it) }
+        for (e in env.embeds.orEmpty()) e.url?.takeIf { it.startsWith("http") }?.let { candidates.add(it) }
+
+        // v2 NOTE: encrypted-token sources WITHOUT any embed are deliberately NOT emitted.
+        // The site resolves them via prox.anikage.cc, which now answers 400 "bad url" for
+        // every fresh token (verified live) — emitting those links produced the dead
+        // "some error" entries users reported on v1. The generic embed scan below still
+        // runs, so these servers recover automatically if the site ever fixes its prox.
+
+        for (embed in candidates) {
+            val res = try {
+                extractEmbed(label, embed)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "$label embed extract failed: ${e.message}")
+                ExtractResult(emptyList(), emptyList())
+            }
+            for (l in res.links) {
+                if (seenUrls.add(l.url)) emitted.add(l)
+            }
+            val allSubs = ArrayList<PlaySub>(res.subs)
+            allSubs.addAll(embedQuerySubs(embed))
+            for (sub in allSubs) {
+                if (!sub.url.startsWith("http")) continue
+                if (seenSubUrls.add(sub.url)) {
+                    subtitleCallback.invoke(
+                        newSubtitleFile(sub.label, sub.url) {
+                            sub.referer?.let { this.headers = mapOf("Referer" to it) }
+                        }
+                    )
+                }
+            }
+        }
+
+        // Payload subtitles are encrypted prox-tokens (same broken prox) — only emit
+        // plaintext ones, if the API ever returns them directly.
+        for (st in env.subtitles.orEmpty()) {
+            val label0 = st.label ?: st.lang ?: st.language ?: "English"
+            val url = st.file ?: st.url ?: continue
+            if (url.startsWith("http") && seenSubUrls.add(url)) {
+                subtitleCallback.invoke(newSubtitleFile(label0, url))
+            }
+        }
+
+        for (l in emitted) {
+            val name = qualityLabel(label, l.url, l.quality, l.tag)
+            callback.invoke(
+                newExtractorLink(name, name, l.url, type = ExtractorLinkType.M3U8) {
+                    l.referer?.let { this.referer = it }
+                }
+            )
+        }
     }
 
     /**
-     * Extracts playable masters + plaintext subtitles from an embed page. Handles:
-     *  1. MegaPlay-family pages (megaplay.buzz, vidtube.site — same software): data-id ->
-     *     /stream/getSourcesNew?id= (AJAX) -> sources.file + tracks (plaintext subs!).
+     * Extracts playable masters + plaintext subtitles from an embed URL. Handles:
+     *  1. MegaPlay-family (megaplay.buzz, vidtube.site): data-id -> /stream/getSourcesNew?id=
+     *     (AJAX header, Referer = the embed URL) -> sources.file + tracks (plaintext subs).
      *  2. Inline-const pages (vivibebe.site, bibiemb.xyz): const src = "https://.../master.m3u8".
-     *  3. Generic: first .m3u8 URL found in the page HTML (recovers hosts that come back alive).
+     *  3. StreamHG/Earnvids (otakuhg.site, otakuvid.online): eval-packed JWPlayer page whose
+     *     unpacked JS defines var links={"hls2":"...m3u8","hls3":"..."} — unpacked live-verified.
+     *  4. Generic: first .m3u8 found in the page (recovers hosts that come back alive).
      */
-    private suspend fun extractEmbed(baseLabel: String, embedUrl: String, quality: String?): ExtractResult {
+    private suspend fun extractEmbed(baseLabel: String, embedUrl: String): ExtractResult {
         val host = embedUrl.substringAfter("://").substringBefore("/")
         val links = ArrayList<PlayLink>()
         val subs = ArrayList<PlaySub>()
@@ -803,7 +870,7 @@ class AniKage : MainAPI() {
                 }
                 val file = mega?.sources?.file
                 if (!file.isNullOrBlank() && file.startsWith("http")) {
-                    links.add(PlayLink(file, "$megaBase/", quality))
+                    links.add(PlayLink(file, "$megaBase/", null))
                     for (t in mega.tracks.orEmpty()) {
                         val tf = t.file ?: continue
                         if (tf.startsWith("http")) {
@@ -813,24 +880,80 @@ class AniKage : MainAPI() {
                 }
             }
             if (links.isNotEmpty()) return ExtractResult(links, subs)
+            // else: this mirror's file is expired (vidtube answers plain 404) — the merged
+            // candidate list means other mirrors for the same server still get tried.
         }
 
-        // ---- 2/3. Fetch the embed page once and try inline-const then generic scans.
+        // ---- 2/3. Fetch the embed page once and try inline-const, packed-links, then generic.
         val body = fetchEmbedBody(embedUrl) ?: return ExtractResult(links, subs)
 
+        // 2a. VibeNeko family: const src = "https://.../master.m3u8"
         val constSrc = Regex("const\\s+src\\s*=\\s*\"(https?://[^\"]+\\.m3u8[^\"]*)\"").find(body)?.groupValues?.get(1)
         if (constSrc != null) {
-            links.add(PlayLink(constSrc, "https://$host/", quality))
+            links.add(PlayLink(constSrc, "https://$host/", null))
             return ExtractResult(links, subs)
         }
 
+        // 2b. StreamHG/Earnvids: eval-packed setup defining var links={"hls2":...,"hls3":...}.
+        val packed = JsPacker.unpack(body)
+        if (packed != null) {
+            val linksBlock = Regex("var\\s+links\\s*=\\s*\\{[^}]*\\}").find(packed)?.value
+            if (linksBlock != null) {
+                for (key in listOf("hls2", "hls3", "hls4")) {
+                    val u = Regex("\"$key\"\\s*:\\s*\"(https?://[^\"]+)\"").find(linksBlock)?.groupValues?.get(1) ?: continue
+                    links.add(PlayLink(u, "https://$host/", null, tag = key.uppercase()))
+                }
+                if (links.isNotEmpty()) return ExtractResult(links, subs)
+            }
+        }
+
+        // 3. Generic: first .m3u8 in the page (recovers hosts that come back alive).
         val generic = Regex("(https?://[^\"'\\s<>]+?\\.m3u8[^\"'\\s<>]*)").findAll(body)
             .map { it.groupValues[1] }
             .firstOrNull { !it.contains("proxylist") }
         if (generic != null) {
-            links.add(PlayLink(generic, "https://$host/", quality))
+            links.add(PlayLink(generic, "https://$host/", null))
         }
         return ExtractResult(links, subs)
+    }
+
+    /**
+     * Minimal unpacker for the SHORT-form JS packer used by otakuhg.site / otakuvid.online:
+     *   eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\b'+c.toString(a)+'\\b','g'),k[c]);return p}('PAYLOAD',A,C,'K1|K2|...'.split('|')))
+     * Base-N token substitution from the highest index down (verified against live pages).
+     */
+    private object JsPacker {
+        private val PAYLOAD_RE = Regex(
+            "\\}\\('(.+?)',(\\d+),(\\d+),'(.*?)'\\.split\\('\\|'\\)\\)\\)",
+            RegexOption.DOT_MATCHES_ALL,
+        )
+        private const val DIGITS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+        fun unpack(body: String): String? {
+            val m = PAYLOAD_RE.find(body) ?: return null
+            val a = m.groupValues[2].toIntOrNull() ?: return null
+            val c = m.groupValues[3].toIntOrNull() ?: return null
+            val keys = m.groupValues[4].split('|')
+            if (a < 2 || c < 1) return null
+            var p = m.groupValues[1]
+            for (i in c - 1 downTo 0) {
+                val word = keys.getOrNull(i)
+                if (word.isNullOrEmpty()) continue
+                val token = toBase(i, a)
+                p = Regex("\\b${Regex.escape(token)}\\b").replace(p) { word }
+            }
+            return p
+        }
+
+        private fun toBase(n0: Int, base: Int): String {
+            var n = n0
+            var out = ""
+            while (n > 0) {
+                out = DIGITS[n % base] + out
+                n /= base
+            }
+            return out.ifEmpty { "0" }
+        }
     }
 
     private suspend fun fetchEmbedBody(embedUrl: String): String? = try {
