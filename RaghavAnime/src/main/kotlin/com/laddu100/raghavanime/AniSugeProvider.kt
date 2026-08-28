@@ -122,10 +122,7 @@ class AniSugeProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("anisuge") ?: mainUrl
         Log.d("RaghavAnime", "[AniSuge] getMainPage '${request.name}' page $page on $mainUrl")
-        if (page > 1) {
-            Log.d("RaghavAnime", "[AniSuge] getMainPage page $page > 1, returning empty list")
-            return newHomePageResponse(request.name, emptyList())
-        }
+        if (page > 1) return newHomePageResponse(request.name, emptyList())
         val html = quickGet("$mainUrl/home")
         val soup = Jsoup.parse(html)
 
@@ -175,7 +172,7 @@ class AniSugeProvider : MainAPI() {
                 this.posterUrl = posterUrl
             })
         }
-        Log.d("RaghavAnime", "[AniSuge] search '$query' returned ${results.size} results")
+        Log.d("RaghavAnime", "[AniSuge] search '$query' -> ${results.size} results")
         return results
     }
 
@@ -188,10 +185,8 @@ class AniSugeProvider : MainAPI() {
 
         val dataId = soup.selectFirst(".watch-wrap")?.attr("data-id")
             ?: Regex("""mangaId\s*=\s*(\d+)""").find(html)?.groupValues?.get(1)
-        if (dataId == null) {
-            Log.d("RaghavAnime", "[AniSuge] no data-id found on page, returning null")
-            return null
-        }
+            ?: return null
+        Log.d("RaghavAnime", "[AniSuge] load dataId=$dataId")
 
         val title = soup.selectFirst(".maindata h1.title")?.text()?.trim()
             ?: soup.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" Episode")?.trim()
@@ -222,7 +217,7 @@ class AniSugeProvider : MainAPI() {
         val genres = soup.select(".meta a[href*='/genre/'], .data a[href*='/genre/']")?.map { it.text().trim() } ?: emptyList()
 
         val vrf = generateVrf(dataId)
-        Log.d("RaghavAnime", "[AniSuge] fetching episode list for dataId $dataId (title '$title')")
+        Log.d("RaghavAnime", "[AniSuge] load fetching episode list for dataId $dataId (title '$title')")
         val epsResponseText = app.get(
             url = "$mainUrl/ajax/episode/list/$dataId?vrf=$vrf",
             headers = mapOf(
@@ -232,13 +227,10 @@ class AniSugeProvider : MainAPI() {
             ),
             interceptor = cfKiller
         ).text
+        Log.d("RaghavAnime", "[AniSuge] episode list ajax response length ${epsResponseText.length}")
 
         val epsJson = parseJson<EpsResponse>(epsResponseText)
-        val epsHtml = epsJson.result
-        if (epsHtml == null) {
-            Log.d("RaghavAnime", "[AniSuge] episode list ajax returned no result (response len ${epsResponseText.length})")
-            return null
-        }
+        val epsHtml = epsJson.result ?: return null
         val epsSoup = Jsoup.parse(epsHtml)
 
         val subEpisodes = mutableListOf<Episode>()
@@ -265,7 +257,7 @@ class AniSugeProvider : MainAPI() {
             }
         }
 
-        Log.d("RaghavAnime", "[AniSuge] parsed ${subEpisodes.size} sub / ${dubEpisodes.size} dub episodes for '$title'")
+        Log.d("RaghavAnime", "[AniSuge] episodes: ${subEpisodes.size} sub, ${dubEpisodes.size} dub for '$title'")
         val tvType = TvType.Anime
 
         return newAnimeLoadResponse(title, url, tvType) {
@@ -285,15 +277,10 @@ class AniSugeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        if (!data.startsWith("https://")) {
-            Log.d("RaghavAnime", "[AniSuge] loadLinks data not starting with https, skipping: '${data.take(60)}'")
-            return@coroutineScope false
-        }
+        Log.d("RaghavAnime", "[AniSuge] loadLinks data '${data.take(100)}'")
+        if (!data.startsWith("https://")) return@coroutineScope false
         val parts = data.split("|")
-        if (parts.size < 5) {
-            Log.d("RaghavAnime", "[AniSuge] loadLinks malformed data (${parts.size} parts)")
-            return@coroutineScope false
-        }
+        if (parts.size < 5) return@coroutineScope false
         val baseUrl = parts[0]
         val animeId = parts[1]
         val epNum = parts[2]
@@ -310,13 +297,10 @@ class AniSugeProvider : MainAPI() {
             ),
             interceptor = cfKiller
         ).text
+        Log.d("RaghavAnime", "[AniSuge] server list ajax response length ${serverListResponseText.length}")
 
         val serverListJson = parseJson<EpsResponse>(serverListResponseText)
-        val serverListHtml = serverListJson.result
-        if (serverListHtml == null) {
-            Log.d("RaghavAnime", "[AniSuge] server list ajax returned no result (len ${serverListResponseText.length})")
-            return@coroutineScope false
-        }
+        val serverListHtml = serverListJson.result ?: return@coroutineScope false
         val serverListSoup = Jsoup.parse(serverListHtml)
 
         val serverTypes = serverListSoup.select(".server-type")
@@ -329,6 +313,7 @@ class AniSugeProvider : MainAPI() {
             } else {
                 typeAttr == "dub" || typeAttr == "adub" || typeAttr == "a-dub"
             }
+            Log.d("RaghavAnime", "[AniSuge] server-type '$typeAttr' match=$isMatch (want '$selectedType')")
 
             if (!isMatch) continue
 
@@ -340,11 +325,8 @@ class AniSugeProvider : MainAPI() {
             }
         }
 
-        if (serversToLoad.isEmpty()) {
-            Log.d("RaghavAnime", "[AniSuge] no '$selectedType' servers for ep $epNum, returning false")
-            return@coroutineScope false
-        }
-        Log.d("RaghavAnime", "[AniSuge] ep $epNum ($selectedType): loading ${serversToLoad.size} servers [${serversToLoad.joinToString { it.first }}]")
+        Log.d("RaghavAnime", "[AniSuge] servers matched: ${serversToLoad.size} for '$selectedType' [${serversToLoad.joinToString { it.first }}]")
+        if (serversToLoad.isEmpty()) return@coroutineScope false
 
         val loadedResults = serversToLoad.map { (serverName, linkId) ->
             async {
@@ -352,6 +334,7 @@ class AniSugeProvider : MainAPI() {
                 var loadedSingle = false
                 val wrappedCallback: (ExtractorLink) -> Unit = { link ->
                     loadedSingle = true
+                    Log.d("RaghavAnime", "[AniSuge] server '$serverName' emitting link '${link.name}' -> ${link.url.take(120)}")
                     callback(link)
                 }
 
@@ -367,11 +350,7 @@ class AniSugeProvider : MainAPI() {
                     ).text
 
                     val serverInfoJson = parseJson<ServerInfoResponse>(serverInfoText)
-                    val playerUrl = serverInfoJson.result?.url
-                    if (playerUrl == null) {
-                        Log.d("RaghavAnime", "[AniSuge] server '$serverName' returned no player url, failed")
-                        return@async false
-                    }
+                    val playerUrl = serverInfoJson.result?.url ?: return@async false
                     Log.d("RaghavAnime", "[AniSuge] server '$serverName' player url: ${playerUrl.take(80)}")
 
                     val parsedUrl = java.net.URI(playerUrl)
@@ -382,13 +361,13 @@ class AniSugeProvider : MainAPI() {
                         val decodedUrl = try {
                             String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT), Charsets.UTF_8)
                         } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[AniSuge] plyr.php base64 decode failed: ${e.message}")
+                            Log.e("RaghavAnime", "[AniSuge] server '$serverName' plyr.php base64 decode failed: ${e.message}")
                             ""
                         }
                         if (decodedUrl.isNotBlank()) {
                             val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                             val finalUrl = decodedUrl
-                            Log.d("RaghavAnime", "[AniSuge] server '$serverName' plyr.php decoded direct url: ${finalUrl.take(80)}")
+                            Log.d("RaghavAnime", "[AniSuge] server '$serverName' plyr.php decoded direct url: ${finalUrl.take(120)}")
                             wrappedCallback(
                                 newExtractorLink(
                                     serverName,
@@ -408,6 +387,7 @@ class AniSugeProvider : MainAPI() {
                                           playerUrl.contains("vidtube.site") ||
                                           playerUrl.contains("vidstream") ||
                                           playerUrl.contains("vidplay")
+                    Log.d("RaghavAnime", "[AniSuge] server '$serverName' isMegaplayClone=$isMegaplayClone embedBase=$embedBase")
 
                     if (isMegaplayClone) {
                         try {
@@ -425,7 +405,7 @@ class AniSugeProvider : MainAPI() {
                                 ?: playerPageSoup.selectFirst("#megaplay-player")?.attr("data-realid")
                                 ?: Regex("""data-realid=["'](\d+)""").find(playerPageHtml)?.groupValues?.get(1)
                                 ?: Regex("""/stream/s-\d+/(\d+)""").find(playerUrl)?.groupValues?.get(1)
-                            Log.d("RaghavAnime", "[AniSuge] server '$serverName' megaplay player id: $playerId")
+                            Log.d("RaghavAnime", "[AniSuge] server '$serverName' megaplay playerId=$playerId")
 
                             if (playerId != null) {
                                 val sourcesText = app.get(
@@ -440,9 +420,9 @@ class AniSugeProvider : MainAPI() {
 
                                 val sourcesJson = parseJson<SourcesResponse>(sourcesText)
                                 val m3u8Url = sourcesJson.sources?.file
+                                Log.d("RaghavAnime", "[AniSuge] server '$serverName' getSources file: ${m3u8Url?.take(120)}")
 
                                 if (!m3u8Url.isNullOrEmpty()) {
-                                    Log.d("RaghavAnime", "[AniSuge] server '$serverName' getSources m3u8: ${m3u8Url.take(80)}")
                                     M3u8Helper.generateM3u8(
                                         source = "$name - $serverName",
                                         streamUrl = m3u8Url,
@@ -457,6 +437,7 @@ class AniSugeProvider : MainAPI() {
                                 sourcesJson.tracks?.forEach { track ->
                                     val file = track.file ?: return@forEach
                                     if (track.kind == "captions" || track.kind == "subtitles") {
+                                        Log.d("RaghavAnime", "[AniSuge] server '$serverName' subtitle '${track.label ?: "Subtitle"}' -> ${file.take(120)}")
                                         subtitleCallback(
                                             newSubtitleFile(track.label ?: "Subtitle", file) {
                                                 this.headers = mapOf("Referer" to "$embedBase/")
@@ -476,11 +457,11 @@ class AniSugeProvider : MainAPI() {
                                     additionalUrls = listOf(Regex("""\.m3u8""")),
                                     script = """document.querySelector('.jw-icon-display')?.click();""",
                                     useOkhttp = false,
-                                    timeout = 15_000L
+                                    timeout = 30_000L
                                 )
                                 val m3u8 = app.get(playerUrl, referer = "$baseUrl/", interceptor = resolver).url
+                                Log.d("RaghavAnime", "[AniSuge] server '$serverName' WebViewResolver fallback resolved: ${m3u8.take(120)}")
                                 if (m3u8.contains(".m3u8")) {
-                                    Log.d("RaghavAnime", "[AniSuge] server '$serverName' WebViewResolver fallback m3u8: ${m3u8.take(80)}")
                                     val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                                     val finalUrl = m3u8
                                     M3u8Helper.generateM3u8(
@@ -508,10 +489,10 @@ class AniSugeProvider : MainAPI() {
                                     additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
                                     script = """document.querySelector('button,[role="button"],.jw-icon-display,.vds-play-button')?.click();""",
                                     useOkhttp = false,
-                                    timeout = 20_000L
+                                    timeout = 30_000L
                                 )
                                 val resolved = app.get(playerUrl, referer = "$baseUrl/", interceptor = resolver).url
-                                Log.d("RaghavAnime", "[AniSuge] server '$serverName' WebViewResolver resolved: ${resolved.take(80)}")
+                                Log.d("RaghavAnime", "[AniSuge] server '$serverName' WebViewResolver resolved: ${resolved.take(120)}")
                                 val headers = mapOf("Referer" to playerUrl)
                                 when {
                                     resolved.contains(".m3u8", ignoreCase = true) -> {
@@ -554,6 +535,7 @@ class AniSugeProvider : MainAPI() {
                 loadedSingle
             }
         }.awaitAll()
+        Log.d("RaghavAnime", "[AniSuge] loadLinks done: ${loadedResults.count { it }}/${loadedResults.size} servers yielded links")
 
         loadedResults.any { it }
     }

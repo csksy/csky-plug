@@ -151,8 +151,8 @@ class RaghavAniKage : MainAPI() {
     )
 
     override suspend fun search(query: String): List<SearchResponse> {
+        Log.d("RaghavAnime", "[AniKage] search: q='${query.take(40)}'")
         mainUrl = FirebaseDomainHelper.getDomain("anikage") ?: mainUrl
-        Log.d("RaghavAnime", "[AniKage] search query=\"$query\"")
         if (query.isBlank()) return emptyList()
 
         val url = "$apiUrl/browse?q=${URLEncoder.encode(query, "UTF-8")}&sort=popularity&page=1&limit=25&adult=true"
@@ -169,8 +169,8 @@ class RaghavAniKage : MainAPI() {
             Log.e("RaghavAnime", "[AniKage] search parse failed: ${e.message}")
             return emptyList()
         }
-        Log.d("RaghavAnime", "[AniKage] search \"$query\": ${parsed.data.size} browse results")
 
+        Log.d("RaghavAnime", "[AniKage] search: ${parsed.data.size} results")
         return parsed.data.mapNotNull { item ->
             val title = item.title?.english ?: item.title?.romaji ?: return@mapNotNull null
             val poster = item.coverImage?.extraLarge ?: item.coverImage?.large
@@ -183,33 +183,24 @@ class RaghavAniKage : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("anikage") ?: mainUrl
-        Log.d("RaghavAnime", "[AniKage] load url=$url")
         val slug = url.substringAfterLast("/")
+        Log.d("RaghavAnime", "[AniKage] load: slug=$slug")
 
         val detailResponse = try {
             app.get("$apiUrl/$slug", headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] detail fetch slug=$slug failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] load detail fetch failed: ${e.message}")
             return null
         }
 
         val detail = try {
             parseJson<AnimeDetailResponse>(detailResponse).anime
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] detail parse slug=$slug failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] load detail parse failed: ${e.message}")
             return null
-        }
-        if (detail == null) {
-            Log.d("RaghavAnime", "[AniKage] detail slug=$slug returned null anime (body length=${detailResponse.length})")
-            return null
-        }
-        Log.d("RaghavAnime", "[AniKage] detail slug=$slug ok, body length=${detailResponse.length}")
+        } ?: return null
 
-        val title = detail.title?.english ?: detail.title?.romaji
-        if (title == null) {
-            Log.d("RaghavAnime", "[AniKage] detail slug=$slug has no title, returning null")
-            return null
-        }
+        val title = detail.title?.english ?: detail.title?.romaji ?: return null
         val poster = detail.coverImage?.extraLarge ?: detail.coverImage?.large
         val banner = detail.bannerImage
         val plot = detail.description?.replace(Regex("<[^>]+>"), "")
@@ -231,18 +222,18 @@ class RaghavAniKage : MainAPI() {
         val episodesResponse = try {
             app.get("$apiUrl/$slug/episodes", headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] episodes fetch slug=$slug failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] episodes fetch failed: ${e.message}")
             return null
         }
 
         val episodes = try {
             parseJson<EpisodesResponse>(episodesResponse).episodes
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] episodes parse slug=$slug failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] episodes parse failed: ${e.message}")
             return null
         }
-        Log.d("RaghavAnime", "[AniKage] slug=$slug episodes=${episodes.size}")
 
+        Log.d("RaghavAnime", "[AniKage] load: ${episodes.size} episodes")
         val subEpisodes = mutableListOf<Episode>()
         val dubEpisodes = mutableListOf<Episode>()
 
@@ -264,7 +255,7 @@ class RaghavAniKage : MainAPI() {
             })
         }
 
-        Log.d("RaghavAnime", "[AniKage] load slug=$slug done: title=\"$title\" subEps=${subEpisodes.size} dubEps=${dubEpisodes.size}")
+        Log.d("RaghavAnime", "[AniKage] load ok: ${subEpisodes.size} sub, ${dubEpisodes.size} dub episodes")
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = poster
             this.backgroundPosterUrl = banner
@@ -283,14 +274,13 @@ class RaghavAniKage : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[AniKage] loadLinks data=$data")
         val parts = data.split("|")
         if (parts.size < 3) return false
         val slug = parts[0]
         val epNum = parts[1]
         val type = parts[2]
-        Log.d("RaghavAnime", "[AniKage] loadLinks slug=$slug ep=$epNum type=$type")
 
+        Log.d("RaghavAnime", "[AniKage] loadLinks: slug=$slug ep=$epNum type=$type")
         return fetchSources(slug, epNum, type, subtitleCallback, callback)
     }
 
@@ -303,10 +293,10 @@ class RaghavAniKage : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[AniKage] loadLinksByAnilistId anilistId=$anilistId ep=$episode isDub=$isDub title=\"$title\"")
+        Log.d("RaghavAnime", "[AniKage] loadLinksByAnilistId: anilist=$anilistId ep=$episode dub=$isDub title='${title.take(40)}'")
         val searchQueries = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
         if (searchQueries.isEmpty()) {
-            Log.d("RaghavAnime", "[AniKage] anilistId=$anilistId no search queries available")
+            Log.w("RaghavAnime", "[AniKage] no search queries for anilist=$anilistId")
             return false
         }
 
@@ -314,22 +304,22 @@ class RaghavAniKage : MainAPI() {
         for (query in searchQueries) {
             slug = findSlugByAnilistId(query, anilistId)
             if (slug != null) {
-                Log.d("RaghavAnime", "[AniKage] anilistId=$anilistId matched slug=$slug via query=\"$query\"")
                 break
             }
         }
 
         if (slug == null) {
-            Log.d("RaghavAnime", "[AniKage] anilistId=$anilistId no slug found for queries=${searchQueries.joinToString(", ")}")
+            Log.w("RaghavAnime", "[AniKage] no slug match for anilist=$anilistId")
             return false
         }
 
+        Log.d("RaghavAnime", "[AniKage] anilist=$anilistId matched slug=$slug")
         val type = if (isDub) "dub" else "sub"
         return fetchSources(slug, episode.toString(), type, subtitleCallback, callback)
     }
 
     private suspend fun findSlugByAnilistId(query: String, anilistId: Int): String? {
-        Log.d("RaghavAnime", "[AniKage] findSlugByAnilistId anilistId=$anilistId query=\"$query\"")
+        Log.d("RaghavAnime", "[AniKage] findSlug: query='${query.take(40)}' anilist=$anilistId")
         val url = "$apiUrl/browse?q=${URLEncoder.encode(query, "UTF-8")}&sort=popularity&page=1&limit=25&adult=true"
         val response = try {
             app.get(url, headers = apiHeaders).text
@@ -347,7 +337,7 @@ class RaghavAniKage : MainAPI() {
 
         val match = parsed.data.firstOrNull { it.anilistId == anilistId }
         if (match == null) {
-            Log.d("RaghavAnime", "[AniKage] anilistId=$anilistId not found in ${parsed.data.size} browse results for query=\"$query\"")
+            Log.d("RaghavAnime", "[AniKage] no anilist match: ${parsed.data.size} results for '${query.take(40)}'")
         }
         return match?.slug?.takeIf { it.isNotBlank() }
     }
@@ -359,21 +349,21 @@ class RaghavAniKage : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d("RaghavAnime", "[AniKage] fetchSources: slug=$slug ep=$epNum type=$type")
         val lang = if (type == "dub") "dub" else "sub"
-        Log.d("RaghavAnime", "[AniKage] fetchSources slug=$slug ep=$epNum type=$type")
 
         val serverIds = getServerIds(slug, epNum)
         if (serverIds.isEmpty()) {
             Log.d("RaghavAnime", "[AniKage] no servers for slug=$slug ep=$epNum")
             return false
         }
-        Log.d("RaghavAnime", "[AniKage] slug=$slug ep=$epNum: found ${serverIds.size} servers (${serverIds.joinToString(",")})")
+        Log.d("RaghavAnime", "[AniKage] servers: ${serverIds.joinToString(",").take(120)}")
 
 
         var found = false
         for (serverId in serverIds) {
             try {
-                Log.d("RaghavAnime", "[AniKage] trying server $serverId for slug=$slug ep=$epNum")
+                Log.d("RaghavAnime", "[AniKage] fetching sources: server=$serverId")
                 val responseText = app.get(
                     "$apiUrl/$slug/episodes/$epNum/sources?lang=$lang&provider=$serverId",
                     headers = apiHeaders
@@ -382,13 +372,13 @@ class RaghavAniKage : MainAPI() {
                 val sourcesResponse = try {
                     parseJson<SourcesResponse>(responseText)
                 } catch (e: Exception) {
-                    Log.e("RaghavAnime", "[AniKage] server $serverId sources parse failed: ${e.message}")
+                    Log.e("RaghavAnime", "[AniKage] sources parse failed for server=$serverId: ${e.message}")
                     continue
                 }
 
-                Log.d("RaghavAnime", "[AniKage] server $serverId ep=$epNum: ${sourcesResponse.sources.size} sources")
                 if (sourcesResponse.sources.isEmpty()) continue
 
+                Log.d("RaghavAnime", "[AniKage] server=$serverId: ${sourcesResponse.sources.size} sources")
                 for (source in sourcesResponse.sources) {
                     val sourceUrl = source.url
                     if (sourceUrl.isBlank()) continue
@@ -413,7 +403,7 @@ class RaghavAniKage : MainAPI() {
                         "$proxyUrl/stream/$sourceUrl"
                     }
 
-                    Log.d("RaghavAnime", "[AniKage] server $serverId ep=$epNum $type: link \"$label\"")
+                    Log.d("RaghavAnime", "[AniKage] link: $label url=${proxiedUrl.take(120)}")
                     callback(newExtractorLink(
                         source = name,
                         name = label,
@@ -425,23 +415,21 @@ class RaghavAniKage : MainAPI() {
                     found = true
 
                     if (embedUrl != null && embedUrl.contains("megaplay.buzz")) {
-                        Log.d("RaghavAnime", "[AniKage] fetching megaplay subtitles for embed: ${embedUrl.take(60)}")
                         fetchMegaPlaySubtitles(embedUrl, subtitleCallback)
                     }
                 }
 
                 sourcesResponse.subtitles?.forEach { sub ->
                     if (sub.embedUrl != null && sub.embedUrl.contains("megaplay.buzz")) {
-                        Log.d("RaghavAnime", "[AniKage] fetching megaplay subtitles from subtitle entry: ${sub.embedUrl.take(60)}")
                         fetchMegaPlaySubtitles(sub.embedUrl, subtitleCallback)
                     }
                 }
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniKage] server $serverId failed: ${e.message}")
+                Log.e("RaghavAnime", "[AniKage] server=$serverId sources failed: ${e.message}")
             }
         }
 
-        Log.d("RaghavAnime", "[AniKage] fetchSources slug=$slug ep=$epNum done found=$found")
+        Log.d("RaghavAnime", "[AniKage] fetchSources done: found=$found")
         return found
     }
 
@@ -450,18 +438,18 @@ class RaghavAniKage : MainAPI() {
         val response = try {
             app.get(url, headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] servers fetch slug=$slug ep=$epNum failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] servers fetch failed for ep=$epNum: ${e.message}")
             return emptyList()
         }
 
         val parsed = try {
             parseJson<ServersResponse>(response)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] servers parse slug=$slug ep=$epNum failed: ${e.message}")
+            Log.e("RaghavAnime", "[AniKage] servers parse failed for ep=$epNum: ${e.message}")
             return emptyList()
         }
-        Log.d("RaghavAnime", "[AniKage] servers slug=$slug ep=$epNum: ${parsed.servers.size} servers")
 
+        Log.d("RaghavAnime", "[AniKage] getServerIds: ${parsed.servers.size} servers for ep=$epNum")
         return parsed.servers.mapNotNull { it.id.takeIf { id -> id.isNotBlank() } }
     }
 
@@ -470,10 +458,10 @@ class RaghavAniKage : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit
     ) {
         try {
+            Log.d("RaghavAnime", "[AniKage] fetchMegaPlaySubtitles: ${embedUrl.take(120)}")
             val id = Regex("""/stream/(?:s-\d+/)?(\w+)""").find(embedUrl)?.groupValues?.get(1)
                 ?: embedUrl.substringAfterLast("/").substringBefore("/")
 
-            Log.d("RaghavAnime", "[AniKage] megaplay getSources id=$id")
             val responseText = app.get(
                 "https://megaplay.buzz/stream/getSources?id=$id",
                 headers = mapOf(
@@ -484,7 +472,7 @@ class RaghavAniKage : MainAPI() {
             ).text
 
             val response = parseJson<MegaPlayResponse>(responseText)
-            Log.d("RaghavAnime", "[AniKage] megaplay tracks=${response.tracks?.size ?: 0}")
+            Log.d("RaghavAnime", "[AniKage] megaplay tracks: ${response.tracks?.size ?: 0}")
             response.tracks?.forEach { track ->
                 if (track.kind == "captions" || track.kind == "subtitles") {
                     val file = track.file ?: return@forEach

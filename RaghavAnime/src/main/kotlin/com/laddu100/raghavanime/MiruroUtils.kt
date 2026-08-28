@@ -19,9 +19,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPInputStream
@@ -30,6 +31,7 @@ import java.util.zip.InflaterInputStream
 import kotlin.coroutines.resume
 
 fun encodePipeRequest(payload: Map<String, Any?>): String {
+    Log.d("RaghavAnime", "[Miruro] encodePipeRequest: path=${payload["path"]}")
     val json = payload.toJson()
     return Base64.encodeToString(
         json.toByteArray(Charsets.UTF_8),
@@ -38,6 +40,7 @@ fun encodePipeRequest(payload: Map<String, Any?>): String {
 }
 
 fun decodePipeResponse(responseBody: String): String {
+    Log.d("RaghavAnime", "[Miruro] decodePipeResponse: bodyLen=${responseBody.length}")
     val trimmed = responseBody.trim()
     val padded = trimmed + "=".repeat((4 - trimmed.length % 4) % 4)
     val compressed = Base64.decode(padded, Base64.URL_SAFE)
@@ -45,8 +48,10 @@ fun decodePipeResponse(responseBody: String): String {
 }
 
 private fun decompress(data: ByteArray): String {
+    Log.d("RaghavAnime", "[Miruro] decompress: inputLen=${data.size}")
 
     if (data.size > 2 && data[0] == 0x1f.toByte() && data[1] == 0x8b.toByte()) {
+        Log.d("RaghavAnime", "[Miruro] decompress: gzip mode")
         val bais = ByteArrayInputStream(data)
         val gzis = GZIPInputStream(bais)
         return gzis.use { it.readBytes().toString(Charsets.UTF_8) }
@@ -57,6 +62,7 @@ private fun decompress(data: ByteArray): String {
         (data[0].toInt() shr 4) <= 7 &&
         (((data[0].toInt() and 0xff) shl 8) or (data[1].toInt() and 0xff)) % 31 == 0
 
+    Log.d("RaghavAnime", "[Miruro] decompress: ${if (isZlib) "zlib" else "raw-inflate"} mode")
     val inflater = if (isZlib) Inflater() else Inflater(true)
     val bais = ByteArrayInputStream(data)
     val iis = InflaterInputStream(bais, inflater)
@@ -79,7 +85,9 @@ private fun xorDecrypt(data: ByteArray): ByteArray {
 }
 
 fun decodePipeResponseWithHeader(responseBody: String, obfuscatedHeader: String?): String {
+    Log.d("RaghavAnime", "[Miruro] decodeWithHeader: obfuscatedHeader=$obfuscatedHeader bodyLen=${responseBody.length}")
     if (obfuscatedHeader == null) {
+        Log.d("RaghavAnime", "[Miruro] decodeWithHeader: no obfuscation header, returning raw body")
 
         return responseBody.trim()
     }
@@ -89,6 +97,7 @@ fun decodePipeResponseWithHeader(responseBody: String, obfuscatedHeader: String?
     var decoded = Base64.decode(padded, Base64.URL_SAFE)
 
     if (obfuscatedHeader == "2") {
+        Log.d("RaghavAnime", "[Miruro] decodeWithHeader: XOR deobfuscation applied")
         decoded = xorDecrypt(decoded)
     }
 
@@ -96,18 +105,18 @@ fun decodePipeResponseWithHeader(responseBody: String, obfuscatedHeader: String?
 }
 
 fun decodePipeResponseAuto(responseBody: String): String {
+    Log.d("RaghavAnime", "[Miruro] decodeAuto: bodyLen=${responseBody.length}")
     val trimmed = responseBody.trim()
 
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        Log.d("RaghavAnime", "[Miruro] decodePipeResponseAuto: body is plain JSON (len=${trimmed.length})")
+        Log.d("RaghavAnime", "[Miruro] decodeAuto: plain JSON body, returning as-is")
         return trimmed
     }
 
     val padded = trimmed + "=".repeat((4 - trimmed.length % 4) % 4)
     val decoded = try {
         Base64.decode(padded, Base64.URL_SAFE)
-    } catch (e: Exception) {
-        Log.e("RaghavAnime", "[Miruro] decodePipeResponseAuto: base64 decode failed (len=${trimmed.length}): ${e.message}")
+    } catch (_: Exception) {
         throw Exception("Cannot base64-decode pipe response")
     }
 
@@ -120,49 +129,43 @@ fun decodePipeResponseAuto(responseBody: String): String {
         return decompress(xored)
     } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
 
+    Log.e("RaghavAnime", "[Miruro] decodeAuto: all decode strategies failed (bodyLen=${responseBody.length})")
     throw Exception("Cannot decode pipe response (tried JSON, decompress, XOR+decompress)")
 }
 
 fun translateEpisodeId(encodedId: String): String {
+    Log.d("RaghavAnime", "[Miruro] translateEpisodeId: encodedId=$encodedId")
     return try {
         val padded = encodedId + "=".repeat((4 - encodedId.length % 4) % 4)
         val decoded = Base64.decode(padded, Base64.URL_SAFE).toString(Charsets.UTF_8)
         if (decoded.contains(":")) decoded else encodedId
     } catch (e: Exception) {
-        Log.e("RaghavAnime", "[Miruro] translateEpisodeId: decode failed (len=${encodedId.length}): ${e.message}")
         encodedId
     }
 }
 
-const val MIRURO_DEFAULT_DOMAIN = "https://www.miruro.to"
+val MIRURO_DOMAINS = listOf(
+    "https://www.miruro.ru",
+    "https://www.miruro.tv",
+    "https://www.miruro.to",
+    "https://www.miruro.bz"
+)
 
 const val CF_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
 object MiruroCloudflare {
-    private val workingDomain = AtomicReference<String?>(MIRURO_DEFAULT_DOMAIN)
+    private val cookieCache = ConcurrentHashMap<String, String>()
+    private val workingDomain = AtomicReference<String?>(MIRURO_DOMAINS[0])
 
-    @Volatile private var sessionWebView: WebView? = null
-    @Volatile private var sessionDomain: String? = null
-    @Volatile private var sessionReady: Boolean = false
-    @Volatile private var sessionReadyTime: Long = 0L
-    private val SESSION_TTL = 3 * 60 * 1000L
+    fun getWorkingDomain(): String = workingDomain.get() ?: MIRURO_DOMAINS[0]
+    fun setWorkingDomain(d: String) { workingDomain.set(d) }
 
-    private val pipeMutex = Mutex()
-    private val warmupMutex = Mutex()
-
-    fun getWorkingDomain(): String = workingDomain.get() ?: MIRURO_DEFAULT_DOMAIN
-
-    fun setWorkingDomain(d: String) {
-        val old = workingDomain.get()
-        workingDomain.set(d)
-        if (old != null && old != d) {
-            Log.d("RaghavAnime", "[MiruroCF] working domain changed $old -> $d, destroying session")
-            destroySession()
-        }
-    }
+    fun getCookies(baseUrl: String): String? = cookieCache[baseUrl]
+    fun setCookies(baseUrl: String, cookies: String) { cookieCache[baseUrl] = cookies }
 
     fun isCloudflareBlock(text: String, code: Int): Boolean {
+        Log.d("RaghavAnime", "[Miruro] isCloudflareBlock: code=$code bodyLen=${text.length}")
         if (code == 403 || code == 503) {
             val lower = text.lowercase()
             return lower.contains("cloudflare") ||
@@ -178,391 +181,160 @@ object MiruroCloudflare {
         return false
     }
 
-    private suspend fun ensureSession(context: Context, domain: String) {
-        val now = System.currentTimeMillis()
-        val current = sessionWebView
-        val currentDomain = sessionDomain
-        val isStale = current == null ||
-                      currentDomain != domain ||
-                      !sessionReady ||
-                      (now - sessionReadyTime) > SESSION_TTL
-
-        if (!isStale && current != null) {
-            try {
-                val alive = withContext(Dispatchers.Main) {
-                    suspendCancellableCoroutine<String?> { cont ->
-                        try {
-                            current.evaluateJavascript("document.title") { res ->
-                                if (cont.isActive) cont.resume(res)
-                            }
-                        } catch (_: Exception) {
-                            if (cont.isActive) cont.resume(null)
-                        }
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            if (cont.isActive) cont.resume(null)
-                        }, 2000)
-                    }
-                }
-                if (alive != null && alive != "null" && alive.isNotBlank()) {
-                    val titleStr = alive.removeSurrounding("\"").lowercase()
-                    if (!titleStr.contains("just a moment") &&
-                        !titleStr.contains("attention required") &&
-                        !titleStr.contains("cloudflare") &&
-                        !titleStr.contains("blocked")) {
-                        return
-                    }
-                }
-            } catch (_: Exception) {}
-        }
-
-        warmupMutex.withLock {
-            if (sessionWebView != null && sessionDomain == domain && sessionReady &&
-                (System.currentTimeMillis() - sessionReadyTime) <= SESSION_TTL) {
-                return
-            }
-            destroySession()
-            warmupSession(context, domain)
-        }
-    }
-
-    private suspend fun warmupSession(context: Context, domain: String) {
-        Log.d("RaghavAnime", "[MiruroCF] warming up: $domain")
-        val start = System.currentTimeMillis()
-        try {
-            withContext(Dispatchers.Main) {
-                suspendCancellableCoroutine<Unit> { cont ->
-                    val done = AtomicBoolean(false)
-                    val solved = AtomicBoolean(false)
-                    var webView: WebView? = null
-
-                    fun finish(success: Boolean) {
-                        if (done.compareAndSet(false, true)) {
-                            sessionReady = success
-                            if (success) {
-                                sessionReadyTime = System.currentTimeMillis()
-                                Log.d("RaghavAnime", "[MiruroCF] warmup done in ${System.currentTimeMillis() - start}ms")
-                            } else {
-                                Log.e("RaghavAnime", "[MiruroCF] warmup failed after ${System.currentTimeMillis() - start}ms")
-                                try { webView?.destroy() } catch (_: Exception) {}
-                                sessionWebView = null
-                            }
-                            cont.resume(Unit)
-                        }
-                    }
-
-                    fun checkSolved(view: WebView?) {
-                        if (done.get() || solved.get()) return
-                        if (view == null) return
-                        try {
-                            view.evaluateJavascript("document.title") { titleResult ->
-                                if (done.get() || solved.get()) return@evaluateJavascript
-                                val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
-                                val isChallenge = title.lowercase().contains("just a moment") ||
-                                                  title.lowercase().contains("attention required") ||
-                                                  title.lowercase().contains("cloudflare") ||
-                                                  title.lowercase().contains("blocked") ||
-                                                  title.isBlank()
-                                if (!isChallenge) {
-                                    if (solved.compareAndSet(false, true)) {
-                                        sessionWebView = view
-                                        sessionDomain = domain
-                                        finish(true)
-                                    }
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-
-                    try {
-                        webView = WebView(context).apply {
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.mediaPlaybackRequiresUserGesture = false
-                            settings.userAgentString = CF_USER_AGENT
-                            CookieManager.getInstance().setAcceptCookie(true)
-
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageFinished(view: WebView?, pageUrl: String?) {
-                                    super.onPageFinished(view, pageUrl)
-                                    Handler(Looper.getMainLooper()).postDelayed({
-                                        checkSolved(view)
-                                    }, 800)
-                                }
-                            }
-                        }
-                        webView?.loadUrl(domain)
-
-                        val cfHandler = Handler(Looper.getMainLooper())
-                        val cfRunnable = object : Runnable {
-                            var checkCount = 0
-                            override fun run() {
-                                if (done.get() || checkCount >= 30) return
-                                checkCount++
-                                checkSolved(webView)
-                                if (!done.get()) cfHandler.postDelayed(this, 1000)
-                            }
-                        }
-                        cfHandler.postDelayed(cfRunnable, 1000)
-
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            finish(false)
-                        }, 30000)
-                    } catch (e: Exception) {
-                        Log.e("RaghavAnime", "[MiruroCF] warmup exception: ${e.message}")
-                        finish(false)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("RaghavAnime", "[MiruroCF] warmup outer exception: ${e.message}")
-            sessionReady = false
-        }
-    }
-
-    private suspend fun reloadAndWait(context: Context, domain: String) {
-        val wv = sessionWebView ?: return
-        sessionReady = false
-        val solved = AtomicBoolean(false)
-
-        withContext(Dispatchers.Main) {
-            suspendCancellableCoroutine<Unit> { cont ->
-                val done = AtomicBoolean(false)
-
-                fun finish() {
-                    if (done.compareAndSet(false, true)) {
-                        cont.resume(Unit)
-                    }
-                }
-
-                fun checkSolved(view: WebView?) {
-                    if (done.get() || solved.get()) return
-                    if (view == null) return
-                    try {
-                        view.evaluateJavascript("document.title") { titleResult ->
-                            if (done.get() || solved.get()) return@evaluateJavascript
-                            val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
-                            val isChallenge = title.lowercase().contains("just a moment") ||
-                                              title.lowercase().contains("attention required") ||
-                                              title.lowercase().contains("cloudflare") ||
-                                              title.lowercase().contains("blocked") ||
-                                              title.isBlank()
-                            if (!isChallenge) {
-                                if (solved.compareAndSet(false, true)) {
-                                    sessionReady = true
-                                    sessionReadyTime = System.currentTimeMillis()
-                                    finish()
-                                }
-                            }
-                        }
-                    } catch (_: Exception) {}
-                }
-
-                try {
-                    wv.webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, pageUrl: String?) {
-                            super.onPageFinished(view, pageUrl)
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                checkSolved(view)
-                            }, 800)
-                        }
-                    }
-                    wv.loadUrl(domain)
-
-                    val handler = Handler(Looper.getMainLooper())
-                    val runnable = object : Runnable {
-                        var count = 0
-                        override fun run() {
-                            if (done.get() || count >= 20) return
-                            count++
-                            checkSolved(wv)
-                            if (!done.get()) handler.postDelayed(this, 1000)
-                        }
-                    }
-                    handler.postDelayed(runnable, 1000)
-
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        finish()
-                    }, 20000)
-                } catch (_: Exception) {
-                    finish()
-                }
-            }
-        }
-    }
-
-    private fun destroySession() {
-        try {
-            sessionWebView?.let { wv ->
-                Handler(Looper.getMainLooper()).post {
-                    try { wv.destroy() } catch (_: Exception) {}
-                }
-            }
-        } catch (_: Exception) {}
-        sessionWebView = null
-        sessionDomain = null
-        sessionReady = false
-    }
-
-    private suspend fun fetchViaSession(pipeUrl: String, domain: String): String? {
-        val wv = sessionWebView ?: return null
+    suspend fun fetchPipeViaWebView(
+        context: Context?,
+        domain: String,
+        pipeUrl: String
+    ): String? {
+        if (context == null) return null
+        Log.d("RaghavAnime", "[Miruro] WebView session init: domain=$domain pipeUrl=${pipeUrl.take(120)}")
 
         return withContext(Dispatchers.Main) {
-            suspendCancellableCoroutine<String?> { cont ->
+            suspendCancellableCoroutine { cont ->
                 val done = AtomicBoolean(false)
+                var webView: WebView? = null
+                val fetchInjected = AtomicBoolean(false)
+                val loadCount = intArrayOf(0)
 
                 fun finish(result: String?) {
                     if (done.compareAndSet(false, true)) {
+                        Log.d("RaghavAnime", "[Miruro] WebView session finish: result=${result?.length ?: "null"} chars")
+                        try {
+                            val cookies = CookieManager.getInstance().getCookie(domain) ?: ""
+                            if (cookies.isNotEmpty()) {
+                                Log.d("RaghavAnime", "[Miruro] WebView: saved cookies for $domain (len=${cookies.length})")
+                                setCookies(domain, cookies)
+                            }
+                        } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+                        try { webView?.destroy() } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
                         cont.resume(result)
                     }
                 }
 
-                fun extractBody(view: WebView?) {
-                    if (done.get() || view == null) return
-                    try {
-                        view.evaluateJavascript("(document.documentElement.textContent || document.body.innerText || '').substring(0, 50)") { prefixResult ->
-                            if (done.get()) return@evaluateJavascript
-                            val prefix = prefixResult?.trim()?.removeSurrounding("\"") ?: ""
-                            if (prefix.isEmpty() || prefix == "null") {
-                                return@evaluateJavascript
+                fun injectFetch(view: WebView?) {
+                    if (done.get() || !fetchInjected.compareAndSet(false, true)) return
+                    val relativeUrl = pipeUrl.substringAfter(domain)
+                    Log.d("RaghavAnime", "[Miruro] WebView: pipe fetch attempt (relativeUrl=$relativeUrl)")
+
+                    val js = """
+                        (function() {
+                            window.__pipe_result = null;
+                            window.__pipe_error = null;
+                            try {
+                                fetch("$relativeUrl", {
+                                    method: "GET",
+                                    credentials: "include",
+                                    headers: { "Accept": "*/*" }
+                                }).then(function(r) {
+                                    return r.text();
+                                }).then(function(text) {
+                                    window.__pipe_result = text;
+                                }).catch(function(e) {
+                                    window.__pipe_error = e.message;
+                                });
+                            } catch(e) {
+                                window.__pipe_error = e.message;
                             }
-                            val lower = prefix.lowercase()
-                            val isChallenge = lower.contains("just a moment") ||
-                                              lower.contains("attention required") ||
-                                              lower.contains("cloudflare") ||
-                                              lower.contains("enable javascript") ||
-                                              lower.contains("<!doctype") ||
-                                              lower.contains("<html")
-                            if (isChallenge) {
-                                return@evaluateJavascript
-                            }
-                            view.evaluateJavascript("document.documentElement.textContent || document.body.innerText || ''") { bodyResult ->
+                        })();
+                    """.trimIndent()
+
+                    view?.evaluateJavascript(js) {
+                    }
+
+                    for (i in 1..30) {
+                        val delay = (i * 500).toLong()
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (done.get()) return@postDelayed
+                            view?.evaluateJavascript(
+                                "(function(){ if(window.__pipe_result !== null) return window.__pipe_result; if(window.__pipe_error) return 'ERROR:' + window.__pipe_error; return null; })()"
+                            ) { result ->
                                 if (done.get()) return@evaluateJavascript
-                                if (bodyResult != null && bodyResult != "null" && bodyResult != "\"\"") {
-                                    val text = bodyResult.trim().removeSurrounding("\"")
+                                if (result != null && result != "null") {
+                                    val text = result.trim().removeSurrounding("\"")
                                         .replace("\\n", "\n")
                                         .replace("\\\"", "\"")
                                         .replace("\\\\", "\\")
-                                        .replace("\\t", "\t")
-                                    if (text.isNotEmpty() && text.length > 10) {
+                                    if (text.startsWith("ERROR:")) {
+                                        Log.e("RaghavAnime", "[Miruro] WebView: pipe fetch JS error: ${text.take(120)}")
+                                        finish(null)
+                                    } else if (text.isNotEmpty() && text.length > 10) {
+                                        Log.d("RaghavAnime", "[Miruro] WebView: pipe fetch success (len=${text.length})")
                                         finish(text)
                                     }
                                 }
                             }
+                        }, delay)
+                    }
+                }
+
+                fun checkAndInject(view: WebView?) {
+                    if (done.get() || fetchInjected.get()) return
+                    view?.evaluateJavascript("document.title") { titleResult ->
+                        if (done.get() || fetchInjected.get()) return@evaluateJavascript
+                        val title = titleResult?.trim()?.removeSurrounding("\"") ?: ""
+
+                        val isChallenge = title.lowercase().contains("just a moment") ||
+                                          title.lowercase().contains("attention required") ||
+                                          title.lowercase().contains("cloudflare") ||
+                                          title.lowercase().contains("blocked") ||
+                                          title.isBlank()
+
+                        Log.d("RaghavAnime", "[Miruro] WebView: page title='${title.take(40)}' isChallenge=$isChallenge")
+                        if (!isChallenge) {
+                            injectFetch(view)
                         }
-                    } catch (_: Exception) {}
+                    }
                 }
 
                 try {
-                    wv.webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, pageUrl: String?) {
-                            super.onPageFinished(view, pageUrl)
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                extractBody(view)
-                            }, 500)
-                        }
-                    }
-                    wv.loadUrl(pipeUrl)
+                    webView = WebView(context).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.databaseEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        settings.userAgentString = CF_USER_AGENT
+                        CookieManager.getInstance().setAcceptCookie(true)
 
-                    val pollHandler = Handler(Looper.getMainLooper())
-                    val pollRunnable = object : Runnable {
-                        var pollCount = 0
-                        override fun run() {
-                            if (done.get() || pollCount >= 30) {
-                                if (!done.get()) finish(null)
-                                return
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView?, pageUrl: String?) {
+                                super.onPageFinished(view, pageUrl)
+                                loadCount[0]++
+                                Log.d("RaghavAnime", "[Miruro] WebView: onPageFinished #${loadCount[0]} url=${pageUrl?.take(120)}")
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    checkAndInject(view)
+                                }, 500)
                             }
-                            pollCount++
-                            extractBody(wv)
-                            if (!done.get()) pollHandler.postDelayed(this, 500)
                         }
                     }
-                    pollHandler.postDelayed(pollRunnable, 1500)
+
+                    webView?.loadUrl(domain)
+                    Log.d("RaghavAnime", "[Miruro] WebView: warming up $domain (12 polls, 30s timeout)")
+
+                    for (i in 1..12) {
+                        val delay = (i * 1000).toLong()
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            checkAndInject(webView)
+                        }, delay)
+                    }
 
                     Handler(Looper.getMainLooper()).postDelayed({
+                        Log.w("RaghavAnime", "[Miruro] WebView: 30s timeout reached without pipe result")
                         finish(null)
-                    }, 16000)
-                } catch (_: Exception) {
+                    }, 30000)
+                } catch (e: Exception) {
+                    Log.e("RaghavAnime", "[Miruro] WebView: init failed: ${e.message}")
                     finish(null)
                 }
             }
         }
     }
-
-    suspend fun fetchPipe(context: Context?, domain: String, pipeUrl: String): String? {
-        if (context == null) {
-            Log.e("RaghavAnime", "[MiruroCF] fetchPipe: context is null, cannot use WebView session")
-            return null
-        }
-
-        return pipeMutex.withLock {
-            try {
-                ensureSession(context, domain)
-            } catch (e: Exception) {
-                Log.e("RaghavAnime", "[MiruroCF] ensureSession failed: ${e.message}")
-                return@withLock null
-            }
-            if (!sessionReady) return@withLock null
-
-            val result = fetchViaSession(pipeUrl, domain)
-            if (result != null) {
-                val decoded = try {
-                    decodePipeResponseAuto(result)
-                } catch (_: Exception) { null }
-                if (decoded != null) {
-                    return@withLock result
-                }
-                Log.e("RaghavAnime", "[MiruroCF] first attempt: decode failed (len=${result.length})")
-            } else {
-                Log.e("RaghavAnime", "[MiruroCF] first attempt: null response")
-            }
-
-            Log.d("RaghavAnime", "[MiruroCF] rebuilding session for retry")
-            destroySession()
-            try {
-                ensureSession(context, domain)
-                if (sessionReady) {
-                    val retry = fetchViaSession(pipeUrl, domain)
-                    if (retry != null) {
-                        val decoded = try {
-                            decodePipeResponseAuto(retry)
-                        } catch (_: Exception) { null }
-                        if (decoded != null) {
-                            Log.d("RaghavAnime", "[MiruroCF] retry succeeded (len=${retry.length})")
-                            return@withLock retry
-                        }
-                        Log.e("RaghavAnime", "[MiruroCF] retry: decode failed (len=${retry.length})")
-                    } else {
-                        Log.e("RaghavAnime", "[MiruroCF] retry: null response")
-                    }
-                }
-            } catch (_: Exception) {}
-
-            null
-        }
-    }
-
-    fun resetSession() {
-        destroySession()
-    }
 }
 
-// When the Cloudflare pipe fails completely, skip it for a while so callers can
-// fall back to direct resolution (MegaPlay) quickly instead of waiting 30s+
-// on every single episode switch.
-@Volatile private var miruroPipeBrokenUntil: Long = 0L
-private const val MIRURO_PIPE_RETRY_DELAY_MS = 5 * 60 * 1000L
-
-fun miruroPipeKnownBroken(): Boolean = System.currentTimeMillis() < miruroPipeBrokenUntil
-
 suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
-    if (System.currentTimeMillis() < miruroPipeBrokenUntil) {
-        Log.d("RaghavAnime", "[Miruro] pipe request /$path skipped - pipe known broken (cooldown)")
-        throw Exception("Pipe on cooldown after repeated failures")
-    }
-    Log.d("RaghavAnime", "[Miruro] pipe request /$path query=${query.toJson().take(80)}")
+    Log.d("RaghavAnime", "[Miruro] pipeRequest: /$path query=${query.keys.joinToString(",")}")
     val enrichedQuery = query.toMutableMap()
     enrichedQuery["live"] = "true"
-    enrichedQuery["_t"] = System.currentTimeMillis() / 600000 * 600000
+    enrichedQuery["_t"] = (System.currentTimeMillis() / (600 * 1000)) * (600 * 1000)
 
     val payload = mapOf(
         "path" to path,
@@ -572,18 +344,82 @@ suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
     )
     val encoded = encodePipeRequest(payload)
 
-    val domain = MiruroCloudflare.getWorkingDomain()
-    val pipeUrl = "$domain/api/secure/pipe?e=$encoded"
-
-    val webBody = MiruroCloudflare.fetchPipe(Miruro.context, domain, pipeUrl)
-    if (webBody != null && webBody.isNotEmpty()) {
-        Log.d("RaghavAnime", "[Miruro] pipe request /$path succeeded via session on $domain (len=${webBody.length})")
-        miruroPipeBrokenUntil = 0L
-        return decodePipeResponseAuto(webBody)
+    val working = MiruroCloudflare.getWorkingDomain()
+    val domainsToTry = mutableListOf(working)
+    for (d in MIRURO_DOMAINS) {
+        if (d != working && domainsToTry.size < 2) {
+            domainsToTry.add(d)
+        }
     }
 
-    miruroPipeBrokenUntil = System.currentTimeMillis() + MIRURO_PIPE_RETRY_DELAY_MS
-    Log.e("RaghavAnime", "[Miruro] pipe request /$path failed on $domain - entering cooldown")
+    Log.d("RaghavAnime", "[Miruro] pipeRequest: workingDomain=$working domainsToTry=${domainsToTry.joinToString(", ")}")
+    var lastError: Exception? = null
+    for (domain in domainsToTry) {
+        try {
+            Log.d("RaghavAnime", "[Miruro] pipeRequest: trying $domain for /$path")
+            val result = miruroPipeRequestForDomain(domain, encoded, path)
+            MiruroCloudflare.setWorkingDomain(domain)
+            Log.d("RaghavAnime", "[Miruro] pipeRequest: success on $domain for /$path (resultLen=${result.length})")
+            return result
+        } catch (e: Exception) {
+            Log.e("RaghavAnime", "[Miruro] pipeRequest: $domain failed for /$path: ${e.message}")
+            lastError = e
+        }
+    }
+    Log.e("RaghavAnime", "[Miruro] pipeRequest: all domains failed for /$path")
+    throw lastError ?: Exception("All Miruro domains failed for /$path")
+}
+
+private suspend fun miruroPipeRequestForDomain(
+    domain: String,
+    encoded: String,
+    path: String
+): String {
+    val pipeUrl = "$domain/api/secure/pipe?e=$encoded"
+    val headers = mutableMapOf(
+        "User-Agent" to CF_USER_AGENT,
+        "Referer" to "$domain/",
+        "Origin" to domain,
+        "Accept" to "*/*"
+    )
+    MiruroCloudflare.getCookies(domain)?.let { headers["Cookie"] = it }
+    Log.d("RaghavAnime", "[Miruro] pipeForDomain: GET /$path on $domain (encodedLen=${encoded.length} hasCookies=${MiruroCloudflare.getCookies(domain) != null})")
+
+    try {
+        val response = app.get(pipeUrl, headers = headers, timeout = 30)
+        Log.d("RaghavAnime", "[Miruro] pipeForDomain: /$path on $domain -> HTTP ${response.code}")
+        if (response.code == 200) {
+            val body = response.text
+            if (!MiruroCloudflare.isCloudflareBlock(body, 200)) {
+                Log.d("RaghavAnime", "[Miruro] pipeForDomain: 200 OK non-CF body (len=${body.length}), decoding")
+                val obfHeader = response.headers["x-obfuscated"]
+                try {
+                    return decodePipeResponseWithHeader(body, obfHeader)
+                } catch (_: Exception) {
+                    try { return decodePipeResponseAuto(body) } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("RaghavAnime", "[Miruro] pipeForDomain: direct GET failed for /$path on $domain: ${e.message}")
+    }
+
+    Log.d("RaghavAnime", "[Miruro] pipeForDomain: falling back to WebView for /$path on $domain")
+    val webBody = MiruroCloudflare.fetchPipeViaWebView(
+        Miruro.context, domain, pipeUrl
+    )
+    if (webBody != null && webBody.isNotEmpty()) {
+        Log.d("RaghavAnime", "[Miruro] pipeForDomain: WebView body obtained (len=${webBody.length}), decoding")
+        try {
+            return decodePipeResponseAuto(webBody)
+        } catch (e: Exception) {
+            Log.e("RaghavAnime", "[Miruro] pipeForDomain: WebView body decode failed for /$path: ${e.message}")
+        }
+    } else {
+        Log.w("RaghavAnime", "[Miruro] pipeForDomain: WebView returned empty body for /$path on $domain")
+    }
+
+    Log.e("RaghavAnime", "[Miruro] pipeForDomain: FAILED on $domain for /$path")
     throw Exception("Failed on $domain for /$path")
 }
 
@@ -727,14 +563,12 @@ private const val ANILIST_CACHE_TTL = 10 * 60 * 1000L
 private val anilistLocks = mutableMapOf<String, kotlinx.coroutines.sync.Mutex>()
 
 suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
-    Log.d("RaghavAnime", "[Miruro] anilistQuery: variables=${variables.toJson().take(80)}")
+    Log.d("RaghavAnime", "[Miruro] anilistQuery: variables=${variables.toJson().take(120)}")
     val cacheKey = "$query|${variables.toJson()}"
     val now = System.currentTimeMillis()
     anilistCache[cacheKey]?.let { (cached, time) ->
-        if (now - time < ANILIST_CACHE_TTL) {
-            Log.d("RaghavAnime", "[Miruro] anilistQuery: cache hit (age=${(now - time) / 1000}s)")
-            return cached
-        }
+        Log.d("RaghavAnime", "[Miruro] anilistQuery: cache entry present, age=${now - time}ms (ttl=${ANILIST_CACHE_TTL}ms)")
+        if (now - time < ANILIST_CACHE_TTL) return cached
     }
 
     val lock = synchronized(anilistLocks) {
@@ -742,6 +576,7 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
     }
 
     if (lock.isLocked) {
+        Log.d("RaghavAnime", "[Miruro] anilistQuery: in-flight query detected, waiting for it")
         repeat(50) {
             kotlinx.coroutines.delay(100)
             anilistCache[cacheKey]?.let { (cached, time) ->
@@ -751,8 +586,10 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
     }
 
     anilistCache[cacheKey]?.let { (cached, time) ->
+        Log.d("RaghavAnime", "[Miruro] anilistQuery: cache rechecked, age=${now - time}ms")
         if (now - time < ANILIST_CACHE_TTL) return cached
     }
+    Log.d("RaghavAnime", "[Miruro] anilistQuery: cache miss, querying AniList API")
 
     val requestData = mapOf(
         "query" to query,
@@ -772,21 +609,19 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
             timeout = 15_000L
         )
         val text = response.text
+        Log.d("RaghavAnime", "[Miruro] anilistQuery: response len=${text.length}")
         if (text.isNotBlank() && !text.contains("\"errors\"")) {
             anilistCache[cacheKey] = text to now
-            Log.d("RaghavAnime", "[Miruro] anilistQuery: success (len=${text.length})")
+            Log.d("RaghavAnime", "[Miruro] anilistQuery: success, cached")
             return text
-        } else {
-            Log.e("RaghavAnime", "[Miruro] anilistQuery: error response (len=${text.length}): ${text.take(80)}")
         }
+        Log.w("RaghavAnime", "[Miruro] anilistQuery: response blank or contained errors, discarding")
     } catch (e: Exception) {
         Log.e("RaghavAnime", "[Miruro] anilistQuery: request failed: ${e.message}")
     }
 
-    anilistCache[cacheKey]?.let { (cached, _) ->
-        Log.d("RaghavAnime", "[Miruro] anilistQuery: returning stale cache after failure (len=${cached.length})")
-        return cached
-    }
+    Log.d("RaghavAnime", "[Miruro] anilistQuery: no fresh response, trying stale cache")
+    anilistCache[cacheKey]?.let { (cached, _) -> return cached }
     Log.e("RaghavAnime", "[Miruro] anilistQuery: failed with no cache available")
     throw Exception("AniList query failed")
 }

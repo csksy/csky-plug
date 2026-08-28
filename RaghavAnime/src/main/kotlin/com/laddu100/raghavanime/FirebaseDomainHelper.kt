@@ -26,8 +26,7 @@ object FirebaseDomainHelper {
             return
         }
         try {
-            // NiceHttp interprets timeout in SECONDS — 5L means 5 seconds
-            val response = app.get(URL, timeout = 5L).text
+            val response = app.get(URL, timeout = 5000L).text
             val parsed = parseJson<Map<String, Any?>>(response)
             domains = parsed.mapNotNull { (k, v) ->
                 val strVal = when (v) {
@@ -39,7 +38,6 @@ object FirebaseDomainHelper {
             }.toMap()
             lastLoadTime = now
             everLoadedSuccessfully = true
-            Log.d("RaghavAnime", "[DomainHelper] fetched ${domains.size} domains from firebase")
         } catch (e: Exception) {
             Log.e(TAG, "load: failed - ${e.message}")
             lastLoadTime = now
@@ -48,17 +46,10 @@ object FirebaseDomainHelper {
 
     suspend fun getDomain(key: String): String? {
         load()
-        val domain = domains[key] ?: domains["${key}_url"] ?: domains["${key}_domain"]
-        if (domain == null) {
-            Log.e("RaghavAnime", "[DomainHelper] no domain found for key '$key' (have ${domains.size} entries)")
-        } else {
-            Log.d("RaghavAnime", "[DomainHelper] key '$key' -> $domain")
-        }
-        return domain
+        return domains[key] ?: domains["${key}_url"] ?: domains["${key}_domain"]
     }
 
     fun invalidate() {
-        Log.d("RaghavAnime", "[DomainHelper] cache invalidated, will refetch on next getDomain")
         lastLoadTime = 0L
     }
 }

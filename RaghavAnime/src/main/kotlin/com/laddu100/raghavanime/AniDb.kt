@@ -83,20 +83,14 @@ class AniDb : MainAPI() {
         mainUrl = FirebaseDomainHelper.getDomain("anidb") ?: mainUrl
         Log.d("RaghavAnime", "[AniDb] search '$query' on $mainUrl")
         val browseRes = cfAppGet("$mainUrl/browse?q=$query").document
-        val searchResults = searchResponseBuilder(browseRes)
-        Log.d("RaghavAnime", "[AniDb] search '$query' returned ${searchResults.size} results")
-        return searchResults.toNewSearchResponseList()
+        return searchResponseBuilder(browseRes).toNewSearchResponseList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("anidb") ?: mainUrl
         Log.d("RaghavAnime", "[AniDb] load '$url'")
         val slug = url.substringAfterLast("/")
-        val siteId = slug.substringAfterLast("-").toIntOrNull()
-        if (siteId == null) {
-            Log.d("RaghavAnime", "[AniDb] could not parse site id from slug '$slug', returning null")
-            return null
-        }
+        val siteId = slug.substringAfterLast("-").toIntOrNull() ?: return null
 
         val doc = cfAppGet(url).document
         val title = doc.selectFirst("h1")?.text() ?: ""
@@ -251,17 +245,9 @@ class AniDb : MainAPI() {
     ): Boolean {
         Log.d("RaghavAnime", "[AniDb] loadLinks data '${data.take(80)}'")
         val parts = data.split("|")
-        val episodeIdRaw = parts.getOrNull(0)
-        if (episodeIdRaw == null) {
-            Log.d("RaghavAnime", "[AniDb] missing episode id in data, returning false")
-            return false
-        }
+        val episodeIdRaw = parts.getOrNull(0) ?: return false
         val episodeId = episodeIdRaw.substringAfterLast("/")
-        val slug = parts.getOrNull(1)
-        if (slug == null) {
-            Log.d("RaghavAnime", "[AniDb] missing slug in data, returning false")
-            return false
-        }
+        val slug = parts.getOrNull(1) ?: return false
         val audio = parts.getOrNull(2) ?: "sub"
         Log.d("RaghavAnime", "[AniDb] resolving episode $episodeId (audio '$audio', slug '$slug')")
 
@@ -269,14 +255,13 @@ class AniDb : MainAPI() {
         val langResponse = cfAppGet(langUrl, headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to "$mainUrl/anime/$slug", "Accept" to "application/json, text/plain, */*")).parsedSafe<LanguagesResponse>()
 
         val langs = langResponse?.languages ?: emptyList()
-        Log.d("RaghavAnime", "[AniDb] languages api returned ${langs.size} langs for episode $episodeId")
+        if (langResponse == null) Log.d("RaghavAnime", "[AniDb] languages api parse failed for episode $episodeId")
         val langsToExtract = if (audio == "movie") {
             langs
         } else {
             val preferredCodes = if (audio == "sub") listOf("jpn", "ja", "japanese") else listOf("eng", "en", "english")
             listOfNotNull(langs.find { it.code?.lowercase() in preferredCodes } ?: langs.find { it.name?.lowercase() in preferredCodes })
         }
-
         Log.d("RaghavAnime", "[AniDb] langsToExtract=${langsToExtract.size} for audio '$audio'")
         if (langsToExtract.isEmpty()) Log.d("RaghavAnime", "[AniDb] no matching language for audio '$audio', no links will be loaded")
 
@@ -288,13 +273,9 @@ class AniDb : MainAPI() {
         )
 
         langsToExtract.amap { language ->
-            val embedUrl = language.embed_url
-            if (embedUrl == null) {
-                Log.d("RaghavAnime", "[AniDb] language '${language.name}' has no embed_url, skipping")
-                return@amap
-            }
-            Log.d("RaghavAnime", "[AniDb] fetching embed for lang '${language.name}': ${embedUrl.take(80)}")
+            val embedUrl = language.embed_url ?: return@amap
             val embedDoc = cfAppGet(embedUrl, headers = mapOf("Referer" to "$mainUrl/")).text
+            Log.d("RaghavAnime", "[AniDb] lang '${language.name}' embed fetched: ${embedUrl.take(80)} (html len ${embedDoc.length})")
 
             var hlsUrl: String? = null
             for (regex in hlsRegex) {

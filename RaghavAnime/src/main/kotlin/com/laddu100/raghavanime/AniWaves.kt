@@ -55,7 +55,7 @@ class AniWaves : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
-        Log.d("RaghavAnime", "[AniWaves] getMainPage: page=$page name='${request.name}' domain=$mainUrl")
+        Log.d("RaghavAnime", "[AniWaves] getMainPage page=$page name='${request.name}' data=${request.data} mainUrl=$mainUrl")
         val category = request.data
         val url = "$mainUrl/home"
         val doc = app.get(url).document
@@ -63,7 +63,7 @@ class AniWaves : MainAPI() {
         val home = mutableListOf<SearchResponse>()
 
         val items = doc.select(".ani.items .item")
-        Log.d("RaghavAnime", "[AniWaves] getMainPage: parsed ${items.size} items from $url")
+        Log.d("RaghavAnime", "[AniWaves] getMainPage parsed items=${items.size}")
         for (item in items) {
             val aTag = item.selectFirst(".poster a") ?: continue
             val href = fixUrl(aTag.attr("href"))
@@ -86,19 +86,19 @@ class AniWaves : MainAPI() {
             })
         }
 
-        Log.d("RaghavAnime", "[AniWaves] getMainPage: '${request.name}' -> ${home.size} results")
+        Log.d("RaghavAnime", "[AniWaves] getMainPage done home=${home.size}")
         return newHomePageResponse(request.name, home)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
+        Log.d("RaghavAnime", "[AniWaves] search query='$query' mainUrl=$mainUrl")
         val url = "$mainUrl/filter?keyword=$query"
-        Log.d("RaghavAnime", "[AniWaves] search: query='$query' url=$url")
         val doc = app.get(url).document
         val results = mutableListOf<SearchResponse>()
 
         val items = doc.select(".ani.items .item, .items .item")
-        Log.d("RaghavAnime", "[AniWaves] search: parsed ${items.size} items for '$query'")
+        Log.d("RaghavAnime", "[AniWaves] search parsed items=${items.size}")
         for (item in items) {
             val aTag = item.selectFirst(".poster a") ?: continue
             val href = fixUrl(aTag.attr("href"))
@@ -128,20 +128,16 @@ class AniWaves : MainAPI() {
             })
         }
 
-        Log.d("RaghavAnime", "[AniWaves] search: returning ${results.size} results for '$query'")
+        Log.d("RaghavAnime", "[AniWaves] search done results=${results.size}")
         return results
     }
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
-        Log.d("RaghavAnime", "[AniWaves] load: url=$url")
+        Log.d("RaghavAnime", "[AniWaves] load url=$url")
         val doc = app.get(url).document
 
-        val title = doc.selectFirst("h1.title")?.text()
-        if (title == null) {
-            Log.e("RaghavAnime", "[AniWaves] load: no title found for $url")
-            return null
-        }
+        val title = doc.selectFirst("h1.title")?.text() ?: return null
         val jpTitle = doc.selectFirst("h1.title")?.attr("data-jp")
         val posterUrl = doc.selectFirst(".poster img")?.attr("src")
         val backgroundUrl = doc.selectFirst(".hotest .image div")?.let {
@@ -169,11 +165,8 @@ class AniWaves : MainAPI() {
 
         val animeId = doc.selectFirst("#watch-main")?.attr("data-id")
             ?: Regex("""-(\d+)$""").find(url)?.groupValues?.get(1)
-        if (animeId == null) {
-            Log.e("RaghavAnime", "[AniWaves] load: could not extract animeId from $url")
-            return null
-        }
-        Log.d("RaghavAnime", "[AniWaves] load: '$title' animeId=$animeId")
+            ?: return null
+        Log.d("RaghavAnime", "[AniWaves] load title='$title' animeId=$animeId")
 
         val epResponse = app.get(
             "$mainUrl/ajax/episode/list/$animeId",
@@ -182,7 +175,7 @@ class AniWaves : MainAPI() {
                 "Referer" to url
             )
         ).parsed<AjaxResponse>()
-        Log.d("RaghavAnime", "[AniWaves] load: episode list ajax status=${epResponse.status} animeId=$animeId")
+        Log.d("RaghavAnime", "[AniWaves] episode list ajax status=${epResponse.status} resultLen=${epResponse.result?.length}")
 
         val episodes = mutableListOf<Episode>()
         val dubEpisodes = mutableListOf<Episode>()
@@ -191,7 +184,7 @@ class AniWaves : MainAPI() {
         if (epResponse.status?.toString() == "200" && epResponse.result != null) {
             val epDoc = Jsoup.parse(epResponse.result)
             val episodeElements = epDoc.select("li a[data-ids]")
-            Log.d("RaghavAnime", "[AniWaves] load: found ${episodeElements.size} episode elements")
+            Log.d("RaghavAnime", "[AniWaves] episode elements=${episodeElements.size}")
 
             for (ep in episodeElements) {
                 val epNum = ep.attr("data-num").toIntOrNull() ?: continue
@@ -215,11 +208,9 @@ class AniWaves : MainAPI() {
                     })
                 }
             }
-        } else {
-            Log.e("RaghavAnime", "[AniWaves] load: episode list ajax failed (status=${epResponse.status})")
         }
 
-        Log.d("RaghavAnime", "[AniWaves] load: '$title' -> ${episodes.size} sub / ${dubEpisodes.size} dub episodes")
+        Log.d("RaghavAnime", "[AniWaves] load done sub=${episodes.size} dub=${dubEpisodes.size}")
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = posterUrl
             this.backgroundPosterUrl = backgroundUrl
@@ -239,19 +230,17 @@ class AniWaves : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        Log.d("RaghavAnime", "[AniWaves] loadLinks: data=${data.take(80)}")
+        Log.d("RaghavAnime", "[AniWaves] loadLinks data=${data.take(120)}")
         val parts = data.split("|")
-        if (parts.size < 4) {
-            Log.e("RaghavAnime", "[AniWaves] loadLinks: malformed data (${parts.size} parts)")
-            return@coroutineScope false
-        }
+        Log.d("RaghavAnime", "[AniWaves] loadLinks parts=${parts.size}")
+        if (parts.size < 4) return@coroutineScope false
 
         val dubOrSub = parts[1]
         val animeId = parts[2]
         val epNum = parts[3]
         val dataIds = parts[4].replace("&amp;", "&")
         val watchUrl = parts[0]
-        Log.d("RaghavAnime", "[AniWaves] loadLinks: ep=$epNum ($dubOrSub) animeId=$animeId dataIds=${dataIds.take(40)}")
+        Log.d("RaghavAnime", "[AniWaves] loadLinks dubOrSub=$dubOrSub animeId=$animeId epNum=$epNum dataIds=$dataIds")
 
         val serverResponse = app.get(
             "$mainUrl/ajax/server/list?servers=$dataIds",
@@ -260,11 +249,9 @@ class AniWaves : MainAPI() {
                 "Referer" to watchUrl
             )
         ).parsed<AjaxResponse>()
+        Log.d("RaghavAnime", "[AniWaves] server list ajax status=${serverResponse.status} resultLen=${serverResponse.result?.length}")
 
-        if (serverResponse.status?.toString() != "200" || serverResponse.result.isNullOrEmpty()) {
-            Log.e("RaghavAnime", "[AniWaves] loadLinks: server list failed (status=${serverResponse.status})")
-            return@coroutineScope false
-        }
+        if (serverResponse.status?.toString() != "200" || serverResponse.result.isNullOrEmpty()) return@coroutineScope false
 
         val serverDoc = Jsoup.parse(serverResponse.result)
 
@@ -273,10 +260,12 @@ class AniWaves : MainAPI() {
             "sub" -> listOf("sub", "ssub")
             else -> listOf("sub", "ssub", "dub")
         }
+        Log.d("RaghavAnime", "[AniWaves] targetTypes=$targetTypes")
 
         var foundAnySources = false
         val seenUrls = mutableSetOf<String>()
         val linkCallback: (ExtractorLink) -> Unit = { link ->
+            Log.d("RaghavAnime", "[AniWaves] emitting link: ${link.name} -> ${link.url.take(120)}")
             synchronized(seenUrls) {
                 foundAnySources = true
             }
@@ -299,11 +288,8 @@ class AniWaves : MainAPI() {
             }
         }
 
-        if (serversToLoad.isEmpty()) {
-            Log.e("RaghavAnime", "[AniWaves] loadLinks: no servers found for ep=$epNum ($dubOrSub)")
-            return@coroutineScope false
-        }
-        Log.d("RaghavAnime", "[AniWaves] loadLinks: ${serversToLoad.size} servers: ${serversToLoad.joinToString { "${it.second}(${it.third})" }}")
+        Log.d("RaghavAnime", "[AniWaves] serversToLoad=${serversToLoad.size}")
+        if (serversToLoad.isEmpty()) return@coroutineScope false
 
         val deferreds = serversToLoad.map { (linkId, displayName, targetType) ->
             async {
@@ -316,54 +302,42 @@ class AniWaves : MainAPI() {
                         )
                     ).parsed<SourceResponse>()
 
-                    if (sourceResponse.status?.toString() != "200") {
-                        Log.e("RaghavAnime", "[AniWaves] server '$displayName': sources ajax failed (status=${sourceResponse.status})")
-                        return@async
-                    }
-                    val embedUrl = sourceResponse.result?.url
-                    if (embedUrl == null) {
-                        Log.e("RaghavAnime", "[AniWaves] server '$displayName': no url in sources response")
-                        return@async
-                    }
-                    if (embedUrl.isEmpty()) {
-                        Log.e("RaghavAnime", "[AniWaves] server '$displayName': empty embed url")
-                        return@async
-                    }
+                    Log.d("RaghavAnime", "[AniWaves] sources ajax ($displayName/$targetType) status=${sourceResponse.status}")
+                    if (sourceResponse.status?.toString() != "200") return@async
+                    val embedUrl = sourceResponse.result?.url ?: return@async
+                    Log.d("RaghavAnime", "[AniWaves] embed ($displayName/$targetType): ${embedUrl.take(120)}")
+                    if (embedUrl.isEmpty()) return@async
 
                     val isNew = synchronized(seenUrls) {
                         seenUrls.add(embedUrl)
                     }
-                    if (!isNew) {
-                        Log.d("RaghavAnime", "[AniWaves] server '$displayName': duplicate embed url, skipping")
-                        return@async
-                    }
+                    if (!isNew) return@async
 
                     val loaded = when {
                         embedUrl.contains("echovideo") || embedUrl.contains("weneverbeenfree.com") || embedUrl.contains("filemoon") || embedUrl.contains("myvidplay.com") -> {
-                            Log.d("RaghavAnime", "[AniWaves] server '$displayName' ($targetType): resolving via AniWavesWebView: ${embedUrl.take(80)}")
+                            Log.d("RaghavAnime", "[AniWaves] route WebView for $displayName ($targetType): ${embedUrl.take(120)}")
                             AniWavesWebView("$displayName (${targetType.uppercase()})", embedUrl.baseUrl()).getUrl(embedUrl, watchUrl, subtitleCallback, linkCallback)
                             true
                         }
                         else -> {
-                            Log.d("RaghavAnime", "[AniWaves] server '$displayName' ($targetType): resolving via loadExtractor: ${embedUrl.take(80)}")
+                            Log.d("RaghavAnime", "[AniWaves] route loadExtractor for $displayName ($targetType): ${embedUrl.take(120)}")
                             loadExtractor(embedUrl, watchUrl, subtitleCallback, linkCallback)
                         }
                     }
+                    Log.d("RaghavAnime", "[AniWaves] server $displayName ($targetType) loaded=$loaded")
                     if (loaded) {
                         synchronized(seenUrls) {
                             foundAnySources = true
                         }
-                    } else {
-                        Log.e("RaghavAnime", "[AniWaves] server '$displayName': no links resolved from ${embedUrl.take(80)}")
                     }
                 } catch (e: Exception) {
-                    Log.e("RaghavAnime", "[AniWaves] server '$displayName' ($targetType) failed: ${e.message}")
+                    Log.e("RaghavAnime", "[AniWaves] server $displayName ($targetType) failed: ${e.message}")
                 }
             }
         }
 
         deferreds.awaitAll()
-        Log.d("RaghavAnime", "[AniWaves] loadLinks: done ep=$epNum, foundAnySources=$foundAnySources")
+        Log.d("RaghavAnime", "[AniWaves] loadLinks done foundAnySources=$foundAnySources")
         return@coroutineScope foundAnySources
     }
 

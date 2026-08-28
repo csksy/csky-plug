@@ -29,7 +29,6 @@ import androidx.fragment.app.FragmentActivity
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
@@ -372,7 +371,6 @@ class AnidapCFDialog(
 private suspend fun showCFBypassDialogAndWait(url: String = CF_TRIGGER_URL): Boolean = withContext(Dispatchers.Main) {
     val activity = CommonActivity.activity as? AppCompatActivity
     if (activity == null || activity.isFinishing || activity.isDestroyed) {
-        Log.e("RaghavAnime", "[Anidap-CF] no valid activity to show bypass dialog")
         return@withContext false
     }
     suspendCancellableCoroutine { cont ->
@@ -382,7 +380,6 @@ private suspend fun showCFBypassDialogAndWait(url: String = CF_TRIGGER_URL): Boo
         try {
             dialog.show(activity.supportFragmentManager, "AnidapCFDialog")
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Anidap-CF] failed to show bypass dialog: ${e.message}")
             if (cont.isActive) cont.resume(false)
         }
         cont.invokeOnCancellation { dialog.dismissAllowingStateLoss() }
@@ -441,19 +438,16 @@ suspend fun cfAppGetAnidap(
     if (!isAnidapBlocked(response)) return response
 
 
-    Log.d("RaghavAnime", "[Anidap-CF] block detected (code=${response.code}) for ${url.take(80)}")
     cfBypassMutex.withLock {
 
         val cachedCookies = AnidapCFStore.getCookies()
         if (cachedCookies != null) {
             response = try { app.get(url, headers = buildCfHeaders(), timeout = timeout) } catch (e: Exception) { throw e }
             if (!isAnidapBlocked(response)) return response
-            Log.d("RaghavAnime", "[Anidap-CF] still blocked after cached-cookie retry for $targetHost")
         }
 
         AnidapCFStore.clear()
         val bypassSuccess = showCFBypassDialogAndWait()
-        Log.d("RaghavAnime", "[Anidap-CF] bypass dialog finished: success=$bypassSuccess (request host=$targetHost)")
 
         if (!bypassSuccess) {
             return@withLock
@@ -462,17 +456,14 @@ suspend fun cfAppGetAnidap(
         for (attempt in 1..2) {
             response = try { app.get(url, headers = buildCfHeaders(), timeout = timeout) } catch (e: Exception) { throw e }
             if (!isAnidapBlocked(response)) {
-                Log.d("RaghavAnime", "[Anidap-CF] retry succeeded on attempt $attempt for $targetHost")
                 return@withLock
             }
         }
-        Log.e("RaghavAnime", "[Anidap-CF] still blocked for $targetHost after bypass retries, giving up")
     }
 
     return response
 }
 
 fun initAnidapCFBypass(context: Context) {
-    Log.d("RaghavAnime", "[Anidap-CF] init")
     AnidapCFStore.init(context)
 }

@@ -79,6 +79,7 @@ class Anineko : MainAPI() {
         }
 
         Log.d("RaghavAnime", "[Anineko] getMainPage '${request.name}' parsed ${list.size} items")
+
         return newHomePageResponse(request.name, list)
     }
 
@@ -87,8 +88,9 @@ class Anineko : MainAPI() {
         Log.d("RaghavAnime", "[Anineko] search '$query' on $mainUrl")
         val url = "$mainUrl/browser?keyword=${query}"
         val doc = app.get(url).document
+        Log.d("RaghavAnime", "[Anineko] search '$query' found ${doc.select(".nv-anime-card").size} cards")
 
-        val results = doc.select(".nv-anime-card").mapNotNull { element ->
+        return doc.select(".nv-anime-card").mapNotNull { element ->
             val href = element.selectFirst("a.nv-anime-thumb")?.attr("href") ?: return@mapNotNull null
             val title = element.selectFirst("h3.nv-anime-title a")?.text()
                 ?: element.selectFirst("img")?.attr("alt")
@@ -108,8 +110,6 @@ class Anineko : MainAPI() {
                 )
             }
         }
-        Log.d("RaghavAnime", "[Anineko] search '$query' returned ${results.size} results")
-        return results
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -117,11 +117,7 @@ class Anineko : MainAPI() {
         Log.d("RaghavAnime", "[Anineko] load '$url'")
         val doc = app.get(url).document
 
-        val title = doc.selectFirst("h1")?.text()
-        if (title == null) {
-            Log.d("RaghavAnime", "[Anineko] no h1 title on page, returning null")
-            return null
-        }
+        val title = doc.selectFirst("h1")?.text() ?: return null
         Log.d("RaghavAnime", "[Anineko] loaded page for '$title'")
         val altTitle = doc.selectFirst(".nv-info-alt-title")?.text()
         val poster = doc.selectFirst("aside.nv-info-poster img")?.attr("src")
@@ -247,9 +243,9 @@ class Anineko : MainAPI() {
                 if (audioType == "dub") dataId.contains("dub") else !dataId.contains("dub")
             }
         } else {
-            Log.d("RaghavAnime", "[Anineko] no server panels found in page, using whole document")
             listOf(doc)
         }
+        if (panels.isEmpty()) Log.d("RaghavAnime", "[Anineko] no server panels found in page, using whole document")
         Log.d("RaghavAnime", "[Anineko] ${panels.size} panels total, ${targetPanels.size} matched audio '$audioType'")
 
         targetPanels.amap { panel ->
@@ -284,8 +280,8 @@ class Anineko : MainAPI() {
                     break
                 }
             }
-            Log.d("RaghavAnime", "[Anineko] server '$serverName' m3u8: ${m3u8Url?.take(80) ?: "none"} (embed html len ${embedDoc.length})")
 
+                Log.d("RaghavAnime", "[Anineko] server '$serverName' m3u8: ${m3u8Url?.take(80) ?: "none"} (embed html len ${embedDoc.length})")
                 if (m3u8Url != null) {
                     val sourceName = if (typeName != null) "$serverName - $typeName" else serverName
                     generateM3u8(

@@ -1,6 +1,5 @@
 package com.laddu100.raghavanime
 
-import com.lagradost.api.Log
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -50,14 +49,13 @@ class RaghavSenshi : MainAPI() {
     private val subDubCacheMutex = Mutex()
 
     private suspend fun probeSubDub(malId: Int): Pair<Boolean, Boolean> {
-        Log.d("RaghavAnime", "[Senshi] probeSubDub malId=$malId")
         subDubCacheMutex.withLock {
             subDubCache[malId]?.let { return it }
         }
         var hasSub = false
         var hasDub = false
         try {
-            val res = cfGet("$mainUrl/episode-embeds/$malId/1", headers = getHeaders, timeout = 10L)
+            val res = cfGet("$mainUrl/episode-embeds/$malId/1", headers = getHeaders, timeout = 10_000L)
             if (res.code == 200) {
                 val embeds = parseJson<List<StreamEmbed>>(res.text)
                 embeds.forEach { emb ->
@@ -69,11 +67,9 @@ class RaghavSenshi : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] probeSubDub malId=$malId failed: ${e.message}")
         }
         if (!hasSub && !hasDub) hasSub = true
         val result = Pair(hasSub, hasDub)
-        Log.d("RaghavAnime", "[Senshi] probeSubDub malId=$malId result sub=${result.first} dub=${result.second}")
         subDubCacheMutex.withLock {
             subDubCache[malId] = result
         }
@@ -96,7 +92,6 @@ class RaghavSenshi : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("senshi") ?: mainUrl
-        Log.d("RaghavAnime", "[Senshi] getMainPage page=$page name=${request.name} data=${request.data}")
         return try {
             when (request.data) {
                 "recently-added" -> {
@@ -104,7 +99,6 @@ class RaghavSenshi : MainAPI() {
                     val items = parseJson<List<AnimeItem>>(res.text)
                     val subDubMap = probeSubDubBatch(items.mapNotNull { it.id })
                     val home = items.mapNotNull { it.toSearchResponse(subDubMap[it.id]) }
-                    Log.d("RaghavAnime", "[Senshi] recently-added: ${items.size} items -> ${home.size} responses")
                     newHomePageResponse(request.name, home, hasNext = false)
                 }
 
@@ -113,7 +107,6 @@ class RaghavSenshi : MainAPI() {
                     val items = parseJson<List<AnimeItem>>(res.text)
                     val subDubMap = probeSubDubBatch(items.mapNotNull { it.id })
                     val home = items.mapNotNull { it.toSearchResponse(subDubMap[it.id]) }
-                    Log.d("RaghavAnime", "[Senshi] upcoming: ${items.size} items -> ${home.size} responses")
                     newHomePageResponse(request.name, home, hasNext = false)
                 }
 
@@ -126,7 +119,6 @@ class RaghavSenshi : MainAPI() {
                     val resp = parseJson<LatestEpisodesResponse>(res.text)
                     val subDubMap = probeSubDubBatch(resp.data.mapNotNull { it.anime?.id })
                     val home = resp.data.mapNotNull { it.toSearchResponse(subDubMap[it.anime?.id]) }
-                    Log.d("RaghavAnime", "[Senshi] latest page=$page: ${resp.data.size}/${resp.total ?: 0} episodes -> ${home.size} responses")
                     newHomePageResponse(request.name, home, hasNext = page * limit < (resp.total ?: 0))
                 }
 
@@ -140,28 +132,23 @@ class RaghavSenshi : MainAPI() {
                                 items.add(parseJson<AnimeItem>(r.text))
                             }
                         } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[Senshi] random pick failed: ${e.message}")
                         }
                     }
                     val subDubMap = probeSubDubBatch(items.mapNotNull { it.id })
                     val home = items.mapNotNull { it.toSearchResponse(subDubMap[it.id]) }
-                    Log.d("RaghavAnime", "[Senshi] random: got ${items.size} items -> ${home.size} responses")
                     newHomePageResponse(request.name, home, hasNext = false)
                 }
 
                 else -> newHomePageResponse(request.name, emptyList(), hasNext = false)
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] getMainPage ${request.name} failed: ${e.message}")
             newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("senshi") ?: mainUrl
-        Log.d("RaghavAnime", "[Senshi] search query=\"$query\"")
         if (query.isBlank()) {
-            Log.d("RaghavAnime", "[Senshi] search blank query, returning empty")
             return emptyList()
         }
         return try {
@@ -169,36 +156,28 @@ class RaghavSenshi : MainAPI() {
             val body = """{"searchTerm":"$encoded","page":1,"limit":30}"""
             val res = cfPost("$mainUrl/anime/filter", body = body, headers = searchHeaders)
             if (res.code != 200 && res.code != 201) {
-                Log.d("RaghavAnime", "[Senshi] search filter http ${res.code}, returning empty")
                 return emptyList()
             }
             val resp = parseJson<FilterResponse>(res.text)
             val subDubMap = probeSubDubBatch(resp.data.mapNotNull { it.id })
             val results = resp.data.mapNotNull { it.toSearchResponse(subDubMap[it.id]) }
-            Log.d("RaghavAnime", "[Senshi] search \"$query\": ${resp.data.size} items -> ${results.size} responses")
             results
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] search failed: ${e.message}")
             emptyList()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("senshi") ?: mainUrl
-        Log.d("RaghavAnime", "[Senshi] load url=$url")
 
         val pathPart = url.substringBefore("?").substringAfterLast("/")
         val malId = pathPart.toIntOrNull()
         if (malId == null) {
-            Log.d("RaghavAnime", "[Senshi] load: no malId in url=$url")
             return null
         }
         val encodedTitle = try {
             url.substringAfter("?t=", "").let { java.net.URLDecoder.decode(it, "UTF-8") }
-        } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] title decode failed: ${e.message}")
-            ""
-        }
+        } catch (e: Exception) { "" }
 
         var hasSub = false
         var hasDub = false
@@ -215,14 +194,12 @@ class RaghavSenshi : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] load probe malId=$malId failed: ${e.message}")
         }
 
         if (!hasSub && !hasDub) {
             hasSub = true
         }
 
-        Log.d("RaghavAnime", "[Senshi] load malId=$malId subDub probe: sub=$hasSub dub=$hasDub")
         subDubCacheMutex.withLock {
             subDubCache[malId] = Pair(hasSub, hasDub)
         }
@@ -231,23 +208,18 @@ class RaghavSenshi : MainAPI() {
             val r = cfGet("$mainUrl/episodes/$malId", headers = getHeaders)
             r.text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] episodes fetch malId=$malId failed: ${e.message}")
             return null
         }
-        Log.d("RaghavAnime", "[Senshi] episodes malId=$malId body length=${episodesText.length}")
 
         val allEpisodes = try {
             parseJson<List<EpisodeItem>>(episodesText)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] episodes parse malId=$malId failed: ${e.message}")
             return null
         }
 
         if (allEpisodes.isEmpty()) {
-            Log.d("RaghavAnime", "[Senshi] episodes malId=$malId empty, returning null")
             return null
         }
-        Log.d("RaghavAnime", "[Senshi] episodes malId=$malId parsed ${allEpisodes.size} episodes")
 
         val subEps = mutableListOf<Episode>()
         val dubEps = mutableListOf<Episode>()
@@ -271,8 +243,6 @@ class RaghavSenshi : MainAPI() {
             }
         }
 
-        Log.d("RaghavAnime", "[Senshi] load malId=$malId built ${subEps.size} sub / ${dubEps.size} dub episodes")
-
         var meta: AnimeItem? = null
         if (encodedTitle.isNotBlank()) {
             try {
@@ -284,17 +254,14 @@ class RaghavSenshi : MainAPI() {
 
                     meta = resp.data.firstOrNull { it.id == malId }
                     if (meta == null && resp.data.isNotEmpty()) {
-                        Log.d("RaghavAnime", "[Senshi] meta search malId=$malId no exact match in ${resp.data.size} results, using first")
 
                         meta = resp.data[0]
                     }
                 }
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[Senshi] meta search malId=$malId failed: ${e.message}")
             }
         } else {
         }
-        Log.d("RaghavAnime", "[Senshi] load malId=$malId meta=${meta?.title ?: meta?.title_english ?: "none"}")
 
         val aniType = meta?.type?.uppercase() ?: "TV"
         val baseType = when (aniType) {
@@ -310,7 +277,6 @@ class RaghavSenshi : MainAPI() {
         val poster = meta?.posterUrl()
         val plot = meta?.ani_description
 
-        Log.d("RaghavAnime", "[Senshi] load malId=$malId done: title=\"$title\" type=$finalType subEps=${subEps.size} dubEps=${dubEps.size}")
         return newAnimeLoadResponse(title, url, finalType) {
             this.posterUrl = poster
             this.plot = plot
@@ -328,30 +294,24 @@ class RaghavSenshi : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[Senshi] loadLinks data=$data")
         val epData = try {
             parseJson<SenshiEpData>(data)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] loadLinks data parse failed: ${e.message}")
             return false
         }
-        Log.d("RaghavAnime", "[Senshi] loadLinks malId=${epData.malId} ep=${epData.epNum} type=${epData.streamType}")
 
         val embedsText = try {
             val r = cfGet("$mainUrl/episode-embeds/${epData.malId}/${epData.epNum}", headers = getHeaders)
             r.text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] embeds fetch malId=${epData.malId} ep=${epData.epNum} failed: ${e.message}")
             return false
         }
 
         val embeds = try {
             parseJson<List<StreamEmbed>>(embedsText)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Senshi] embeds parse failed: ${e.message}")
             return false
         }
-        Log.d("RaghavAnime", "[Senshi] embeds malId=${epData.malId} ep=${epData.epNum}: ${embeds.size} embeds (body length=${embedsText.length})")
 
         val targetStreamType = epData.streamType.lowercase()
         val matching = embeds.filter { emb ->
@@ -365,22 +325,16 @@ class RaghavSenshi : MainAPI() {
 
         if (matching.isEmpty()) {
 
-            Log.d("RaghavAnime", "[Senshi] no ${targetStreamType} embeds for ep ${epData.epNum}, falling back to all ${embeds.size} embeds")
             embeds.forEach { addEmbedLink(it, callback) }
             return embeds.isNotEmpty()
         }
 
-        Log.d("RaghavAnime", "[Senshi] matched ${matching.size}/${embeds.size} ${targetStreamType} embeds for ep ${epData.epNum}")
         matching.forEach { addEmbedLink(it, callback) }
         return true
     }
 
     private suspend fun addEmbedLink(embed: StreamEmbed, callback: (ExtractorLink) -> Unit) {
-        val streamUrl = embed.url
-        if (streamUrl == null) {
-            Log.d("RaghavAnime", "[Senshi] embed has no url (status=${embed.status})")
-            return
-        }
+        val streamUrl = embed.url ?: return
         val status = embed.status ?: "Unknown"
 
         val playHeaders = mapOf(
@@ -392,14 +346,11 @@ class RaghavSenshi : MainAPI() {
         )
 
         if (streamUrl.contains(".m3u8", ignoreCase = true)) {
-            Log.d("RaghavAnime", "[Senshi] m3u8 embed $status: ${streamUrl.take(80)}")
             try {
                 val label = "$name $status"
                 val links = M3u8Helper.generateM3u8(label, streamUrl, "$mainUrl/", headers = playHeaders)
-                Log.d("RaghavAnime", "[Senshi] m3u8 $status: generated ${links.size} quality links")
                 links.forEach(callback)
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[Senshi] m3u8 $status generate failed: ${e.message}, using raw link")
                 callback.invoke(
                     newExtractorLink("$name $status", "$name $status", streamUrl, type = ExtractorLinkType.M3U8) {
                         this.referer = "$mainUrl/"
@@ -409,7 +360,6 @@ class RaghavSenshi : MainAPI() {
             }
         } else {
 
-            Log.d("RaghavAnime", "[Senshi] direct embed $status: ${streamUrl.take(80)}")
             callback.invoke(
                 newExtractorLink("$name $status", "$name $status", streamUrl, type = INFER_TYPE) {
                     this.referer = "$mainUrl/"

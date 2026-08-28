@@ -15,11 +15,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
-import java.util.concurrent.ConcurrentHashMap
 
 class RaghavEnma : MainAPI() {
     override var mainUrl = "https://www.enma.lol"
@@ -173,41 +169,43 @@ class RaghavEnma : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        Log.d("RaghavAnime", "[Enma] getMainPage: ${request.name} page=$page")
         val url = "${request.data}?page=$page"
         val response = try {
             fetchApi(url)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] mainPage fetch failed for '${request.name}' page=$page: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] getMainPage fetch failed: ${e.message}")
             return newHomePageResponse(request.name, emptyList())
         } ?: return newHomePageResponse(request.name, emptyList())
 
         val parsed = try {
             parseJson<EnmaSearchResponse>(response)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] mainPage parse failed for '${request.name}' page=$page: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] getMainPage parse failed: ${e.message}")
             return newHomePageResponse(request.name, emptyList())
         }
         val items = parsed.results?.data?.mapNotNull { it.toSearchResult() } ?: emptyList()
-        Log.d("RaghavAnime", "[Enma] mainPage '${request.name}' page=$page: ${items.size} items")
+        Log.d("RaghavAnime", "[Enma] getMainPage ${request.name}: ${items.size} items")
         return newHomePageResponse(request.name, items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        Log.d("RaghavAnime", "[Enma] search: q='${query.take(40)}'")
         val encoded = URLEncoder.encode(query, "UTF-8")
         val response = try {
             fetchApi("$apiUrl/search?keyword=$encoded&page=1")
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] search fetch failed for query='${query.take(40)}': ${e.message}")
+            Log.e("RaghavAnime", "[Enma] search fetch failed: ${e.message}")
             return emptyList()
         } ?: return emptyList()
 
         val parsed = try {
             parseJson<EnmaSearchResponse>(response)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] search parse failed for query='${query.take(40)}': ${e.message}")
+            Log.e("RaghavAnime", "[Enma] search parse failed: ${e.message}")
             return emptyList()
         }
-        Log.d("RaghavAnime", "[Enma] search '${query.take(40)}': ${parsed.results?.data?.size ?: 0} results")
+        Log.d("RaghavAnime", "[Enma] search: ${parsed.results?.data?.size ?: 0} results")
         return parsed.results?.data?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
 
@@ -229,69 +227,35 @@ class RaghavEnma : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[Enma] loadLinksByAnilistId start: anilistId=$anilistId ep=$episode ${if (isDub) "dub" else "sub"} title='${title.take(40)}' jpTitle='${jpTitle?.take(40) ?: ""}'")
+        Log.d("RaghavAnime", "[Enma] loadLinksByAnilistId: anilist=$anilistId ep=$episode dub=$isDub title='${title.take(40)}'")
         val searchQueries = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
-        if (searchQueries.isEmpty()) {
-            Log.e("RaghavAnime", "[Enma] no search queries for anilistId=$anilistId, aborting")
-            return false
-        }
+        if (searchQueries.isEmpty()) return false
 
         var matchedId: String? = null
         for (query in searchQueries) {
             val encoded = URLEncoder.encode(query, "UTF-8")
-            Log.d("RaghavAnime", "[Enma] searching '${query.take(40)}' for anilistId=$anilistId")
-            // fetchApi can return null while the decryptor WebView is still
-            // warming up (cold start) - retry a couple of times before giving up
-            var response: String? = null
-            for (attempt in 1..3) {
-                response = try {
-                    fetchApi("$apiUrl/search?keyword=$encoded&page=1")
-                } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    Log.e("RaghavAnime", "[Enma] search fetch failed for '${query.take(40)}' (attempt $attempt): ${e.message}")
-                    null
-                }
-                if (response != null) break
-                if (attempt < 3) {
-                    Log.d("RaghavAnime", "[Enma] search fetch returned null for '${query.take(40)}' (attempt $attempt), retrying")
-                    kotlinx.coroutines.delay(400L)
-                }
-            }
-            if (response == null) {
-                Log.e("RaghavAnime", "[Enma] search fetch returned null for '${query.take(40)}' after retries")
+            val response = try {
+                fetchApi("$apiUrl/search?keyword=$encoded&page=1")
+            } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Enma] anilist search fetch failed: ${e.message}")
                 continue
-            }
-            val parsed = try { parseJson<EnmaSearchResponse>(response) } catch (e: Exception) {
-                Log.e("RaghavAnime", "[Enma] search parse failed for '${query.take(40)}': ${e.message}")
-                continue
-            }
+            } ?: continue
+            val parsed = try { parseJson<EnmaSearchResponse>(response) } catch (e: Exception) { continue }
             val items = parsed.results?.data ?: emptyList()
-            Log.d("RaghavAnime", "[Enma] search '${query.take(40)}' returned ${items.size} items")
             val match = items.firstOrNull { it.anilistId == anilistId }
             if (match != null && match.id != null) {
-                Log.d("RaghavAnime", "[Enma] matched anilistId=$anilistId -> enmaId=${match.id} via '${query.take(40)}'")
+                Log.d("RaghavAnime", "[Enma] anilist=$anilistId matched id=${match.id}")
                 matchedId = match.id
                 break
             }
         }
-        if (matchedId == null) {
-            Log.e("RaghavAnime", "[Enma] no search match for anilistId=$anilistId after ${searchQueries.size} queries")
-            return false
-        }
+        Log.d("RaghavAnime", "[Enma] anilist search done: matchedId=$matchedId")
+        if (matchedId == null) return false
 
-        val loadResult = load("$mainUrl/$matchedId") as? AnimeLoadResponse
-        if (loadResult == null) {
-            Log.e("RaghavAnime", "[Enma] load() failed for enmaId=$matchedId")
-            return false
-        }
+        val loadResult = load("$mainUrl/$matchedId") as? AnimeLoadResponse ?: return false
         val epKey = if (isDub) DubStatus.Dubbed else DubStatus.Subbed
-        val matchedEp = loadResult.episodes?.get(epKey)?.find { it.episode == episode }
-        if (matchedEp == null) {
-            val available = loadResult.episodes?.get(epKey)?.size ?: 0
-            Log.e("RaghavAnime", "[Enma] ep $episode (${if (isDub) "dub" else "sub"}) not found for anilistId=$anilistId ($available eps available)")
-            return false
-        }
-        Log.d("RaghavAnime", "[Enma] ep $episode matched (enmaId=$matchedId), resolving links")
+        Log.d("RaghavAnime", "[Enma] finding episode=$episode (epKey=$epKey)")
+        val matchedEp = loadResult.episodes?.get(epKey)?.find { it.episode == episode } ?: return false
         return loadLinks(matchedEp.data, false, subtitleCallback, callback)
     }
 
@@ -302,14 +266,14 @@ class RaghavEnma : MainAPI() {
         val infoText = try {
             fetchApi("$apiUrl/info?id=$animeId")
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] info fetch failed for animeId=$animeId: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] info fetch failed: ${e.message}")
             return null
         } ?: return null
 
         val info = try {
             parseJson<EnmaInfoResponse>(infoText).results?.data
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] info parse failed for animeId=$animeId: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] info parse failed: ${e.message}")
             return null
         } ?: return null
 
@@ -332,17 +296,16 @@ class RaghavEnma : MainAPI() {
         val epsText = try {
             fetchApi("$apiUrl/episodes/$animeId")
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] episodes fetch failed for animeId=$animeId: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] episodes fetch failed: ${e.message}")
             return null
         } ?: return null
 
         val epsData = try {
             parseJson<EnmaEpisodesResponse>(epsText).results?.episodes
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] episodes parse failed for animeId=$animeId: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] episodes parse failed: ${e.message}")
             return null
         } ?: emptyList()
-        Log.d("RaghavAnime", "[Enma] parsed ${epsData.size} episodes for animeId=$animeId")
 
         var hasDub = false
         var hasSub = true
@@ -352,11 +315,11 @@ class RaghavEnma : MainAPI() {
                 val servers = parseJson<EnmaServersResponse>(serversText).results ?: emptyList()
                 hasDub = servers.any { it.type == "dub" }
                 hasSub = servers.any { it.type == "sub" }
+                Log.d("RaghavAnime", "[Enma] dub/sub probe: ${servers.size} servers -> hasSub=$hasSub hasDub=$hasDub")
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] servers probe failed for animeId=$animeId: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] servers probe failed: ${e.message}")
         }
-        Log.d("RaghavAnime", "[Enma] animeId=$animeId: hasSub=$hasSub hasDub=$hasDub")
 
         val subEpisodes = mutableListOf<Episode>()
         val dubEpisodes = mutableListOf<Episode>()
@@ -382,8 +345,8 @@ class RaghavEnma : MainAPI() {
             }
         }
 
+        Log.d("RaghavAnime", "[Enma] load ok: ${epsData.size} eps -> ${subEpisodes.size} sub, ${dubEpisodes.size} dub")
         val finalType = if (tvType == TvType.AnimeMovie && dubEpisodes.isNotEmpty()) TvType.Anime else tvType
-        Log.d("RaghavAnime", "[Enma] load done: ${subEpisodes.size} sub / ${dubEpisodes.size} dub episodes, type=$finalType")
         return newAnimeLoadResponse(title, url, finalType) {
             this.posterUrl = poster
             this.plot = plot
@@ -403,7 +366,7 @@ class RaghavEnma : MainAPI() {
         val loadData = try {
             parseJson<EpisodeLoadData>(data)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] loadLinks: failed to parse episode data: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] loadLinks: bad data '${data.take(60)}'")
             return false
         }
 
@@ -411,88 +374,69 @@ class RaghavEnma : MainAPI() {
         val episodeId = loadData.episodeId
         val type = loadData.type
         val epNum = loadData.episodeNum
-        Log.d("RaghavAnime", "[Enma] loadLinks: animeId=$animeId ep=$epNum type=$type episodeId=${episodeId.take(24)}")
+        Log.d("RaghavAnime", "[Enma] loadLinks: animeId=$animeId ep=$epNum type=$type epId=$episodeId")
 
         val servers = try {
             val serversText = fetchApi("$apiUrl/servers/$animeId?ep=$epNum")
             if (serversText.isNullOrBlank()) emptyList()
             else parseJson<EnmaServersResponse>(serversText).results ?: emptyList()
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Enma] servers fetch failed for animeId=$animeId ep=$epNum: ${e.message}")
+            Log.e("RaghavAnime", "[Enma] servers fetch failed for ep=$epNum: ${e.message}")
             emptyList()
         }
 
+        Log.d("RaghavAnime", "[Enma] servers: ${servers.size} total")
         val typeServers = servers.filter { it.type == type }
-        Log.d("RaghavAnime", "[Enma] servers: ${servers.size} total, ${typeServers.size} of type=$type")
-        if (typeServers.isEmpty()) {
-            Log.e("RaghavAnime", "[Enma] no type=$type servers for animeId=$animeId ep=$epNum")
-            return false
-        }
+        Log.d("RaghavAnime", "[Enma] type=$type servers: ${typeServers.size}")
+        if (typeServers.isEmpty()) return false
 
         val serverNames = typeServers.mapNotNull { it.serverName?.takeIf { n -> n.isNotBlank() } }
             .ifEmpty { typeServers.mapIndexed { idx, _ -> "ENMA-${idx + 1}" } }
-        Log.d("RaghavAnime", "[Enma] trying servers: ${serverNames.joinToString(",").take(80)}")
 
         var found = false
-        val seenUrls = ConcurrentHashMap.newKeySet<String>()
+        val seenUrls = mutableSetOf<String>()
+        Log.d("RaghavAnime", "[Enma] trying servers: ${serverNames.joinToString(",").take(120)}")
 
-        val results = coroutineScope {
-            serverNames.map { serverName ->
-                async {
-                    try {
-                        val encodedId = URLEncoder.encode(episodeId, "UTF-8")
-                        val streamUrl = "$apiUrl/stream?id=$encodedId&server=$serverName&type=$type"
-                        Log.d("RaghavAnime", "[Enma] server '$serverName': GET /api/stream?id=${encodedId.take(24)}&server=$serverName&type=$type")
-                        val streamText = fetchApi(streamUrl)
-                        if (streamText == null) {
-                            Log.e("RaghavAnime", "[Enma] server '$serverName': stream fetch returned null")
-                            return@async false
-                        }
-                        val streamData = parseJson<EnmaStreamResponse>(streamText)
-                        val iframe = streamData.results?.streamingLink?.iframe
-                        if (iframe == null) {
-                            Log.e("RaghavAnime", "[Enma] server '$serverName': no iframe in stream response")
-                            return@async false
-                        }
+        for (serverName in serverNames) {
+            try {
+                Log.d("RaghavAnime", "[Enma] server=$serverName: fetching stream")
+                val encodedId = URLEncoder.encode(episodeId, "UTF-8")
+                val streamUrl = "$apiUrl/stream?id=$encodedId&server=$serverName&type=$type"
+                val streamText = fetchApi(streamUrl) ?: continue
+                val streamData = parseJson<EnmaStreamResponse>(streamText)
+                val iframe = streamData.results?.streamingLink?.iframe ?: continue
+                Log.d("RaghavAnime", "[Enma] server=$serverName iframe=${iframe.take(120)}")
 
-                        if (!seenUrls.add(iframe)) {
-                            Log.d("RaghavAnime", "[Enma] server '$serverName': duplicate iframe, skipping")
-                            return@async false
-                        }
+                if (!seenUrls.add(iframe)) continue
 
-                        val domain = Regex("""https?://([^/]+)""").find(iframe)?.groupValues?.get(1) ?: ""
-                        val displayType = if (type == "dub") "DUB" else "SUB"
-                        Log.d("RaghavAnime", "[Enma] server '$serverName' iframe host=$domain")
+                val domain = Regex("""https?://([^/]+)""").find(iframe)?.groupValues?.get(1) ?: ""
+                Log.d("RaghavAnime", "[Enma] iframe host=$domain")
+                val displayType = if (type == "dub") "DUB" else "SUB"
 
-                        val resolved = when {
-                            domain.contains("megaplay", ignoreCase = true) ->
-                                resolveMegaPlay(iframe, serverName, type, subtitleCallback, callback)
-                            domain.contains("4animo", ignoreCase = true) ->
-                                resolve4Animo(iframe, serverName, displayType, subtitleCallback, callback)
-                            domain.contains("vidnest", ignoreCase = true) ->
-                                resolveVidnest(iframe, serverName, displayType, subtitleCallback, callback)
-                            domain.contains("tryembed", ignoreCase = true) ->
-                                resolveTryEmbed(iframe, serverName, displayType, subtitleCallback, callback)
-                            else -> {
-                                try {
-                                    loadExtractor(iframe, "$mainUrl/", subtitleCallback, callback)
-                                } catch (e: Exception) {
-                                    false
-                                }
-                            }
+                val resolved = when {
+                    domain.contains("megaplay", ignoreCase = true) ->
+                        resolveMegaPlay(iframe, serverName, type, subtitleCallback, callback)
+                    domain.contains("4animo", ignoreCase = true) ->
+                        resolve4Animo(iframe, serverName, displayType, subtitleCallback, callback)
+                    domain.contains("vidnest", ignoreCase = true) ->
+                        resolveVidnest(iframe, serverName, displayType, subtitleCallback, callback)
+                    domain.contains("tryembed", ignoreCase = true) ->
+                        resolveTryEmbed(iframe, serverName, displayType, subtitleCallback, callback)
+                    else -> {
+                        try {
+                            loadExtractor(iframe, "$mainUrl/", subtitleCallback, callback)
+                        } catch (e: Exception) {
+                            false
                         }
-                        Log.d("RaghavAnime", "[Enma] server '$serverName' resolved=$resolved")
-                        resolved
-                    } catch (e: Exception) {
-                        Log.d("Enma", "Failed to resolve $serverName: ${e.message}")
-                        false
                     }
                 }
-            }.awaitAll()
+                if (resolved) found = true
+            } catch (e: Exception) {
+                Log.d("Enma", "Failed to resolve $serverName: ${e.message}")
+            }
         }
-        if (results.any { it }) found = true
 
-        Log.d("RaghavAnime", "[Enma] loadLinks done: found=$found (tried ${serverNames.size} servers)")
+        Log.d("RaghavAnime", "[Enma] loadLinks done: found=$found")
         return found
     }
 
@@ -504,7 +448,6 @@ class RaghavEnma : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            Log.d("RaghavAnime", "[Enma] 4Animo resolve: server='$serverName' url=${iframeUrl.take(80)}")
             val host = Regex("""(https?://[^/]+)""").find(iframeUrl)?.groupValues?.get(1) ?: return false
 
             val pageHeaders = mapOf(
@@ -513,28 +456,25 @@ class RaghavEnma : MainAPI() {
                 "Referer" to "$mainUrl/"
             )
 
+            Log.d("RaghavAnime", "[Enma] 4Animo resolving: ${iframeUrl.take(120)}")
             val embedHtml = app.get(iframeUrl, headers = pageHeaders).text
 
             val sourcesPath = Regex("""var\s+sourcesUrl\s*=\s*['"]([^'"]+)['"]""")
-                .find(embedHtml)?.groupValues?.get(1)
-            if (sourcesPath == null) {
-                Log.e("RaghavAnime", "[Enma] 4Animo: no sourcesUrl in embed page (html len=${embedHtml.length})")
-                return false
-            }
+                .find(embedHtml)?.groupValues?.get(1) ?: return false
 
             val sourcesApiUrl = if (sourcesPath.startsWith("http")) sourcesPath else "$host$sourcesPath"
+            Log.d("RaghavAnime", "[Enma] 4Animo sources url=${sourcesApiUrl.take(120)}")
             val ajaxHeaders = mapOf(
                 "User-Agent" to mobileUA,
                 "Accept" to "*/*",
                 "Referer" to iframeUrl
             )
-            Log.d("RaghavAnime", "[Enma] 4Animo sources: GET ${sourcesApiUrl.take(80)}")
             val sourcesText = app.get(sourcesApiUrl, headers = ajaxHeaders, referer = iframeUrl).text
 
             val root = try {
                 JsonParser.parseString(sourcesText).asJsonObject
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[Enma] 4Animo: sources json parse failed: ${e.message}")
+                Log.e("RaghavAnime", "[Enma] 4Animo sources parse failed: ${e.message}")
                 return false
             }
 
@@ -545,17 +485,13 @@ class RaghavEnma : MainAPI() {
                 } else if (sourcesEl?.isJsonObject == true) {
                     sourcesEl.asJsonObject.get("file")?.asString
                 } else null
-            } catch (_: Exception) {
-                Log.e("RaghavAnime", "[Enma] 4Animo: failed to extract m3u8 path from sources")
+            } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Enma] 4Animo m3u8 extract failed: ${e.message}")
                 null
-            }
-            if (m3u8Path == null) {
-                Log.e("RaghavAnime", "[Enma] 4Animo: no m3u8 path in sources response")
-                return false
-            }
+            } ?: return false
 
             val fullM3u8 = if (m3u8Path.startsWith("http")) m3u8Path else "$host$m3u8Path"
-            Log.d("RaghavAnime", "[Enma] 4Animo emit link 'Enma $serverName $displayType' url=${fullM3u8.take(80)}")
+            Log.d("RaghavAnime", "[Enma] 4Animo link: ${fullM3u8.take(120)}")
 
             callback.invoke(
                 newExtractorLink(
@@ -579,8 +515,8 @@ class RaghavEnma : MainAPI() {
                     val fullSub = if (file.startsWith("http")) file else "$host$file"
                     subtitleCallback.invoke(newSubtitleFile(label, fullSub))
                 }
-            } catch (_: Exception) {
-                Log.e("RaghavAnime", "[Enma] 4Animo: failed to parse subtitle tracks")
+            } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Enma] 4Animo tracks failed: ${e.message}")
             }
 
             return true
@@ -598,8 +534,8 @@ class RaghavEnma : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            Log.d("RaghavAnime", "[Enma] Vidnest resolve: server='$serverName' url=${iframeUrl.take(80)}")
             val host = Regex("""(https?://[^/]+)""").find(iframeUrl)?.groupValues?.get(1) ?: return false
+            Log.d("RaghavAnime", "[Enma] Vidnest resolving: ${iframeUrl.take(120)}")
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""\.m3u8"""),
                 additionalUrls = listOf(Regex("""\.mp4""")),
@@ -608,16 +544,16 @@ class RaghavEnma : MainAPI() {
                 timeout = 20_000L
             )
             val resolved = app.get(iframeUrl, referer = "$mainUrl/", interceptor = resolver).url
-            Log.d("RaghavAnime", "[Enma] Vidnest resolved url=${resolved.take(80)}")
+            Log.d("RaghavAnime", "[Enma] Vidnest resolved: ${resolved.take(120)}")
             if (resolved.contains(".m3u8", true)) {
                 val proxyHost = Regex("""(https?://[^/]+)""").find(resolved)?.groupValues?.get(1) ?: host
-                Log.d("RaghavAnime", "[Enma] Vidnest '$serverName': generating m3u8 quality links")
+                Log.d("RaghavAnime", "[Enma] Vidnest: m3u8 ok, generating links for $serverName")
                 M3u8Helper.generateM3u8(
                     "Enma $serverName $displayType", resolved, proxyHost
                 ).forEach(callback)
                 return true
             }
-            Log.e("RaghavAnime", "[Enma] Vidnest '$serverName': no .m3u8 in resolved url")
+            Log.w("RaghavAnime", "[Enma] Vidnest: resolved url not m3u8 for $serverName")
             return false
         } catch (e: Exception) {
             Log.d("Enma", "Vidnest failed: ${e.message}")
@@ -633,8 +569,8 @@ class RaghavEnma : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            Log.d("RaghavAnime", "[Enma] TryEmbed resolve: server='$serverName' url=${iframeUrl.take(80)}")
             val host = Regex("""(https?://[^/]+)""").find(iframeUrl)?.groupValues?.get(1) ?: return false
+            Log.d("RaghavAnime", "[Enma] TryEmbed resolving: ${iframeUrl.take(120)}")
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""\.m3u8"""),
                 additionalUrls = listOf(Regex("""\.mp4""")),
@@ -643,16 +579,16 @@ class RaghavEnma : MainAPI() {
                 timeout = 25_000L
             )
             val resolved = app.get(iframeUrl, referer = "$mainUrl/", interceptor = resolver).url
-            Log.d("RaghavAnime", "[Enma] TryEmbed resolved url=${resolved.take(80)}")
+            Log.d("RaghavAnime", "[Enma] TryEmbed resolved: ${resolved.take(120)}")
             if (resolved.contains(".m3u8", true)) {
                 val finalUrl = try {
                     app.get(resolved, referer = "$host/", headers = mapOf("User-Agent" to mobileUA)).url
                 } catch (e: Exception) {
-                    Log.e("RaghavAnime", "[Enma] TryEmbed: redirect follow failed, using original: ${e.message}")
+                    Log.e("RaghavAnime", "[Enma] TryEmbed follow redirect failed: ${e.message}")
                     resolved
                 }
                 val finalHost = Regex("""(https?://[^/]+)""").find(finalUrl)?.groupValues?.get(1) ?: host
-                Log.d("RaghavAnime", "[Enma] TryEmbed emit link 'Enma $serverName $displayType' url=${finalUrl.take(80)}")
+                Log.d("RaghavAnime", "[Enma] TryEmbed link: ${finalUrl.take(120)}")
                 callback.invoke(
                     newExtractorLink(
                         source = "Enma",
@@ -666,7 +602,7 @@ class RaghavEnma : MainAPI() {
                 )
                 return true
             }
-            Log.e("RaghavAnime", "[Enma] TryEmbed '$serverName': no .m3u8 in resolved url")
+            Log.w("RaghavAnime", "[Enma] TryEmbed: resolved url not m3u8 for $serverName")
             return false
         } catch (e: Exception) {
             Log.d("Enma", "TryEmbed failed: ${e.message}")
@@ -682,12 +618,11 @@ class RaghavEnma : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            Log.d("RaghavAnime", "[Enma] MegaPlay resolve: server='$serverName' type=$type url=${iframeUrl.take(80)}")
             val host = try {
                 val uri = java.net.URI(iframeUrl)
                 "${uri.scheme}://${uri.host}"
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[Enma] MegaPlay: host parse failed, using default: ${e.message}")
+                Log.e("RaghavAnime", "[Enma] MegaPlay host parse failed: ${e.message}")
                 "https://megaplay.buzz"
             }
 
@@ -697,18 +632,14 @@ class RaghavEnma : MainAPI() {
                 "Referer" to "$mainUrl/",
             )
 
+            Log.d("RaghavAnime", "[Enma] MegaPlay resolving: ${iframeUrl.take(120)}")
             val doc = app.get(iframeUrl, headers = pageHeaders).document
             val playerEl = doc.selectFirst("#megaplay-player")
             val streamId = playerEl?.attr("data-id")
                 ?: playerEl?.attr("data-realid")
-            if (streamId == null) {
-                Log.e("RaghavAnime", "[Enma] MegaPlay: no player data-id in embed page")
-                return false
-            }
-            if (streamId.isBlank()) {
-                Log.e("RaghavAnime", "[Enma] MegaPlay: streamId is blank")
-                return false
-            }
+                ?: return false
+            if (streamId.isBlank()) return false
+            Log.d("RaghavAnime", "[Enma] MegaPlay streamId=$streamId")
 
             val ajaxHeaders = mapOf(
                 "User-Agent" to mobileUA,
@@ -719,7 +650,6 @@ class RaghavEnma : MainAPI() {
             )
 
             val sourcesUrl = "$host/stream/getSources?id=$streamId&type=$type"
-            Log.d("RaghavAnime", "[Enma] MegaPlay sources: GET ${sourcesUrl.take(80)}")
             val sourcesText = app.get(sourcesUrl, headers = ajaxHeaders, referer = iframeUrl).text
             val root = JsonParser.parseString(sourcesText).asJsonObject
 
@@ -730,12 +660,13 @@ class RaghavEnma : MainAPI() {
                 } else if (sourcesEl?.isJsonArray == true && sourcesEl.asJsonArray.size() > 0) {
                     sourcesEl.asJsonArray[0].asJsonObject.get("file")?.asString
                 } else null
-            } catch (_: Exception) { null }
-
-            if (m3u8.isNullOrBlank()) {
-                Log.e("RaghavAnime", "[Enma] MegaPlay: no m3u8 in sources response")
-                return false
+            } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Enma] MegaPlay m3u8 extract failed: ${e.message}")
+                null
             }
+
+            if (m3u8.isNullOrBlank()) return false
+            Log.d("RaghavAnime", "[Enma] MegaPlay m3u8=${m3u8.take(120)}")
 
             val displayType = if (type == "dub") "DUB" else "SUB"
             val m3u8Headers = mapOf(
@@ -747,11 +678,11 @@ class RaghavEnma : MainAPI() {
             val generated = M3u8Helper.generateM3u8(
                 "Enma $serverName $displayType", m3u8, host, headers = m3u8Headers
             )
+            Log.d("RaghavAnime", "[Enma] MegaPlay generated ${generated.size} links for $serverName")
             if (generated.isNotEmpty()) {
-                Log.d("RaghavAnime", "[Enma] MegaPlay emit ${generated.size} quality links for '$serverName'")
                 generated.forEach(callback)
             } else {
-                Log.d("RaghavAnime", "[Enma] MegaPlay no generated qualities for '$serverName', emitting raw url=${m3u8.take(80)}")
+                Log.w("RaghavAnime", "[Enma] MegaPlay: generateM3u8 empty, emitting raw m3u8")
                 callback.invoke(
                     newExtractorLink(
                         source = "Enma",
@@ -774,8 +705,8 @@ class RaghavEnma : MainAPI() {
                     val label = track.get("label")?.asString ?: "English"
                     subtitleCallback.invoke(newSubtitleFile(label, file))
                 }
-            } catch (_: Exception) {
-                Log.e("RaghavAnime", "[Enma] MegaPlay: failed to parse subtitle tracks")
+            } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Enma] MegaPlay tracks failed: ${e.message}")
             }
 
             return true

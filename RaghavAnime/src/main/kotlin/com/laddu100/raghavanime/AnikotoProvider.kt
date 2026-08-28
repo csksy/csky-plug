@@ -39,7 +39,7 @@ class RaghavAnikoto : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("anikoto") ?: mainUrl
-        Log.d("RaghavAnime", "[AniKoto] getMainPage '${request.name}' page=$page")
+        Log.d("RaghavAnime", "[AniKoto] getMainPage '${request.name}' page=$page on $mainUrl")
         val doc = app.get("${request.data}?page=$page", headers = browserHeaders).document
         val items = doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
         Log.d("RaghavAnime", "[AniKoto] getMainPage '${request.name}' page=$page parsed ${items.size} items")
@@ -51,9 +51,8 @@ class RaghavAnikoto : MainAPI() {
         mainUrl = FirebaseDomainHelper.getDomain("anikoto") ?: mainUrl
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val doc = app.get("$mainUrl/filter?keyword=$encodedQuery", headers = browserHeaders).document
-        val results = doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
-        Log.d("RaghavAnime", "[AniKoto] search '$query' returned ${results.size} results")
-        return results
+        Log.d("RaghavAnime", "[AniKoto] search '$query' -> ${doc.select("div.ani.items > div.item").size} result items")
+        return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -83,7 +82,6 @@ class RaghavAnikoto : MainAPI() {
         val animeId = doc.selectFirst("#watch-main")?.attr("data-id")
             ?: doc.selectFirst("[data-id]")?.attr("data-id")
             ?: Regex("""data-id=["'](\d+)["']""").find(doc.html())?.groupValues?.get(1)
-
         Log.d("RaghavAnime", "[AniKoto] load: title='${title.take(60)}' animeId=$animeId isMovie=$isMovie")
 
         val subEpisodes = mutableListOf<Episode>()
@@ -164,18 +162,12 @@ class RaghavAnikoto : MainAPI() {
 
         if (cleanData.startsWith("anikoto|")) {
             val parts = cleanData.split("|", limit = 4)
-            if (parts.size < 4) {
-                Log.d("RaghavAnime", "[AniKoto] loadLinks: malformed anikoto data, parts=${parts.size} < 4")
-                return false
-            }
+            if (parts.size < 4) return false
             val referer = parts[1]
             val serverIds = parts[2]
             val audioType = parts[3].ifBlank { "sub" }
-            if (serverIds.isBlank()) {
-                Log.d("RaghavAnime", "[AniKoto] loadLinks: serverIds is blank")
-                return false
-            }
             Log.d("RaghavAnime", "[AniKoto] loadLinks: resolving $audioType servers '$serverIds' for '${referer.take(60)}'")
+            if (serverIds.isBlank()) return false
             return resolveServers(serverIds, referer, audioType, subtitleCallback, callback)
         }
 
@@ -212,10 +204,7 @@ class RaghavAnikoto : MainAPI() {
             val serverIds = epEl.attr("data-ids")
             val audioType = if (epEl.attr("data-dub") == "1") "dub" else "sub"
             Log.d("RaghavAnime", "[AniKoto] loadLinks direct: matched ep=$epNum audio=$audioType serverIds='${serverIds.take(40)}'")
-            if (serverIds.isBlank()) {
-                Log.d("RaghavAnime", "[AniKoto] loadLinks direct: serverIds blank for ep=$epNum")
-                return false
-            }
+            if (serverIds.isBlank()) return false
 
             resolveServers(serverIds, data, audioType, subtitleCallback, callback)
         } catch (e: Exception) {
@@ -255,6 +244,7 @@ class RaghavAnikoto : MainAPI() {
         } else {
             listOf("div.type[data-type=sub]", "div.type[data-type=hsub]")
         }
+        Log.d("RaghavAnime", "[AniKoto] type selectors for '$audioType': $typeSelectors")
 
         val preferredServers = typeSelectors.flatMap { sel ->
             serverDoc.select("$sel li[data-link-id]")
@@ -264,11 +254,8 @@ class RaghavAnikoto : MainAPI() {
 
         val linkIds = preferredServers.map { it.attr("data-link-id") }
             .filter { it.isNotBlank() }.distinct()
-        if (linkIds.isEmpty()) {
-            Log.d("RaghavAnime", "[AniKoto] resolveServers: no data-link-id entries for audioType=$audioType")
-            return false
-        }
-        Log.d("RaghavAnime", "[AniKoto] resolveServers: resolving ${linkIds.size} server links for audioType=$audioType")
+        Log.d("RaghavAnime", "[AniKoto] servers matched: ${linkIds.size} (preferred=${preferredServers.size}) for audioType=$audioType")
+        if (linkIds.isEmpty()) return false
 
         var found = false
         for (linkId in linkIds) {
@@ -277,27 +264,25 @@ class RaghavAnikoto : MainAPI() {
                 val serverJson = app.get("$mainUrl/ajax/server?get=$encodedLinkId",
                     referer = referer, headers = ajaxHeaders(referer)).text
                 var embedUrl = jsonResultUrl(serverJson)
-                if (embedUrl.isNullOrBlank()) {
-                    Log.d("RaghavAnime", "[AniKoto] resolveServers: linkId=$linkId returned no embed url")
-                    continue
-                }
-                Log.d("RaghavAnime", "[AniKoto] resolveServers: linkId=$linkId embed='${embedUrl.take(80)}'")
+                if (embedUrl.isNullOrBlank()) continue
+                Log.d("RaghavAnime", "[AniKoto] linkId $linkId embed url: ${embedUrl.take(100)}")
 
                 if (audioType == "dub" && embedUrl.contains("/sub")) {
+                    Log.d("RaghavAnime", "[AniKoto] rewriting embed /sub -> /dub for dub audio")
                     embedUrl = embedUrl.replace("/sub", "/dub")
                 } else if (audioType == "sub" && embedUrl.contains("/dub")) {
+                    Log.d("RaghavAnime", "[AniKoto] rewriting embed /dub -> /sub for sub audio")
                     embedUrl = embedUrl.replace("/dub", "/sub")
                 }
 
-                val resolved = resolveEmbedInline(embedUrl, referer, audioType, subtitleCallback, callback)
-                Log.d("RaghavAnime", "[AniKoto] resolveServers: linkId=$linkId outcome=${if (resolved) "links found" else "no links"}")
-                if (resolved) {
+                if (resolveEmbedInline(embedUrl, referer, audioType, subtitleCallback, callback)) {
                     found = true
                 }
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniKoto] resolveServers: linkId=$linkId failed: ${e.message}")
+                Log.e("RaghavAnime", "[AniKoto] resolveServers: linkId $linkId failed: ${e.message}")
             }
         }
+        Log.d("RaghavAnime", "[AniKoto] resolveServers done: found=$found (tried ${linkIds.size} linkIds)")
         return found
     }
 
@@ -308,15 +293,15 @@ class RaghavAnikoto : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d("RaghavAnime", "[AniKoto] resolveEmbedInline: url='${url.take(100)}' audioType=$audioType")
         val normalizedUrl = when {
             url.startsWith("//") -> "https:$url"
             url.startsWith("/") -> "$mainUrl$url"
             else -> url
         }
-        Log.d("RaghavAnime", "[AniKoto] resolveEmbedInline: '${normalizedUrl.take(80)}' audioType=$audioType")
 
         getHashM3u8(normalizedUrl)?.let { m3u8 ->
-            Log.d("RaghavAnime", "[AniKoto] resolveEmbedInline: hash m3u8 found '${m3u8.take(80)}'")
+            Log.d("RaghavAnime", "[AniKoto] hash m3u8 found: ${m3u8.take(120)}")
             callback.invoke(
                 newExtractorLink("AniKoto", "AniKoto M3U8", m3u8, type = ExtractorLinkType.M3U8) {
                     this.referer = normalizedUrl
@@ -330,6 +315,7 @@ class RaghavAnikoto : MainAPI() {
         val isMegaPlayDomain = domain.contains("megaplay", ignoreCase = true) ||
                                domain.contains("vidwish", ignoreCase = true) ||
                                domain.contains("vidtube", ignoreCase = true)
+        Log.d("RaghavAnime", "[AniKoto] embed domain='$domain' isMegaPlayDomain=$isMegaPlayDomain")
 
         return if (isMegaPlayDomain) {
             resolveMegaPlayInline(normalizedUrl, referer, domain, audioType, subtitleCallback, callback)
@@ -337,7 +323,7 @@ class RaghavAnikoto : MainAPI() {
             try {
                 loadExtractor(normalizedUrl, referer, subtitleCallback, callback)
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniKoto] resolveEmbedInline: loadExtractor failed for '${normalizedUrl.take(60)}': ${e.message}")
+                Log.e("RaghavAnime", "[AniKoto] loadExtractor failed for '$normalizedUrl': ${e.message}")
                 false
             }
         }
@@ -351,6 +337,7 @@ class RaghavAnikoto : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d("RaghavAnime", "[AniKoto] resolveMegaPlayInline: url='${url.take(100)}' domain=$domain audioType=$audioType referer='${referer.take(60)}'")
         val host = "https://$domain"
         val serverName = when {
             domain.contains("megaplay", ignoreCase = true) -> "MegaPlay"
@@ -358,7 +345,6 @@ class RaghavAnikoto : MainAPI() {
             else -> "Vidtube"
         }
         val type = if (url.contains("/dub", ignoreCase = true) || audioType == "dub") "dub" else "sub"
-        Log.d("RaghavAnime", "[AniKoto] MegaPlay: resolving $serverName type=$type url='${url.take(80)}'")
 
         val pageHeaders = mapOf(
             "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
@@ -389,15 +375,13 @@ class RaghavAnikoto : MainAPI() {
                 ?: playerEl?.attr("data-realid")
                 ?: Regex("""/stream/s-\d+/(\d+)""").find(url)?.groupValues?.get(1)
                 ?: return false
-            if (streamId.isBlank()) {
-                Log.d("RaghavAnime", "[AniKoto] MegaPlay: streamId blank for '${url.take(60)}'")
-                return false
-            }
-            Log.d("RaghavAnime", "[AniKoto] MegaPlay: streamId=$streamId")
+            Log.d("RaghavAnime", "[AniKoto] megaplay streamId='$streamId' type=$type")
+            if (streamId.isBlank()) return false
 
             val sourcesText = app.get("$host/stream/getSources?id=$streamId&type=$type",
                 headers = ajaxHeaders, referer = url).text
             val root = JsonParser.parseString(sourcesText).asJsonObject
+            Log.d("RaghavAnime", "[AniKoto] megaplay getSources response length ${sourcesText.length}")
 
             val m3u8 = try {
                 val sourcesEl = root.get("sources")
@@ -406,23 +390,22 @@ class RaghavAnikoto : MainAPI() {
                 } else if (sourcesEl?.isJsonArray == true && sourcesEl.asJsonArray.size() > 0) {
                     sourcesEl.asJsonArray[0].asJsonObject.get("file")?.asString
                 } else null
-            } catch (_: Exception) { Log.e("RaghavAnime", "[AniKoto] MegaPlay: sources JSON parse failed"); null }
+            } catch (_: Exception) { null }
 
+            Log.d("RaghavAnime", "[AniKoto] megaplay getSources m3u8: ${m3u8?.take(120)}")
             if (m3u8.isNullOrBlank()) {
-                Log.d("RaghavAnime", "[AniKoto] MegaPlay: no m3u8 in getSources for streamId=$streamId")
                 return false
             }
-            Log.d("RaghavAnime", "[AniKoto] MegaPlay: m3u8 found '${m3u8.take(80)}'")
 
             val displayType = if (type == "dub") "DUB" else "SUB"
             val generated = M3u8Helper.generateM3u8(
                 "AniKoto $serverName $displayType", m3u8, host, headers = playbackHeaders
             )
+            Log.d("RaghavAnime", "[AniKoto] megaplay generated ${generated.size} m3u8 quality links")
             if (generated.isNotEmpty()) {
-                Log.d("RaghavAnime", "[AniKoto] MegaPlay: generated ${generated.size} quality links")
                 generated.forEach(callback)
             } else {
-                Log.d("RaghavAnime", "[AniKoto] MegaPlay: m3u8 helper returned 0 links, emitting raw m3u8")
+                Log.d("RaghavAnime", "[AniKoto] megaplay no generated qualities, emitting direct m3u8 link")
                 callback.invoke(
                     newExtractorLink(
                         source = "AniKoto",
@@ -445,14 +428,15 @@ class RaghavAnikoto : MainAPI() {
                         if (kind != "captions" && kind != "subtitles") continue
                         val file = track.get("file")?.asString ?: continue
                         val label = track.get("label")?.asString ?: "English"
+                        Log.d("RaghavAnime", "[AniKoto] subtitle '$label' -> ${file.take(120)}")
                         subtitleCallback.invoke(newSubtitleFile(label, file))
                     }
                 }
-            } catch (e: Exception) { Log.e("RaghavAnime", "[AniKoto] MegaPlay: tracks parse failed: ${e.message}"); e.message }
+            } catch (e: Exception) { e.message }
 
             return true
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKoto] MegaPlay: resolve failed for '${url.take(60)}': ${e.message}")
+            Log.e("RaghavAnime", "[AniKoto] megaplay resolve failed for '$url': ${e.message}")
             return false
         }
     }
@@ -462,7 +446,7 @@ class RaghavAnikoto : MainAPI() {
             val obj = JsonParser.parseString(json).asJsonObject
             if (obj.get("status")?.asInt != 200) ""
             else obj.get("result")?.asString.orEmpty()
-        } catch (e: Exception) { Log.e("RaghavAnime", "[AniKoto] jsonResultString: parse failed (len=${json.length}): ${e.message}"); "" }
+        } catch (e: Exception) { "" }
     }
 
     private fun jsonResultUrl(json: String): String? {
@@ -470,12 +454,12 @@ class RaghavAnikoto : MainAPI() {
             val obj = JsonParser.parseString(json).asJsonObject
             if (obj.get("status")?.asInt != 200) null
             else obj.get("result")?.asJsonObject?.get("url")?.asString
-        } catch (e: Exception) { Log.e("RaghavAnime", "[AniKoto] jsonResultUrl: parse failed (len=${json.length}): ${e.message}"); null }
+        } catch (e: Exception) { null }
     }
 
     private fun getHashM3u8(url: String): String? {
         val encoded = url.substringAfter("#", "").substringBefore("#").takeIf { it.isNotBlank() } ?: return null
-        val decoded = try { String(Base64.decode(encoded, Base64.DEFAULT)) } catch (e: Exception) { Log.e("RaghavAnime", "[AniKoto] getHashM3u8: base64 decode failed: ${e.message}"); null } ?: return null
+        val decoded = try { String(Base64.decode(encoded, Base64.DEFAULT)) } catch (e: Exception) { null } ?: return null
         return proxyPlayerHost(decoded).takeIf { it.startsWith("http") && it.contains(".m3u8") }
     }
 

@@ -63,26 +63,18 @@ class RaghavAniDao : MainAPI() {
     private val m3u8Regex = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""")
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) {
-            Log.d("RaghavAnime", "[AniDao] getMainPage: page=$page > 1, returning empty")
-            return newHomePageResponse(request.name, emptyList())
-        }
+        Log.d("RaghavAnime", "[AniDao] getMainPage page=$page name=${request.name}")
+        if (page > 1) return newHomePageResponse(request.name, emptyList())
 
         val doc = homeDocument()
         val sectionId = when (request.data) {
             "trending" -> "an-top-trending-title"
             "recent" -> "an-recent-added-title"
             "ongoing" -> "an-ongoing-title"
-            else -> {
-                Log.d("RaghavAnime", "[AniDao] getMainPage: unknown section '${request.data}'")
-                return newHomePageResponse(request.name, emptyList())
-            }
+            else -> return newHomePageResponse(request.name, emptyList())
         }
         val section = doc.selectFirst("""section[aria-labelledby="$sectionId"]""")
-        if (section == null) {
-            Log.d("RaghavAnime", "[AniDao] getMainPage: section '$sectionId' not found in home page")
-            return newHomePageResponse(request.name, emptyList())
-        }
+            ?: return newHomePageResponse(request.name, emptyList())
 
         val home = mutableListOf<SearchResponse>()
         for (item in section.select(".an-home-list-item, article.an-anime-card")) {
@@ -105,7 +97,7 @@ class RaghavAniDao : MainAPI() {
                 addDubStatus(dubExist = true, subExist = true)
             })
         }
-        Log.d("RaghavAnime", "[AniDao] getMainPage '${request.data}': ${home.size} items")
+        Log.d("RaghavAnime", "[AniDao] getMainPage ${request.name}: ${home.size} items")
         return newHomePageResponse(request.name, home)
     }
 
@@ -113,7 +105,7 @@ class RaghavAniDao : MainAPI() {
         val now = System.currentTimeMillis()
         val cached = homeCache
         if (cached != null && now - homeTime < homeTtl) return cached
-        Log.d("RaghavAnime", "[AniDao] homeDocument: cache miss, fetching '$mainUrl'")
+        Log.d("RaghavAnime", "[AniDao] homeDocument: cache miss, fetching $mainUrl")
         val doc = app.get(mainUrl, headers = baseHeaders).document
         homeCache = doc
         homeTime = now
@@ -121,13 +113,10 @@ class RaghavAniDao : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        Log.d("RaghavAnime", "[AniDao] search '$query'")
+        Log.d("RaghavAnime", "[AniDao] search: query='$query'")
         val q = query.lowercase().trim()
-        if (q.isEmpty()) {
-            Log.d("RaghavAnime", "[AniDao] search: empty query, returning empty")
-            return emptyList()
-        }
-        val results = currentIndex().asSequence()
+        if (q.isEmpty()) return emptyList()
+        return currentIndex().asSequence()
             .filter { it.title.lowercase().contains(q) }
             .take(maxSearchResults)
             .map { e ->
@@ -137,15 +126,13 @@ class RaghavAniDao : MainAPI() {
                 }
             }
             .toList()
-        Log.d("RaghavAnime", "[AniDao] search '$query' returned ${results.size} results")
-        return results
     }
 
     private suspend fun currentIndex(): List<AnimeEntry> {
         val now = System.currentTimeMillis()
         val cached = indexCache
         if (cached != null && now - indexTime < indexTtl) return cached
-        Log.d("RaghavAnime", "[AniDao] currentIndex: cache miss, building index")
+        Log.d("RaghavAnime", "[AniDao] currentIndex: cache miss (age=${now - indexTime}ms), building index")
         val built = buildIndex()
         Log.d("RaghavAnime", "[AniDao] currentIndex: index built with ${built.size} entries")
         indexCache = built
@@ -154,34 +141,29 @@ class RaghavAniDao : MainAPI() {
     }
 
     private suspend fun buildIndex(): List<AnimeEntry> {
+        Log.d("RaghavAnime", "[AniDao] buildIndex: starting (batch=$listBatch maxPages=$maxListPages)")
         val results = mutableListOf<AnimeEntry>()
         val seen = mutableSetOf<String>()
         var start = 1
         while (start <= maxListPages) {
             val end = minOf(start + listBatch - 1, maxListPages)
-            val batchStartMs = System.currentTimeMillis()
             val batch = coroutineScope {
                 (start..end).map { p -> async { parseListPage(p) } }.awaitAll()
             }
             var added = 0
-            synchronized(results) {
-                for (entries in batch) {
-                    for (e in entries) {
-                        if (seen.add(e.url)) {
-                            results.add(e)
-                            added++
-                        }
+            for (entries in batch) {
+                for (e in entries) {
+                    if (seen.add(e.url)) {
+                        results.add(e)
+                        added++
                     }
                 }
             }
             Log.d("RaghavAnime", "[AniDao] buildIndex: pages $start-$end added $added entries (total ${results.size})")
-            Log.d("RaghavAnime", "[AniDao] buildIndex: batch pages $start-$end done in ${System.currentTimeMillis() - batchStartMs}ms")
-            if (added == 0) {
-                Log.d("RaghavAnime", "[AniDao] buildIndex: no new entries at page $start, stopping")
-                break
-            }
+            if (added == 0) break
             start = end + 1
         }
+        Log.d("RaghavAnime", "[AniDao] buildIndex: done, ${results.size} entries total")
         return results
     }
 
@@ -206,16 +188,13 @@ class RaghavAniDao : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        Log.d("RaghavAnime", "[AniDao] load '$url'")
+        Log.d("RaghavAnime", "[AniDao] load: ${url.take(120)}")
         val doc = app.get(url, headers = baseHeaders).document
 
         val titleEl = doc.selectFirst("h1.an-section__title")
         val title = titleEl?.attr("data-an-name-en")?.trim()?.ifEmpty { null }
             ?: titleEl?.text()?.trim()
-        if (title == null) {
-            Log.d("RaghavAnime", "[AniDao] load: no title element for '$url'")
-            return null
-        }
+            ?: return null
         val jpName = titleEl?.attr("data-an-name-jp")?.trim()?.ifEmpty { null }
         val posterUrl = doc.selectFirst(".an-detail-hero__poster img")?.attr("src")
         val plot = doc.selectFirst(".an-detail-hero__content > p")?.text()?.trim()
@@ -236,10 +215,7 @@ class RaghavAniDao : MainAPI() {
         val dubEpisodes = mutableListOf<Episode>()
         val seenEps = mutableSetOf<String>()
         var epRows = doc.select("""[data-an-panel="oldest"] article.an-episode-row""")
-        if (epRows.isEmpty()) {
-            epRows = doc.select("article.an-episode-row")
-            Log.d("RaghavAnime", "[AniDao] load: oldest panel empty, using all episode rows (${epRows.size})")
-        }
+        if (epRows.isEmpty()) epRows = doc.select("article.an-episode-row")
         val orderedRows = epRows.reversed()
 
         for (row in orderedRows) {
@@ -272,8 +248,8 @@ class RaghavAniDao : MainAPI() {
                 })
             }
         }
-        Log.d("RaghavAnime", "[AniDao] load '$url': parsed ${subEpisodes.size} sub / ${dubEpisodes.size} dub episodes")
 
+        Log.d("RaghavAnime", "[AniDao] load: '$title' sub=${subEpisodes.size} dub=${dubEpisodes.size} rows=${orderedRows.size}")
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = posterUrl
             this.year = year
@@ -292,11 +268,10 @@ class RaghavAniDao : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[AniDao] loadLinks data='${data.take(100)}'")
         val parts = data.split("|")
         val watchUrl = parts[0]
         val type = parts.getOrElse(1) { "sub" }
-        Log.d("RaghavAnime", "[AniDao] loadLinks: watchUrl='${watchUrl.take(80)}' type=$type")
+        Log.d("RaghavAnime", "[AniDao] loadLinks: url=${watchUrl.take(120)} type=$type")
 
         val doc = fetchWatchDoc(watchUrl)
         var found = false
@@ -309,28 +284,21 @@ class RaghavAniDao : MainAPI() {
         }
 
         for ((panel, kind) in panels) {
-            val section = doc.selectFirst("""[data-an-panel="$panel"]""")
-            if (section == null) {
-                Log.d("RaghavAnime", "[AniDao] loadLinks: panel '$panel' not found, skipping")
-                continue
-            }
+            Log.d("RaghavAnime", "[AniDao] loadLinks: panel=$panel (${kind.label})")
+            val section = doc.selectFirst("""[data-an-panel="$panel"]""") ?: continue
             for (btn in section.select("button[data-an-video]")) {
                 val embed = btn.attr("data-an-video")
-                if (embed.isEmpty()) {
-                    Log.d("RaghavAnime", "[AniDao] loadLinks: empty data-an-video button in panel '$panel', skipping")
-                    continue
-                }
+                if (embed.isEmpty()) continue
                 val label = "AniDao - ${domainName(embed)} (${kind.label})"
-                Log.d("RaghavAnime", "[AniDao] loadLinks: panel=$panel trying embed '${embed.take(80)}'")
+                Log.d("RaghavAnime", "[AniDao] resolving $label embed=${embed.take(120)}")
                 passSubtitle(embed, subtitleCallback)
-                val resolved = resolveEmbed(embed, watchUrl, label, subtitleCallback, callback)
-                Log.d("RaghavAnime", "[AniDao] loadLinks: panel=$panel embed '${embed.take(60)}' ${if (resolved) "resolved: links found" else "failed: no links"}")
-                if (resolved) {
+                if (resolveEmbed(embed, watchUrl, label, subtitleCallback, callback)) {
+                    Log.d("RaghavAnime", "[AniDao] $label resolved OK")
                     found = true
                 }
             }
         }
-        Log.d("RaghavAnime", "[AniDao] loadLinks finished: found=$found")
+        Log.d("RaghavAnime", "[AniDao] loadLinks done: found=$found")
         return found
     }
 
@@ -341,18 +309,15 @@ class RaghavAniDao : MainAPI() {
     // AniDao soft-404s episode-1 URLs of long anime (e.g. one-piece-100-episode-1);
     private suspend fun fetchWatchDoc(url: String): Document {
         val doc = app.get(url, headers = baseHeaders).document
+        Log.d("RaghavAnime", "[AniDao] fetchWatchDoc: primary hasPanels=${hasAnyPanel(doc)}")
         if (hasAnyPanel(doc)) return doc
-        Log.d("RaghavAnime", "[AniDao] fetchWatchDoc: no panels at '$url'")
 
         val altUrl = url.replace(Regex("-100-episode-"), "-episode-")
+        Log.d("RaghavAnime", "[AniDao] fetchWatchDoc: no panels, trying alt=${altUrl.take(120)}")
         if (altUrl != url) {
-            Log.d("RaghavAnime", "[AniDao] fetchWatchDoc: trying alternate '$altUrl'")
             val altDoc = app.get(altUrl, headers = baseHeaders).document
-            if (hasAnyPanel(altDoc)) {
-                Log.d("RaghavAnime", "[AniDao] fetchWatchDoc: alternate url has panels")
-                return altDoc
-            }
-            Log.d("RaghavAnime", "[AniDao] fetchWatchDoc: alternate url also has no panels")
+            Log.d("RaghavAnime", "[AniDao] fetchWatchDoc: alt hasPanels=${hasAnyPanel(altDoc)}")
+            if (hasAnyPanel(altDoc)) return altDoc
         }
         return doc
     }
@@ -371,33 +336,35 @@ class RaghavAniDao : MainAPI() {
         return try {
             when {
                 embedUrl.contains("vivibebe.site") || embedUrl.contains("bibiemb.xyz") -> {
-                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: vivibebe/bibiemb direct m3u8 scan '${embedUrl.take(60)}'")
                     val html = app.get(embedUrl, headers = baseHeaders).text
+                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: vivibebe/bibiemb fast path for $label, html len=${html.length}, m3u8=${extractM3u8(html)?.take(120)}")
                     extractM3u8(html)?.let { callback(m3u8Link(label, it, embedUrl)); true } ?: false
                 }
                 embedUrl.contains("otakuhg.site") || embedUrl.contains("otakuvid.online") -> {
-                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: otakuhg/otakuvid jsunpacker path '${embedUrl.take(60)}'")
                     val html = app.get(embedUrl, headers = baseHeaders).text
+                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: otaku fast path for $label, html len=${html.length}")
                     val m3u8 = extractM3u8(html)
                         ?: JsPacker.parseAndUnpack(html)?.let { extractM3u8(it) }
+                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: otaku m3u8=${m3u8?.take(120)}")
                     m3u8?.let { callback(m3u8Link(label, it, embedUrl)); true } ?: false
                 }
                 embedUrl.contains("playmogo.com") -> {
-                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: playmogo via loadExtractor")
+                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: playmogo via loadExtractor: ${embedUrl.take(120)}")
                     loadExtractor(embedUrl, referer, subtitleCallback, callback)
                 }
                 else -> {
-                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: generic handler '${embedUrl.take(60)}'")
+                    Log.d("RaghavAnime", "[AniDao] resolveEmbed: generic embed for $label: ${embedUrl.take(120)}")
                     if (loadExtractor(embedUrl, referer, subtitleCallback, callback)) {
                         true
                     } else {
                         val html = app.get(embedUrl, headers = baseHeaders).text
+                        Log.d("RaghavAnime", "[AniDao] resolveEmbed: loadExtractor failed for $label, m3u8 scan html len=${html.length}, m3u8=${extractM3u8(html)?.take(120)}")
                         extractM3u8(html)?.let { callback(m3u8Link(label, it, embedUrl)); true } ?: false
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniDao] resolveEmbed failed for '${embedUrl.take(60)}': ${e.message}")
+            Log.e("RaghavAnime", "[AniDao] resolveEmbed failed for ${embedUrl.take(120)}: ${e.message}")
             false
         }
     }
@@ -421,9 +388,10 @@ class RaghavAniDao : MainAPI() {
             val decoded = URLDecoder.decode(sub, "UTF-8")
             val label = Regex("""(?:sub_1|c1_label)=([^&]+)""").find(query)?.groupValues?.get(1)
                 ?.let { URLDecoder.decode(it, "UTF-8") } ?: "English"
+            Log.d("RaghavAnime", "[AniDao] subtitle: $label ${decoded.take(120)}")
             subtitleCallback.invoke(SubtitleFile(label, decoded))
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniDao] passSubtitle failed for '${embedUrl.take(60)}': ${e.message}")
+            Log.e("RaghavAnime", "[AniDao] passSubtitle failed for ${embedUrl.take(120)}: ${e.message}")
         }
     }
 
@@ -431,7 +399,7 @@ class RaghavAniDao : MainAPI() {
         return try {
             URL(url).host.substringBefore(".")
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniDao] domainName failed for '${url.take(60)}': ${e.message}")
+            Log.e("RaghavAnime", "[AniDao] domainName failed: ${e.message}")
             "unknown"
         }
     }
