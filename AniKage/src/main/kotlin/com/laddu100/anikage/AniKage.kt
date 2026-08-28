@@ -120,6 +120,8 @@ class AniKage : MainAPI() {
         const val TIMEOUT_EMBED = 20L
         const val TIMEOUT_MASTER = 12L
 
+        const val PROXY_BASE = "https://prox.anikage.cc"
+
         /** The site's server ids (from /episodes/{n}/servers, live-verified). */
         val SERVERS = listOf("koto", "kiwi", "uwu", "neko", "megg", "dib", "wave")
 
@@ -668,7 +670,13 @@ class AniKage : MainAPI() {
         return true
     }
 
-    private data class PlayLink(val url: String, val referer: String?, val quality: String?, val tag: String? = null)
+    private data class PlayLink(
+        val url: String,
+        val referer: String?,
+        val quality: String?,
+        val tag: String? = null,
+        val useProxHeaders: Boolean = false,
+    )
     private data class PlaySub(val url: String, val label: String, val referer: String?)
     private data class ExtractResult(val links: List<PlayLink>, val subs: List<PlaySub>)
 
@@ -772,11 +780,30 @@ class AniKage : MainAPI() {
         for (o in env.embedOptions.orEmpty()) o.url?.takeIf { it.startsWith("http") }?.let { candidates.add(it) }
         for (e in env.embeds.orEmpty()) e.url?.takeIf { it.startsWith("http") }?.let { candidates.add(it) }
 
-        // v2 NOTE: encrypted-token sources WITHOUT any embed are deliberately NOT emitted.
-        // The site resolves them via prox.anikage.cc, which now answers 400 "bad url" for
-        // every fresh token (verified live) — emitting those links produced the dead
-        // "some error" entries users reported on v1. The generic embed scan below still
-        // runs, so these servers recover automatically if the site ever fixes its prox.
+        // v3: token-only sources (kiwi / uwu / megg / dib / wave) are emitted through the
+        // site's own resolver https://prox.anikage.cc/{m3u8|stream}/{token} — exactly what
+        // the site's player loads (verified in its JS: sources -> Le(url, isM3U8?'m3u8':
+        // 'stream')). The prox sits behind Cloudflare; before the first prox link is
+        // emitted we probe it once via proxGet(), which auto-opens a one-time WebView
+        // verification if the edge challenges us, and the resulting clearance cookie is
+        // attached to every prox playback link.
+
+        var proxProbed = false
+        var proxHeaders: Map<String, String> = emptyMap()
+
+        suspend fun ensureProxProbe(sampleTokenUrl: String) {
+            if (proxProbed) return
+            proxProbed = true
+            try {
+                // Triggers the WebView verification automatically if Cloudflare blocks us.
+                proxGet(sampleTokenUrl, headers = mapOf("Accept" to "*/*"))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "prox probe failed: ${e.message}")
+            }
+            proxHeaders = proxPlaybackHeaders()
+        }
 
         for (embed in candidates) {
             val res = try {
@@ -804,6 +831,19 @@ class AniKage : MainAPI() {
             }
         }
 
+        // ---- Token-only sources -> prox links (the site's own playback route).
+        val embedDerived = emitted.map { it.url }.toHashSet()
+        for (s in env.sources.orEmpty()) {
+            val tok = s.url ?: continue
+            if (tok.startsWith("http")) continue // plaintext URL — already handled via embeds
+            if (!tok.matches(Regex("[A-Za-z0-9_-]{16,}"))) continue
+            val proxUrl = "$PROXY_BASE/${if (s.isM3U8 != false) "m3u8" else "stream"}/$tok"
+            if (embedDerived.contains(proxUrl) || !seenUrls.add(proxUrl)) continue
+            ensureProxProbe(proxUrl)
+            val subServer = s.server?.takeIf { it.isNotBlank() && !it.equals(server, true) }
+            emitted.add(PlayLink(proxUrl, "https://anikage.cc/", s.quality, tag = subServer, useProxHeaders = true))
+        }
+
         // Payload subtitles are encrypted prox-tokens (same broken prox) — only emit
         // plaintext ones, if the API ever returns them directly.
         for (st in env.subtitles.orEmpty()) {
@@ -819,6 +859,7 @@ class AniKage : MainAPI() {
             callback.invoke(
                 newExtractorLink(name, name, l.url, type = ExtractorLinkType.M3U8) {
                     l.referer?.let { this.referer = it }
+                    if (l.useProxHeaders && proxHeaders.isNotEmpty()) this.headers = proxHeaders
                 }
             )
         }
