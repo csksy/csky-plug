@@ -25,30 +25,6 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
 
-/**
- * AniKage source (anikage.cc) for the RaghavAnime aggregator.
- *
- * Rewritten to match the working Anikage plugin from the Phisher repo
- * (cloudstream-extensions-phisher, Anikage v5) after every source broke:
- *  - The old proxy (https://prox.anicore.tv) is dead (DNS no longer resolves),
- *    which made every emitted link unplayable. The site proxies all streams
- *    through https://gg.akage.lol (verified live, Referer anikage.cc required).
- *  - /episodes now returns a plain JSON array instead of {total, episodes}.
- *  - Server iteration uses providerId (falls back to id) and passes both
- *    provider + server params exactly like the Phisher plugin.
- *  - Embeds (MegaPlay, VidTube, VidPlay/EchoVideo, DoodStream/Playmogo, ...)
- *    from sources[].embedUrl and embeds[] are resolved via loadExtractor.
- *  - Subtitle files returned by the API are proxied through gg.akage.lol too.
- *  - Stale cached responses (megg/dib) get a cache-busted re-request so the
- *    tokens are fresh instead of 401 on the proxy.
- *  - Servers that do not serve the requested language (subTypes) are skipped.
- *
- * Providers on the site (returned dynamically by the API): koto, kiwi, uwu,
- * neko, megg, dib, wave. The extra "embeds" entries in the servers response
- * (E-Koto / E-Wish / E-Neko / E-Ken) are embed variants already delivered
- * inside the koto/neko provider responses - they are NOT separate providers
- * (the API returns 400 "unknown provider" for them).
- */
 class RaghavAniKage : MainAPI() {
     override var mainUrl = "https://anikage.cc"
     override var name = "AniKage"
@@ -56,7 +32,6 @@ class RaghavAniKage : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    /** Stream/subtitle proxy used by anikage.cc. Old proxy prox.anicore.tv is dead. */
     private val proxyUrl = "https://gg.akage.lol"
 
     private val apiHeaders = mapOf("Accept" to "application/json")
@@ -118,7 +93,6 @@ class RaghavAniKage : MainAPI() {
         val seasonYear: Int? = null
     )
 
-    /** /episodes returns a plain JSON array of episodes. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class EpisodeInfo(
         val number: Int = 0,
@@ -173,14 +147,8 @@ class RaghavAniKage : MainAPI() {
 
     // endregion
 
-    // region URL helpers (Phisher Anikage logic)
+    // region URL helpers
 
-    /**
-     * Builds a playable url through the gg.akage.lol proxy:
-     *  - absolute http(s) urls pass through untouched
-     *  - paths already prefixed with /m3u8/, /stream/ or /hls/ are appended to the proxy
-     *  - raw tokens become {proxy}/{type}/{token}
-     */
     private fun buildProxyUrl(path: String, type: String = "stream"): String {
         return when {
             path.startsWith("http://") || path.startsWith("https://") -> path
@@ -482,7 +450,6 @@ class RaghavAniKage : MainAPI() {
                     }
                 }
 
-                // --- subtitles (proxied vtt tokens) ---
                 val subtitles = parsed.subtitles.orEmpty()
                 val seenSubs = LinkedHashSet<String>()
                 for (sub in subtitles) {
@@ -504,12 +471,10 @@ class RaghavAniKage : MainAPI() {
                 }
                 val baseName = "AniKage ${serverId.replaceFirstChar { it.uppercase() }} $subType".trim()
 
-                // --- direct sources + embeds ---
                 val usedEmbedUrls = LinkedHashSet<String>()
                 for (src in parsed.sources) {
                     if (src.url.isBlank() && src.embedUrl.isNullOrBlank()) continue
 
-                    // resolve embeds (MegaPlay / VidTube / VidPlay / DoodStream hosts etc.)
                     val embedUrl = src.embedUrl?.takeIf { it.isNotBlank() }
                     if (embedUrl != null && usedEmbedUrls.add(embedUrl)) {
                         try {
@@ -550,7 +515,6 @@ class RaghavAniKage : MainAPI() {
                     }
                 }
 
-                // --- extra embeds array (E-Koto / E-Wish / E-Neko / E-Ken etc.) ---
                 for (embed in parsed.embeds.orEmpty()) {
                     val embedUrl = embed.url?.takeIf { it.isNotBlank() } ?: continue
                     if (usedEmbedUrls.add(embedUrl)) {
