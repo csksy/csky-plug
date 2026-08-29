@@ -47,7 +47,10 @@ object AnistreamHttp {
 
     private const val TAG = "Anistream"
 
-    /** Mobile UA that matches what CloudflareKiller's WebView presents. */
+    /**
+     * Mobile browser UA. CloudflareKiller rewrites requests with the WebView
+     * UA itself on its retry path, so a sane static UA is enough here.
+     */
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36"
 
@@ -106,16 +109,17 @@ object AnistreamHttp {
         return merged
     }
 
-    /** Pull cf_clearance (and friends) out of a killer into our jar. */
+    /** Pull cf_clearance (and friends) out of a killer into our jar.
+     *  savedCookies is keyed: host -> (cookieName -> cookieValue). */
     private fun harvestKillerCookies(url: String) {
         try {
-            val killer = cfKillerMap[hostOf(url)] ?: return
-            val saved = killer.savedCookies
-            if (saved.isNotEmpty()) {
-                val jar = cookieJar.getOrPut(hostOf(url)) { ConcurrentHashMap() }
-                for ((k, v) in saved) if (v.isNotBlank()) jar[k] = v
-                Log.d(TAG, "harvested ${saved.size} CloudflareKiller cookies for ${hostOf(url)}")
-            }
+            val host = hostOf(url)
+            val killer = cfKillerMap[host] ?: return
+            val hostCookies = killer.savedCookies[host] ?: return
+            if (hostCookies.isEmpty()) return
+            val jar = cookieJar.getOrPut(host) { ConcurrentHashMap() }
+            for ((k, v) in hostCookies) if (v.isNotBlank()) jar[k] = v
+            Log.d(TAG, "harvested ${hostCookies.size} CloudflareKiller cookies for $host")
         } catch (e: Exception) {
             Log.d(TAG, "cookie harvest failed: ${e.message}")
         }
