@@ -15,7 +15,7 @@ import com.fasterxml.jackson.module.kotlin.readValue
  * Endpoints (verified against the live site bundle):
  *  - GraphQL catalog  POST https://graphql.animex.one/graphql
  *  - Recent           GET  https://graphql.animex.one/api/recent
- *  - REST episodes/servers/sources  https://api.anistream.one/rest/api/*
+ *  - REST episodes/servers/sources  api.anistream.one/rest/api endpoints
  *  - FlixCloud lookup GET  https://anistream.one/api/flixcloud
  */
 object AnistreamApi {
