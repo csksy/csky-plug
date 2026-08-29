@@ -26,11 +26,11 @@ import javax.crypto.spec.SecretKeySpec
 object FlixcloudResolver {
 
     private val HEADERS_SITE = mapOf(
-        "User-Agent" to AnistreamApi.USER_AGENT,
+        "User-Agent" to AnistreamHttp.USER_AGENT,
         "Referer" to "${AnistreamApi.MAIN_URL}/",
     )
     private val HEADERS_PLAYER = mapOf(
-        "User-Agent" to AnistreamApi.USER_AGENT,
+        "User-Agent" to AnistreamHttp.USER_AGENT,
         "Referer" to "https://flixcloud.cc/",
     )
 

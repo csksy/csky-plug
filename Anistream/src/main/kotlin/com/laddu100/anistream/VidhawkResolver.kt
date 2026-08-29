@@ -1,6 +1,7 @@
 package com.laddu100.anistream
 
-import com.lagradost.cloudstream3.app
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import java.net.URLEncoder
 
 /**
@@ -16,10 +17,13 @@ import java.net.URLEncoder
  *
  * Caption VTTs require an Origin header (any of vidhawk.buzz / anistream.one
  * works); the m3u8 itself is token-authenticated and header-free.
+ *
+ * v2: requests go through AnistreamHttp (Cloudflare retry + DoH + cookies).
  */
 object VidhawkResolver {
 
     const val MAIN_URL = "https://vidhawk.buzz"
+    private val mapper = ObjectMapper()
 
     data class Result(
         val tracks: List<VidhawkTrack>,
@@ -42,27 +46,19 @@ object VidhawkResolver {
                 append("episode=$epNum&audio=$audio&server=$server")
                 append("&anilistId=$anilistId&parentHost=anistream.one")
             }
-            val race = app.get(
+            val race = AnistreamHttp.get(
                 raceUrl,
-                headers = mapOf(
-                    "User-Agent" to AnistreamApi.USER_AGENT,
-                    "Referer" to "${AnistreamApi.MAIN_URL}/",
-                    "Accept" to "application/json, text/plain, */*"
-                )
-            ).parsedSafe<VidhawkRace>() ?: return null
+                referer = "${AnistreamApi.MAIN_URL}/"
+            ).let { mapper.readValue<VidhawkRace>(it) }
 
             val ticket = race.servers.firstOrNull { it.id.equals(server, true) }?.ticket
                 ?: race.ticket
                 ?: return null
 
-            val play = app.get(
+            val play = AnistreamHttp.get(
                 "$MAIN_URL/api/play?t=${URLEncoder.encode(ticket, "UTF-8")}",
-                headers = mapOf(
-                    "User-Agent" to AnistreamApi.USER_AGENT,
-                    "Referer" to "${AnistreamApi.MAIN_URL}/",
-                    "Accept" to "application/json, text/plain, */*"
-                )
-            ).parsedSafe<VidhawkPlay>() ?: return null
+                referer = "${AnistreamApi.MAIN_URL}/"
+            ).let { mapper.readValue<VidhawkPlay>(it) }
 
             Result(
                 tracks = play.tracks,

@@ -1,10 +1,11 @@
 package com.laddu100.anistream
 
-import com.lagradost.cloudstream3.app
+import android.util.Base64
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import android.util.Base64
 
 /**
  * MegaPlay resolver (minky provider; yuki/beep share the same backend).
@@ -18,10 +19,13 @@ import android.util.Base64
  *
  * Some playlists embed AES-encrypted `/segment/{base64url}` URLs; those are
  * decrypted with the static key/IV found in megaplay's newclient.min.js.
+ *
+ * v2: requests go through AnistreamHttp (Cloudflare retry + DoH + cookies).
  */
 object MegaplayResolver {
 
     const val MAIN_URL = "https://megaplay.buzz"
+    private val mapper = ObjectMapper()
 
     data class Result(
         val m3u8: String,
@@ -33,28 +37,23 @@ object MegaplayResolver {
     suspend fun resolve(anilistId: Int, epNum: Int, audio: String): Result? {
         return try {
             val embedUrl = "$MAIN_URL/stream/ani/$anilistId/$epNum/$audio"
-            val page = app.get(
+            val page = AnistreamHttp.get(
                 embedUrl,
-                headers = mapOf(
-                    "User-Agent" to AnistreamApi.USER_AGENT,
-                    "Referer" to "${AnistreamApi.MAIN_URL}/"
-                )
-            ).text
+                referer = "${AnistreamApi.MAIN_URL}/"
+            )
 
             val dataId = Regex("""data-id="([^"]+)"""").find(page)?.groupValues?.get(1)
                 ?: Regex("""data-realid="([^"]+)"""").find(page)?.groupValues?.get(1)
                 ?: return null
             if (page.contains("error-code") || page.contains("Error Code")) return null
 
-            val resp = app.get(
+            val resp = AnistreamHttp.get(
                 "$MAIN_URL/stream/getSources?id=$dataId",
                 headers = mapOf(
-                    "User-Agent" to AnistreamApi.USER_AGENT,
-                    "Referer" to embedUrl,
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Accept" to "application/json, text/plain, */*"
-                )
-            ).parsedSafe<MegaplayResponse>() ?: return null
+                    "X-Requested-With" to "XMLHttpRequest"
+                ),
+                referer = embedUrl
+            ).let { mapper.readValue<MegaplayResponse>(it) }
 
             val raw = resp.sources?.file ?: return null
             val m3u8 = decryptSegmentUrls(raw)

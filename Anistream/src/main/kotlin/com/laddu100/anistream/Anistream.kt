@@ -102,9 +102,11 @@ class Anistream : MainAPI() {
     // ------------------------------------------------------------- mainPage
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        android.util.Log.d("Anistream", "getMainPage row=${request.name} page=$page")
         val items: List<SearchResponse> = when (request.name) {
             "recent" -> {
-                val recent = AnistreamApi.recent(page) ?: return null
+                val recent = AnistreamApi.recent(page)
+                    ?: throw AnistreamHttp.AnistreamException("Anistream recent feed returned an empty response")
                 recent.results.mapNotNull { it ->
                     val slug = it.id ?: return@mapNotNull null
                     newAnimeSearchResponse(it.titleEnglish ?: it.titleRomaji ?: slug, "$mainUrl/anime/$slug") {
@@ -177,6 +179,7 @@ class Anistream : MainAPI() {
     // --------------------------------------------------------------- search
 
     override suspend fun search(query: String): List<SearchResponse> {
+        android.util.Log.d("Anistream", "search: $query")
         return AnistreamApi.searchAnime(query).mapNotNull { node ->
             val slug = node.id ?: return@mapNotNull null
             newAnimeSearchResponse(node.displayTitle, "$mainUrl/anime/$slug") {
@@ -192,8 +195,10 @@ class Anistream : MainAPI() {
     // ----------------------------------------------------------------- load
 
     override suspend fun load(url: String): LoadResponse? {
+        android.util.Log.d("Anistream", "load: $url")
         val slug = url.substringAfterLast("/").substringBefore("?")
-        val detail = AnistreamApi.animeDetail(slug) ?: return null
+        val detail = AnistreamApi.animeDetail(slug)
+            ?: throw AnistreamHttp.AnistreamException("Anistream returned no details for \"$slug\" — the anime may have been removed")
         var eps = AnistreamApi.episodes(slug)
 
         // Movie / empty fallback: synthesize a single complete episode from sub/dub counts.
@@ -343,12 +348,17 @@ class Anistream : MainAPI() {
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        // isolated failure — never kill the whole list
+                        // isolated failure — never kill the whole list; log for diagnosis
+                        android.util.Log.d(
+                            "Anistream",
+                            "provider $providerId failed: ${e.javaClass.simpleName}: ${(e.message ?: "").take(120)}"
+                        )
                         false
                     }
                 }
             }
         }
+        android.util.Log.d("Anistream", "loadLinks done: ${seenUrls.size} links, ${seenSubs.size} subtitle tracks")
         return true
     }
 

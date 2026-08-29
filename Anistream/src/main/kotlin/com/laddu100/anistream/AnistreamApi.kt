@@ -2,18 +2,21 @@ package com.laddu100.anistream
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
 
 /**
- * HTTP layer for anistream.one:
- *  - GraphQL catalog (graphql.animex.one)
- *  - REST recent/episodes/servers/sources (api.anistream.one)
- *  - flixcloud lookup (anistream.one/api/flixcloud)
+ * HTTP layer for anistream.one (v2 — resilient):
+ *  - All calls go through AnistreamHttp (CloudflareKiller retry, DoH DNS
+ *    fallback for ISP blocks, cookie jar mirroring the site's
+ *    `credentials: 'include'`, 429 retry, descriptive errors).
+ *  - Failures now THROW AnistreamHttp.AnistreamException with the real reason
+ *    (v1 swallowed every error into null/empty which made the plugin fail
+ *    silently with zero feedback).
  *
- * flixcloud.cc resolution lives in FlixcloudResolver (it needs a dedicated
- * sequential-connection flow); everything here is stateless GET/POST.
+ * Endpoints (verified against the live site bundle):
+ *  - GraphQL catalog  POST https://graphql.animex.one/graphql
+ *  - Recent           GET  https://graphql.animex.one/api/recent
+ *  - REST episodes/servers/sources  https://api.anistream.one/rest/api/*
+ *  - FlixCloud lookup GET  https://anistream.one/api/flixcloud
  */
 object AnistreamApi {
 
@@ -22,30 +25,24 @@ object AnistreamApi {
     const val RECENT_URL = "https://graphql.animex.one/api/recent"
     const val REST_BASE = "https://api.anistream.one/rest/api"
 
-    const val USER_AGENT =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
     private val mapper = ObjectMapper()
-
-    val baseHeaders = mapOf(
-        "User-Agent" to USER_AGENT,
-        "Referer" to "$MAIN_URL/",
-        "Origin" to MAIN_URL,
-    )
 
     // ---------------------------------------------------------------- GraphQL
 
     suspend fun graphqlPost(query: String, variables: Map<String, Any?>): SearchData? {
-        return try {
-            val body = mapOf("query" to query, "variables" to variables)
-            val text = app.post(
-                GRAPHQL_URL,
-                json = body,
-                headers = baseHeaders + mapOf("Content-Type" to "application/json")
-            ).text
-            mapper.readValue<GqlEnvelope<SearchData>>(text).data
-        } catch (e: Exception) {
-            null
+        val text = AnistreamHttp.postJson(
+            GRAPHQL_URL,
+            mapOf("query" to query, "variables" to variables)
+        )
+        return parseOrThrow(text, GRAPHQL_URL) { raw: String ->
+            val env = mapper.readValue<GqlEnvelope<SearchData>>(raw)
+            if (env.data == null) {
+                // GraphQL-level error: surface the message instead of an empty page
+                val err = Regex(""""message"\s*:\s*"([^"]+)"""")
+                    .find(raw)?.groupValues?.get(1) ?: "unknown GraphQL error"
+                throw AnistreamHttp.AnistreamException("Anistream GraphQL error: $err")
+            }
+            env.data
         }
     }
 
@@ -145,55 +142,63 @@ object AnistreamApi {
     // ------------------------------------------------------------------ REST
 
     suspend fun recent(page: Int): RecentEnvelope? {
-        return try {
-            app.get("$RECENT_URL?page=$page", headers = baseHeaders)
-                .parsedSafe<RecentEnvelope>()
-        } catch (e: Exception) {
-            null
+        val text = AnistreamHttp.get("$RECENT_URL?page=$page", referer = "$MAIN_URL/")
+        return parseOrThrow(text, "$RECENT_URL?page=$page") { it ->
+            mapper.readValue<RecentEnvelope>(it)
         }
     }
 
     suspend fun episodes(slug: String): List<EpisodeItem> {
-        return try {
-            app.get("$REST_BASE/episodes?id=$slug", headers = baseHeaders)
-                .parsedSafe<List<EpisodeItem>>() ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
+        val url = "$REST_BASE/episodes?id=$slug"
+        val text = AnistreamHttp.get(url, referer = "$MAIN_URL/")
+        return parseOrThrow(text, url) { it ->
+            mapper.readValue<List<EpisodeItem>>(it)
         }
     }
 
     suspend fun servers(slug: String, epNum: Int): ServersEnvelope? {
-        return try {
-            app.get("$REST_BASE/servers?id=$slug&epNum=$epNum", headers = baseHeaders)
-                .parsedSafe<ServersEnvelope>()
-        } catch (e: Exception) {
-            null
+        val url = "$REST_BASE/servers?id=$slug&epNum=$epNum"
+        val text = AnistreamHttp.get(url, referer = "$MAIN_URL/")
+        return parseOrThrow(text, url) { it ->
+            mapper.readValue<ServersEnvelope>(it)
         }
     }
 
     suspend fun sources(slug: String, epNum: Int, type: String, providerId: String): SourcesEnvelope? {
-        return try {
-            app.get(
-                "$REST_BASE/sources?id=$slug&epNum=$epNum&type=$type&providerId=$providerId",
-                headers = baseHeaders
-            ).parsedSafe<SourcesEnvelope>()
-        } catch (e: Exception) {
-            null
+        val url = "$REST_BASE/sources?id=$slug&epNum=$epNum&type=$type&providerId=$providerId"
+        val text = AnistreamHttp.get(url, referer = "$MAIN_URL/")
+        return parseOrThrow(text, url) { it ->
+            mapper.readValue<SourcesEnvelope>(it)
         }
     }
 
     suspend fun flixcloudLookup(watchSlug: String, anilistId: Int, episode: Int): FlixcloudLookup? {
-        return try {
-            app.get(
-                "$MAIN_URL/api/flixcloud?slug=$watchSlug&anilistId=$anilistId&episode=$episode",
-                headers = baseHeaders
-            ).parsedSafe<FlixcloudLookup>()
-        } catch (e: Exception) {
-            null
+        val url = "$MAIN_URL/api/flixcloud?slug=$watchSlug&anilistId=$anilistId&episode=$episode"
+        val text = AnistreamHttp.get(url, referer = "$MAIN_URL/")
+        return parseOrThrow(text, url) { it ->
+            mapper.readValue<FlixcloudLookup>(it)
         }
     }
 
     // -------------------------------------------------------------- utilities
+
+    private inline fun <T> parseOrThrow(
+        text: String,
+        url: String,
+        block: (String) -> T
+    ): T {
+        return try {
+            block(text)
+        } catch (e: AnistreamHttp.AnistreamException) {
+            throw e
+        } catch (e: Exception) {
+            throw AnistreamHttp.AnistreamException(
+                "Anistream returned an unexpected response from $url " +
+                    "(${e.javaClass.simpleName}: ${e.message?.take(80)}; body: " +
+                    "${text.replace("\n", " ").take(100)})"
+            )
+        }
+    }
 
     /** Build the watch-page slug used by the flixcloud lookup: {title}-{anilistId}-episode-{n} */
     fun watchSlug(title: String?, anilistId: Int?, episode: Int): String {
