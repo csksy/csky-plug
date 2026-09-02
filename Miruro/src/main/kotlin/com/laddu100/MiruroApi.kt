@@ -9,6 +9,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.nicehttp.RequestBodyTypes
@@ -57,6 +58,14 @@ object MiruroApi {
     private val domainRef = AtomicReference<String>(DEFAULT_DOMAIN)
     private val cookieCache = ConcurrentHashMap<String, String>()
     private val domainLocks = ConcurrentHashMap<String, Mutex>()
+
+    // the same webview solver anisuge and anishows in this repo use; wired in
+    // as an okhttp interceptor it opens a challenge webview once and then
+    // keeps replaying the cf_clearance cookies on every request
+    private val cfKillers = ConcurrentHashMap<String, CloudflareKiller>()
+
+    private fun killerFor(domain: String): CloudflareKiller =
+        cfKillers.getOrPut(domain) { CloudflareKiller() }
 
     @Volatile
     var remoteDomain: String? = null
@@ -213,6 +222,15 @@ object MiruroApi {
                 return directFetch(domain, pipeUrl)
             } catch (e: Exception) {
                 Log.d(TAG, "direct retry after lock failed on $domain: ${e.message}")
+
+                // cloudflarekiller keeps its own cookie jar and webview ua,
+                // so it survives the cookie/ua pairing problems a hand rolled
+                // retry loop runs into
+                try {
+                    return killerFetch(domain, pipeUrl, path)
+                } catch (killer: Exception) {
+                    Log.d(TAG, "cloudflare killer fetch failed on $domain: ${killer.message}")
+                }
             }
 
             val webBody = fetchViaWebView(domain, pipeUrl)
@@ -220,6 +238,27 @@ object MiruroApi {
 
             return decodeResponseAuto(webBody)
         }
+    }
+
+    private suspend fun killerFetch(domain: String, pipeUrl: String, path: String): String {
+        val headers = mutableMapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to "$domain/",
+            "Origin" to domain,
+            "Accept" to "*/*"
+        )
+        val response = app.get(pipeUrl, headers = headers, interceptor = killerFor(domain))
+        if (response.code == 200) {
+            val body = response.text
+            if (!isCloudflareBlock(body, 200)) {
+                return try {
+                    decodeResponse(body, response.headers["x-obfuscated"])
+                } catch (e: Exception) {
+                    decodeResponseAuto(body)
+                }
+            }
+        }
+        throw Exception("http ${response.code} from pipe /$path")
     }
 
     private suspend fun directFetch(domain: String, pipeUrl: String): String {

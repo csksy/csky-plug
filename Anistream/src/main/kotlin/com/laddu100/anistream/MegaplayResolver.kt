@@ -2,6 +2,7 @@ package com.laddu100.anistream
 
 import android.util.Base64
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -15,7 +16,7 @@ import javax.crypto.spec.SecretKeySpec
  *     with Referer https://anistream.one/  (without it the player 410s)
  *  2. data-id attr from #megaplay-player
  *  3. GET megaplay.buzz/stream/getSources?id={dataId} (Referer = embed page)
- *     → { sources{file}, tracks[]{file,label,kind}, intro{start,end}, outro }
+ *     -> { sources{file}, tracks[]{file,label,kind}, intro{start,end}, outro }
  *
  * Some playlists embed AES-encrypted `/segment/{base64url}` URLs; those are
  * decrypted with the static key/IV found in megaplay's newclient.min.js.
@@ -25,7 +26,7 @@ import javax.crypto.spec.SecretKeySpec
 object MegaplayResolver {
 
     const val MAIN_URL = "https://megaplay.buzz"
-    private val mapper = ObjectMapper()
+    private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
     data class Result(
         val m3u8: String,

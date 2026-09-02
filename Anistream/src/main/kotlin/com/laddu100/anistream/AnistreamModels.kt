@@ -3,9 +3,7 @@ package com.laddu100.anistream
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 
-/* ------------------------------------------------------------------ *
- *  GraphQL catalog / search models  (graphql.animex.one)
- * ------------------------------------------------------------------ */
+// GraphQL catalog / search models  (graphql.animex.one)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class GqlEnvelope<T>(
@@ -90,9 +88,7 @@ data class LinkedNode(
     @JsonProperty("type") val type: String? = null
 )
 
-/* ------------------------------------------------------------------ *
- *  REST: recent  (graphql.animex.one/api/recent)
- * ------------------------------------------------------------------ */
+// REST: recent  (graphql.animex.one/api/recent)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class RecentEnvelope(
@@ -117,9 +113,7 @@ data class RecentItem(
     @JsonProperty("isDub") val isDub: Boolean? = null
 )
 
-/* ------------------------------------------------------------------ *
- *  REST: episodes  (api.anistream.one/rest/api/episodes)
- * ------------------------------------------------------------------ */
+// REST: episodes  (api.anistream.one/rest/api/episodes)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class EpisodeItem(
@@ -137,9 +131,7 @@ data class EpisodeItem(
     val epTitle: String? get() = titles?.get("en")?.takeIf { it.isNotBlank() }
 }
 
-/* ------------------------------------------------------------------ *
- *  REST: servers  (api.anistream.one/rest/api/servers)
- * ------------------------------------------------------------------ */
+// REST: servers  (api.anistream.one/rest/api/servers)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class ServersEnvelope(
@@ -155,7 +147,7 @@ data class ProviderInfo(
     @JsonProperty("type") val type: String? = null,
     @JsonProperty("url") val url: String? = null
 ) {
-    /** "hard" | "soft" | "other" — mirrors the site's own ur() helper. */
+    /** "hard" | "soft" | "other" - mirrors the site's own ur() helper. */
     val subKind: String
         get() {
             val t = tip?.lowercase().orEmpty()
@@ -167,9 +159,7 @@ data class ProviderInfo(
         }
 }
 
-/* ------------------------------------------------------------------ *
- *  REST: sources  (api.anistream.one/rest/api/sources)
- * ------------------------------------------------------------------ */
+// REST: sources  (api.anistream.one/rest/api/sources)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class SourcesEnvelope(
@@ -200,9 +190,7 @@ data class TrackFile(
     val bestUrl: String? get() = url ?: file
 }
 
-/* ------------------------------------------------------------------ *
- *  MegaPlay (minky / yuki backend)
- * ------------------------------------------------------------------ */
+// MegaPlay (minky / yuki backend)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class MegaplayResponse(
@@ -224,9 +212,7 @@ data class SkipTime(
     @JsonProperty("end") val end: Double? = null
 )
 
-/* ------------------------------------------------------------------ *
- *  VidHawk (hawk)
- * ------------------------------------------------------------------ */
+// VidHawk (hawk)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class VidhawkRace(
@@ -271,9 +257,7 @@ data class VidhawkCaption(
     @JsonProperty("default") val default: Boolean? = null
 )
 
-/* ------------------------------------------------------------------ *
- *  FlixCloud (zen)
- * ------------------------------------------------------------------ */
+// FlixCloud (zen)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class FlixcloudLookup(
@@ -293,9 +277,7 @@ data class FlixSubtitle(
     val bestUrl: String? get() = url ?: file
 }
 
-/* ------------------------------------------------------------------ *
- *  Episode link payload (CloudStream episode -> loadLinks)
- * ------------------------------------------------------------------ */
+// Episode link payload (CloudStream episode -> loadLinks)
 
 data class LinkData(
     val slug: String,

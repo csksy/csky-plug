@@ -12,14 +12,14 @@ import javax.crypto.spec.SecretKeySpec
  * FlixCloud (zen provider) resolver.
  *
  * Chain (all verified live):
- *  1. anistream.one/api/flixcloud?slug=&anilistId=&episode= → playerUrl
- *  2. GET playerUrl (Referer anistream.one) — SvelteKit page carrying:
+ *  1. anistream.one/api/flixcloud?slug=&anilistId=&episode= -> playerUrl
+ *  2. GET playerUrl (Referer anistream.one) - SvelteKit page carrying:
  *     obfuscation_seed, w_payload (randomized WASM), obfuscated_crypto_data,
  *     keyFrag2 + token fields (names derived from the seed)
- *  3. GET flixcloud.cc/api/m3u8/{token} — MUST reuse the same HTTP connection
+ *  3. GET flixcloud.cc/api/m3u8/{token} - MUST reuse the same HTTP connection
  *     as step 2 (token is bound to the TLS session; the shared OkHttp client
  *     pools connections so sequential calls reuse it, mirroring the browser)
- *  4. MiniWasm decrypt → PBKDF2 seed → AES-CBC → plain m3u8 URL
+ *  4. MiniWasm decrypt -> PBKDF2 seed -> AES-CBC -> plain m3u8 URL
  *
  * Also extracts the per-release subtitle list (srt/ass) and the release title.
  */
@@ -50,7 +50,7 @@ object FlixcloudResolver {
             val seed = Regex("""obfuscation_seed:"([^"]+)"""").find(region)?.groupValues?.get(1) ?: return null
             val wasmB64 = Regex("""w_payload:"([^"]+)"""").find(region)?.groupValues?.get(1) ?: return null
 
-            // SHA-256 chains → field names
+            // SHA-256 chains -> field names
             val e = shaChain(seed)
             val s2 = shaChain(e)
             val keyField = "kf_${e.substring(8, 16)}"
@@ -61,14 +61,14 @@ object FlixcloudResolver {
             val tokenField = "${e.substring(48, 64)}_${e.substring(56, 64)}"
             val keyFrag2Field = "${s2.substring(0, 16)}_${s2.substring(16, 24)}"
 
-            // obfuscated_crypto_data → {container:{array:[{object:{kf:…,ivf:…}}]}}
+            // obfuscated_crypto_data -> {container:{array:[{object:{kf:...,ivf:...}}]}}
             val obfStr = extractJsObject(region, "obfuscated_crypto_data:") ?: return null
             val kf = Regex(""""?$keyField"?\s*:\s*"([^"]+)"""").find(obfStr)?.groupValues?.get(1) ?: return null
             val ivf = Regex(""""?$ivField"?\s*:\s*"([^"]+)"""").find(obfStr)?.groupValues?.get(1) ?: return null
             val token = Regex(""""?$tokenField"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1) ?: return null
             val keyFrag2 = Regex(""""?$keyFrag2Field"?\s*:\s*"([^"]+)"""").find(region)?.groupValues?.get(1) ?: return null
 
-            // 3) token API — same pooled connection
+            // 3) token API - same pooled connection
             val path = Regex("""/e/[^?#]+""").find(embedUrl)?.value ?: return null
             val tokenResp = app.get(
                 "https://flixcloud.cc/api/m3u8/$token",
@@ -96,7 +96,7 @@ object FlixcloudResolver {
             val keySeed = wasm.readMemory(base + 3 * k, k)
             if (keySeed.all { it == 0.toByte() }) return null
 
-            // 5) AES key: PBKDF2(keySeed, salt=seed, 1000, 32) XOR seed chars → SHA-256
+            // 5) AES key: PBKDF2(keySeed, salt=seed, 1000, 32) XOR seed chars -> SHA-256
             val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
             val spec = PBEKeySpec(
                 keySeed.map { it.toInt().toChar() }.toCharArray(),
@@ -125,7 +125,7 @@ object FlixcloudResolver {
         }
     }
 
-    // -------------------------------------------------------------- helpers
+    // helpers
 
     /** e = sha256(e + i) for i in 0..2 (hex string chain, mirrors hn()). */
     private fun shaChain(seed: String): String {
@@ -173,7 +173,7 @@ object FlixcloudResolver {
         return null
     }
 
-    /** Parse subtitles:[{url:…,language:…,format:…}] from the page payload. */
+    /** Parse subtitles:[{url:...,language:...,format:...}] from the page payload. */
     private fun extractSubtitles(region: String): List<FlixSubtitle> {
         val out = mutableListOf<FlixSubtitle>()
         val m = Regex("""subtitles:\[([^\]]*)\]""").find(region) ?: return out

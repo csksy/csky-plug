@@ -109,7 +109,7 @@ class MiniWasm(bytes: ByteArray) {
         val locals = IntArray(args.size + localTypes.size)
         for (k in args.indices) locals[k] = args[k]
 
-        // ---- pre-scan: matching end / else for control instructions ----
+        // pre-scan: matching end / else for control instructions
         val endOf = HashMap<Int, Int>()
         val elseOf = HashMap<Int, Int>()
         run {
@@ -128,7 +128,7 @@ class MiniWasm(bytes: ByteArray) {
             }
         }
 
-        // ---- interpret ----
+        // interpret
         val stack = ArrayDeque<Int>()
         val labels = ArrayDeque<Label>()
         var pos = 0
@@ -171,7 +171,7 @@ class MiniWasm(bytes: ByteArray) {
                         }
                     }
                 }
-                0x05 -> {                                          // else → jump past end
+                0x05 -> {                                          // else -> jump past end
                     val lbl = labels.removeLastOrNull()
                     pos = (lbl?.end ?: (b.size - 1)) + 1
                 }
@@ -222,7 +222,7 @@ class MiniWasm(bytes: ByteArray) {
                 0x76 -> { pos++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; stack.addLast(x ushr (y and 31)) }
                 0x77 -> { pos++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; val s = y and 31; stack.addLast(if (s == 0) x else (x shl s) or (x ushr (32 - s))) }
                 0x78 -> { pos++; val y = stack.removeLastOrNull() ?: 0; val x = stack.removeLastOrNull() ?: 0; val s = y and 31; stack.addLast(if (s == 0) x else (x ushr s) or (x shl (32 - s))) }
-                else -> return                                     // unknown opcode → abort
+                else -> return                                     // unknown opcode -> abort
             }
         }
     }

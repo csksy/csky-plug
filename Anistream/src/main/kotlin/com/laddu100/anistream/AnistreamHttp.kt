@@ -20,23 +20,23 @@ import java.util.concurrent.TimeUnit
 /**
  * Resilient HTTP layer for the Anistream plugin.
  *
- * Why this exists (v1 lessons): plain `app.get` failed silently on some devices
+ * Why this exists: plain `app.get` failed silently on some devices
  * with NO feedback. Three independent real-world blockers were identified:
  *
  *  1. Cloudflare bot challenge (403/503) against the app's OkHttp TLS
- *     fingerprint — browsers pass, apps get challenged.
- *     → Fixed by per-host CloudflareKiller retry (WebView solver, the same
+ *     fingerprint - browsers pass, apps get challenged.
+ *     -> Fixed by per-host CloudflareKiller retry (WebView solver, the same
  *       mechanism AniSuge/AniShows/TheMoviesFlix in this repo ecosystem use).
  *
  *  2. ISP-level DNS blocking (common on Indian mobile ISPs for streaming
- *     domains — the browser may bypass via Secure DNS, apps use system DNS).
- *     → Fixed by a DNS-over-HTTPS resolver (1.1.1.1 JSON API) wired into a
+ *     domains - the browser may bypass via Secure DNS, apps use system DNS).
+ *     -> Fixed by a DNS-over-HTTPS resolver (1.1.1.1 JSON API) wired into a
  *       custom OkHttp client (same mechanism as DamiTVProvider).
  *
  *  3. The site's own frontend sends `credentials: 'include'` on all REST
- *     calls — the `_amx_id` cookie set by api.anistream.one is part of the
+ *     calls - the `_amx_id` cookie set by api.anistream.one is part of the
  *     expected flow.
- *     → Fixed by an in-memory per-host cookie jar that mirrors browser
+ *     -> Fixed by an in-memory per-host cookie jar that mirrors browser
  *       behavior (set-cookie captured, cookie header injected).
  *
  * Additionally: 429 rate-limit retry (the API allows 30/min GraphQL,
@@ -54,7 +54,7 @@ object AnistreamHttp {
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36"
 
-    // ------------------------------------------------------------- Cloudflare
+    // Cloudflare
 
     private val cfKillerMap = ConcurrentHashMap<String, CloudflareKiller>()
     private val cfMutexMap = ConcurrentHashMap<String, Mutex>()
@@ -67,7 +67,7 @@ object AnistreamHttp {
 
     private fun isCloudflareCode(code: Int): Boolean = code == 403 || code == 503
 
-    // ---------------------------------------------------------------- Cookies
+    // Cookies
 
     /** host -> cookie name -> value (mirrors browser cookie jar per host). */
     private val cookieJar = ConcurrentHashMap<String, MutableMap<String, String>>()
@@ -125,7 +125,7 @@ object AnistreamHttp {
         }
     }
 
-    // ------------------------------------------------------------------- DoH
+    // DoH
 
     private val dnsCache = ConcurrentHashMap<String, List<InetAddress>>()
 
@@ -189,13 +189,13 @@ object AnistreamHttp {
         }
     }
 
-    // -------------------------------------------------------------- pipeline
+    // pipeline
 
     class AnistreamException(message: String) : Exception(message)
 
     private fun fail(url: String, code: Int, body: String): Nothing {
         val snippet = body.replace("\n", " ").take(140)
-        throw AnistreamException("Anistream API HTTP $code — ${hostOf(url)}${if (snippet.isBlank()) "" else " ($snippet)"}")
+        throw AnistreamException("Anistream API HTTP $code - ${hostOf(url)}${if (snippet.isBlank()) "" else " ($snippet)"}")
     }
 
     /**
@@ -215,20 +215,20 @@ object AnistreamHttp {
         }
         Log.d(TAG, "GET $url")
 
-        // ---- attempt 1: normal path (fast; works when nothing is blocked)
+        // attempt 1: normal path (fast; works when nothing is blocked)
         var lastCode = -1
         var lastBody = ""
         try {
             val resp = app.get(url, headers = headersWithCookies(url, h))
             storeCookies(url, resp.headers.values("set-cookie"))
             when {
-                resp.code == 429 -> Log.d(TAG, "429 on $url — rate limited")
+                resp.code == 429 -> Log.d(TAG, "429 on $url - rate limited")
                 isCloudflareCode(resp.code) -> Log.d(TAG, "CF code ${resp.code} on $url")
                 resp.code >= 400 -> fail(url, resp.code, resp.text)
                 else -> {
                     val text = resp.text
                     if (looksLikeChallenge(text)) throw AnistreamException(
-                        "Anistream API returned a Cloudflare challenge page — " +
+                        "Anistream API returned a Cloudflare challenge page - " +
                             "open anistream.one in a browser once and retry."
                     )
                     return text
@@ -240,11 +240,11 @@ object AnistreamHttp {
             throw e
         } catch (e: Exception) {
             Log.d(TAG, "normal GET failed for $url: ${e.javaClass.simpleName}: ${e.message}")
-            // network-level failure (DNS/timeout/reset) — fall through to DoH path
+            // network-level failure (DNS/timeout/reset) - fall through to DoH path
             return dohPath(url, h)
         }
 
-        // ---- attempt 2: 429 → wait & retry once
+        // attempt 2: 429 -> wait & retry once
         if (lastCode == 429) {
             delay(2500)
             try {
@@ -256,7 +256,7 @@ object AnistreamHttp {
             } catch (_: Exception) { }
         }
 
-        // ---- attempt 3: Cloudflare challenge → CloudflareKiller (WebView solver)
+        // attempt 3: Cloudflare challenge -> CloudflareKiller (WebView solver)
         if (isCloudflareCode(lastCode)) {
             return mutexFor(url).withLock {
                 Log.d(TAG, "CloudflareKiller retry for $url")
@@ -269,7 +269,7 @@ object AnistreamHttp {
                         harvestKillerCookies(url)
                         throw AnistreamException(
                             "Anistream is protected by Cloudflare and the challenge could not be " +
-                                "solved automatically. A WebView should have opened — solve it, then retry. " +
+                                "solved automatically. A WebView should have opened - solve it, then retry. " +
                                 "If no WebView appeared, your network may block anistream.one (try a VPN)."
                         )
                     }
@@ -289,7 +289,7 @@ object AnistreamHttp {
 
     /**
      * POST JSON through the full resilience pipeline (GraphQL calls).
-     * [payload] must be a serializable Map — nicehttp serializes it for us.
+     * [payload] must be a serializable Map - nicehttp serializes it for us.
      */
     suspend fun postJson(
         url: String,
@@ -312,7 +312,7 @@ object AnistreamHttp {
             val resp = app.post(url, json = payload, headers = headersWithCookies(url, h))
             storeCookies(url, resp.headers.values("set-cookie"))
             when {
-                resp.code == 429 -> Log.d(TAG, "429 on $url — rate limited")
+                resp.code == 429 -> Log.d(TAG, "429 on $url - rate limited")
                 isCloudflareCode(resp.code) -> Log.d(TAG, "CF code ${resp.code} on $url")
                 resp.code >= 400 -> fail(url, resp.code, resp.text)
                 else -> return resp.text
@@ -366,7 +366,7 @@ object AnistreamHttp {
         fail(url, lastCode, lastBody)
     }
 
-    // ------------------------------------------------------ DoH raw fallback
+    // DoH raw fallback
 
     private suspend fun dohPath(url: String, headers: Map<String, String>): String =
         withContext(Dispatchers.IO) {
@@ -382,7 +382,7 @@ object AnistreamHttp {
                     resp.code in 200..399 -> resp.body?.string() ?: ""
                     isCloudflareCode(resp.code) -> throw AnistreamException(
                         "Anistream API unreachable behind Cloudflare even via DNS-over-HTTPS. " +
-                            "Your ISP may block anistream.one — try a VPN or different network."
+                            "Your ISP may block anistream.one - try a VPN or different network."
                     )
                     else -> fail(url, resp.code, resp.body?.string() ?: "")
                 }
@@ -390,6 +390,7 @@ object AnistreamHttp {
         }
 
     private val jsonMapper = com.fasterxml.jackson.databind.ObjectMapper()
+        .registerModule(com.fasterxml.jackson.module.kotlin.KotlinModule.Builder().build())
 
     private suspend fun dohPost(url: String, payload: Map<String, Any?>, headers: Map<String, String>): String =
         withContext(Dispatchers.IO) {
@@ -407,14 +408,14 @@ object AnistreamHttp {
                     resp.code in 200..399 -> resp.body?.string() ?: ""
                     isCloudflareCode(resp.code) -> throw AnistreamException(
                         "Anistream GraphQL unreachable behind Cloudflare even via DNS-over-HTTPS. " +
-                            "Your ISP may block anistream.one — try a VPN or different network."
+                            "Your ISP may block anistream.one - try a VPN or different network."
                     )
                     else -> fail(url, resp.code, resp.body?.string() ?: "")
                 }
             }
         }
 
-    // ---------------------------------------------------------------- helpers
+    // helpers
 
     private suspend fun delay(ms: Long) =
         kotlinx.coroutines.delay(ms)

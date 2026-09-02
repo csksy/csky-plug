@@ -83,6 +83,8 @@ class MiruroProvider : MainAPI() {
         "TRENDING" to "Trending",
         "POPULAR" to "Popular",
         "RECENT" to "Recently Updated",
+        "TOP" to "Top Rated",
+        "UPCOMING" to "Upcoming",
     )
 
     private val trendingQuery = """
@@ -119,6 +121,36 @@ class MiruroProvider : MainAPI() {
         query (${'$'}page: Int, ${'$'}perPage: Int) {
             Page(page: ${'$'}page, perPage: ${'$'}perPage) {
                 media(type: ANIME, sort: START_DATE_DESC, status: RELEASING) {
+                    id
+                    title { romaji english native }
+                    coverImage { large extraLarge }
+                    format
+                    seasonYear
+                    averageScore
+                }
+            }
+        }
+    """.trimIndent()
+
+    private val topQuery = """
+        query (${'$'}page: Int, ${'$'}perPage: Int) {
+            Page(page: ${'$'}page, perPage: ${'$'}perPage) {
+                media(type: ANIME, sort: AVERAGE_SCORE_DESC) {
+                    id
+                    title { romaji english native }
+                    coverImage { large extraLarge }
+                    format
+                    seasonYear
+                    averageScore
+                }
+            }
+        }
+    """.trimIndent()
+
+    private val upcomingQuery = """
+        query (${'$'}page: Int, ${'$'}perPage: Int) {
+            Page(page: ${'$'}page, perPage: ${'$'}perPage) {
+                media(type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC) {
                     id
                     title { romaji english native }
                     coverImage { large extraLarge }
@@ -189,6 +221,8 @@ class MiruroProvider : MainAPI() {
         val query = when (request.data) {
             "POPULAR" -> popularQuery
             "RECENT" -> recentQuery
+            "TOP" -> topQuery
+            "UPCOMING" -> upcomingQuery
             else -> trendingQuery
         }
         val response = parseJson<AniListResponse>(
@@ -290,9 +324,17 @@ class MiruroProvider : MainAPI() {
         meta: EpisodeMeta?,
         animeTitle: String
     ): String {
-        val fromMeta = meta?.title?.takeIf { it.isNotBlank() && !uselessTitle.matches(it) }
-        val fromProvider = providerTitle?.takeIf { it.isNotBlank() && !uselessTitle.matches(it) }
+        val fromMeta = meta?.title?.takeIf { isUsableTitle(it) }
+        val fromProvider = providerTitle?.takeIf { isUsableTitle(it) }
         return fromMeta ?: fromProvider ?: "EP $number - $animeTitle"
+    }
+
+    // bare "Episode N", "Complete Movie" and "Full" carry no information the
+    // anime title does not already give, so the site discards them too
+    private fun isUsableTitle(title: String?): Boolean {
+        if (title.isNullOrBlank()) return false
+        if (uselessTitle.matches(title)) return false
+        return title != "Complete Movie" && title != "Full"
     }
 
     private fun sortProviders(providers: Set<String>): List<String> {
@@ -547,9 +589,9 @@ class MiruroProvider : MainAPI() {
     }
 
     private fun variantLabel(category: String): String = when (category) {
-        "ssub" -> "Sub s-sub"
+        "ssub" -> "Softsub"
         "dub" -> "Dub"
-        else -> "Sub h-sub"
+        else -> "Hardsub"
     }
 
     private fun qualityNumber(stream: MiruroStream): Int {
@@ -604,13 +646,19 @@ class MiruroProvider : MainAPI() {
         )
 
         fun emitSubtitleTracks() {
+            // the site disambiguates duplicate labels the same way, so two
+            // english tracks from different providers stay distinguishable
+            val labelCounts = mutableMapOf<String, Int>()
             (response.subtitles.orEmpty() + response.captions.orEmpty()).forEach { subtitle ->
                 val subUrl = subtitle.subtitleUrl ?: return@forEach
                 if (!seenSubtitles.add(subUrl)) return@forEach
+                val base = subtitle.subtitleLabel
+                val seen = labelCounts.merge(base, 1, Int::plus) ?: 1
+                val label = if (seen > 1) "$base ($seen)" else base
                 // routing through miruro's own proxy is what the site player
                 // does; it keeps referer-locked cdns working without headers
                 val proxied = MiruroProxy.subtitleUrl(subUrl, referer)
-                subtitleCallback.invoke(SubtitleFile(subtitle.subtitleLabel, proxied))
+                subtitleCallback.invoke(SubtitleFile(label, proxied))
             }
         }
 
@@ -635,6 +683,25 @@ class MiruroProvider : MainAPI() {
                             this.headers = headers
                         }
                     )
+                    // the site falls back to its own stream proxy whenever the
+                    // cdn refuses app traffic, so the proxied mirror rides
+                    // along as a second pick instead of replacing the direct one
+                    val proxiedUrl = MiruroProxy.hlsUrl(
+                        streamUrl,
+                        stream.referer?.takeIf { it.isNotBlank() }
+                    )
+                    if (seenUrls.add(proxiedUrl)) {
+                        callback.invoke(
+                            newExtractorLink(
+                                source = "Miruro",
+                                name = "$displayName $label$fansubTag $quality (Proxy)",
+                                url = proxiedUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.quality = qualityInt
+                            }
+                        )
+                    }
                     found = true
                 }
 
@@ -725,9 +792,17 @@ class MiruroProvider : MainAPI() {
             }
         }
 
-        // direct download links (ally/kiwi/moo style providers); pahe.win pages
-        // are site-downloader specific and not playable, so they get skipped
-        response.download?.takeIf { it.isNotBlank() && !it.contains("pahe.win") }?.let { downloadUrl ->
+        // direct download links (ally/kiwi/moo style providers); the site
+        // rewrites its downloader host to a workers mirror, the same rewrite
+        // keeps the link usable outside the site's own player
+        response.download?.takeIf { it.isNotBlank() }?.let { rawDownload ->
+            val downloadUrl = rawDownload.replace(
+                "https://pahe.win/",
+                "https://orange-leaf-cefa.asd-968.workers.dev/"
+            )
+            val mirrorLink = downloadUrl.startsWith(
+                "https://orange-leaf-cefa.asd-968.workers.dev/"
+            )
             if (seenUrls.add(downloadUrl)) {
                 callback.invoke(
                     newExtractorLink(
@@ -737,7 +812,7 @@ class MiruroProvider : MainAPI() {
                         type = ExtractorLinkType.VIDEO
                     ) {
                         this.quality = -1
-                        this.headers = headers
+                        if (!mirrorLink) this.headers = headers
                     }
                 )
                 found = true

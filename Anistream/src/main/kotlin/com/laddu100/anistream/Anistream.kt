@@ -41,7 +41,7 @@ import java.util.TimeZone
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Anistream.one — anime with sub & dub, real episode titles, 10 servers.
+ * Anistream.one - anime with sub & dub, real episode titles, 10 servers.
  *
  * Provider families:
  *  - API servers (per-episode, from /rest/api/servers): beep mimi yuki neko
@@ -99,14 +99,16 @@ class Anistream : MainAPI() {
         }
     }
 
-    // ------------------------------------------------------------- mainPage
+    // mainPage
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         android.util.Log.d("Anistream", "getMainPage row=${request.name} page=$page")
-        val items: List<SearchResponse> = when (request.name) {
+        var hasNext = false
+        val items: List<SearchResponse> = when (request.data) {
             "recent" -> {
                 val recent = AnistreamApi.recent(page)
                     ?: throw AnistreamHttp.AnistreamException("Anistream recent feed returned an empty response")
+                hasNext = recent.hasNextPage == true
                 recent.results.mapNotNull { it ->
                     val slug = it.id ?: return@mapNotNull null
                     newAnimeSearchResponse(it.titleEnglish ?: it.titleRomaji ?: slug, "$mainUrl/anime/$slug") {
@@ -148,7 +150,8 @@ class Anistream : MainAPI() {
             )
             else -> return null
         }
-        return newHomePageResponse(request.name, items, hasNext = items.size >= 30)
+        hasNext = hasNext || items.size >= 30
+        return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
     private suspend fun catalog(filter: String, sort: String, page: Int): List<SearchResponse> {
@@ -176,7 +179,7 @@ class Anistream : MainAPI() {
 
     private fun currentYear(): Int = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
 
-    // --------------------------------------------------------------- search
+    // search
 
     override suspend fun search(query: String): List<SearchResponse> {
         android.util.Log.d("Anistream", "search: $query")
@@ -192,13 +195,13 @@ class Anistream : MainAPI() {
         }
     }
 
-    // ----------------------------------------------------------------- load
+    // load
 
     override suspend fun load(url: String): LoadResponse? {
         android.util.Log.d("Anistream", "load: $url")
         val slug = url.substringAfterLast("/").substringBefore("?")
         val detail = AnistreamApi.animeDetail(slug)
-            ?: throw AnistreamHttp.AnistreamException("Anistream returned no details for \"$slug\" — the anime may have been removed")
+            ?: throw AnistreamHttp.AnistreamException("Anistream returned no details for \"$slug\" - the anime may have been removed")
         var eps = AnistreamApi.episodes(slug)
 
         // Movie / empty fallback: synthesize a single complete episode from sub/dub counts.
@@ -302,7 +305,7 @@ class Anistream : MainAPI() {
         }
     }
 
-    // ------------------------------------------------------------ loadLinks
+    // loadLinks
 
     override suspend fun loadLinks(
         data: String,
@@ -348,7 +351,7 @@ class Anistream : MainAPI() {
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        // isolated failure — never kill the whole list; log for diagnosis
+                        // isolated failure - never kill the whole list; log for diagnosis
                         android.util.Log.d(
                             "Anistream",
                             "provider $providerId failed: ${e.javaClass.simpleName}: ${(e.message ?: "").take(120)}"
@@ -440,7 +443,7 @@ class Anistream : MainAPI() {
                         else -> "Auto"
                     }
                     callback.invoke(
-                        newExtractorLink("$label · $audio", "$label · $audio · $quality", fixed, type = ExtractorLinkType.M3U8) {
+                        newExtractorLink("$label - $audio", "$label - $audio - $quality", fixed, type = ExtractorLinkType.M3U8) {
                             if (headers.isNotEmpty()) this.headers = headers
                         }
                     )
@@ -483,7 +486,7 @@ class Anistream : MainAPI() {
             ).forEach(callback)
         } catch (e: Exception) {
             callback.invoke(
-                newExtractorLink(label, "$label · auto", url, type = ExtractorLinkType.M3U8) {
+                newExtractorLink(label, "$label - auto", url, type = ExtractorLinkType.M3U8) {
                     if (headers.isNotEmpty()) this.headers = headers
                 }
             )

@@ -1,15 +1,16 @@
 package com.laddu100.anistream
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
 
 /**
- * HTTP layer for anistream.one (v2 — resilient):
+ * HTTP layer for anistream.one:
  *  - All calls go through AnistreamHttp (CloudflareKiller retry, DoH DNS
  *    fallback for ISP blocks, cookie jar mirroring the site's
  *    `credentials: 'include'`, 429 retry, descriptive errors).
  *  - Failures now THROW AnistreamHttp.AnistreamException with the real reason
- *    (v1 swallowed every error into null/empty which made the plugin fail
+ *    (swallowing every error into null/empty made the plugin fail
  *    silently with zero feedback).
  *
  * Endpoints (verified against the live site bundle):
@@ -25,9 +26,9 @@ object AnistreamApi {
     const val RECENT_URL = "https://graphql.animex.one/api/recent"
     const val REST_BASE = "https://api.anistream.one/rest/api"
 
-    private val mapper = ObjectMapper()
+    private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
-    // ---------------------------------------------------------------- GraphQL
+    // GraphQL
 
     suspend fun graphqlPost(query: String, variables: Map<String, Any?>): SearchData? {
         val text = AnistreamHttp.postJson(
@@ -46,7 +47,7 @@ object AnistreamApi {
         }
     }
 
-    /** Field selection shared by all catalog calls (coverImage is a JSON scalar — no subfields). */
+    /** Field selection shared by all catalog calls (coverImage is a JSON scalar - no subfields). */
     private const val CATALOG_FIELDS = """
         items {
             id
@@ -139,7 +140,7 @@ object AnistreamApi {
         return data?.anime
     }
 
-    // ------------------------------------------------------------------ REST
+    // REST
 
     suspend fun recent(page: Int): RecentEnvelope? {
         val text = AnistreamHttp.get("$RECENT_URL?page=$page", referer = "$MAIN_URL/")
@@ -180,7 +181,7 @@ object AnistreamApi {
         }
     }
 
-    // -------------------------------------------------------------- utilities
+    // utilities
 
     private inline fun <T> parseOrThrow(
         text: String,
