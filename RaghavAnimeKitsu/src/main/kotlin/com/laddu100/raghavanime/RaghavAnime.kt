@@ -372,25 +372,35 @@ class RaghavAnime : MainAPI() {
             try { RaghavAnimeFeatures.recordWatchTime(linkData.kitsuId, title, null, 24 * 60 * 1000L) } catch (_: Exception) {}
         }
 
+        Log.d(
+            "RaghavAnime",
+            "[LoadLinks] BEGIN aniId=$aniId kitsuId=${linkData.kitsuId} malId=${linkData.malId} ep=$episode ${if (isDub) "dub" else "sub"} title='$title' jpTitle='${jpTitle ?: ""}' year=${linkData.year}"
+        )
+
+        val summary = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
         runAllAsync(
             {
-                if (aniId <= 0) return@runAllAsync
-                try {
+                runSource("Miruro", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnime", "[Miruro] SKIP: no anilist id"); return@runSource }
                     val miruro = Miruro()
                     val loadResult = miruro.load("${miruro.mainUrl}/info/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
-                    if (loadResult != null) {
-                        val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
-                        val matchedEp = epList?.find { it.episode == episode }
-                        if (matchedEp != null) {
-                            miruro.loadLinks(matchedEp.data, false, subtitleCallback, callback)
-                        }
+                    if (loadResult == null) {
+                        Log.d("RaghavAnime", "[Miruro] load returned null for anilist $aniId")
+                        return@runSource
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[Miruro] FAILED: ${e.message}")
+                    val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
+                    val matchedEp = epList?.find { it.episode == episode }
+                    if (matchedEp == null) {
+                        Log.d("RaghavAnime", "[Miruro] no episode $episode in ${if (isDub) "dub" else "sub"} list (size=${epList?.size ?: 0})")
+                        return@runSource
+                    }
+                    Log.d("RaghavAnime", "[Miruro] matched episode $episode, loading links")
+                    miruro.loadLinks(matchedEp.data, false, cSub, cLink)
                 }
             },
             {
-                try {
+                runSource("AniSuge", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val aniSuge = AniSugeProvider()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -399,14 +409,12 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniSuge"
                     )
                     if (epData != null) {
-                        aniSuge.loadLinks(epData, false, subtitleCallback, callback)
+                        aniSuge.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniSuge] FAILED: ${e.message}")
                 }
             },
             {
-                try {
+                runSource("AniWaves", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val aniWaves = AniWaves()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val aniWavesTargets = listOfNotNull(title, jpTitle).map { cleanTitle(it) }
@@ -424,24 +432,23 @@ class RaghavAnime : MainAPI() {
                         for ((_, result) in candidates) {
                             try {
                                 val loadResult = aniWaves.load(result.url) as? com.lagradost.cloudstream3.AnimeLoadResponse ?: continue
-                                val ep = loadResult.episodes?.get(DubStatus.Subbed)?.find { it.episode == episode } ?: continue
-                                val parts = ep.data.split("|").toMutableList()
-                                parts[0] = if (isDub) "dub" else "sub"
-                                matchedData = parts.joinToString("|")
+                                val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
+                                val ep = epList?.find { it.episode == episode } ?: continue
+                                matchedData = ep.data
                                 break
                             } catch (e: Throwable) { continue }
                         }
                         if (matchedData != null) break
                     }
                     if (matchedData != null) {
-                        aniWaves.loadLinks(matchedData, false, subtitleCallback, callback)
+                        aniWaves.loadLinks(matchedData, false, cSub, cLink)
+                    } else {
+                        Log.d("RaghavAnime", "[AniWaves] no exact title match with episode $episode")
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniWaves] FAILED: ${e.message}")
                 }
             },
             {
-                try {
+                runSource("Anikai", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val anikai = Anikai()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -450,14 +457,12 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Anikai"
                     )
                     if (epData != null) {
-                        anikai.loadLinks(epData, false, subtitleCallback, callback)
+                        anikai.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[Anikai] FAILED: ${e.message}")
                 }
             },
             {
-                try {
+                runSource("AniDb", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val aniDb = AniDb()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -466,23 +471,19 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniDb"
                     )
                     if (epData != null) {
-                        aniDb.loadLinks(epData, false, subtitleCallback, callback)
+                        aniDb.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniDb] FAILED: ${e.message}")
                 }
             },
             {
-                if (aniId <= 0) return@runAllAsync
-                try {
+                runSource("AniKage", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnime", "[AniKage] SKIP: no anilist id"); return@runSource }
                     val anikage = RaghavAniKage()
-                    anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniKage] FAILED: ${e.message}")
+                    anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, cSub, cLink)
                 }
             },
             {
-                try {
+                runSource("Anineko", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val anineko = Anineko()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -491,14 +492,12 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Anineko"
                     )
                     if (epData != null) {
-                        anineko.loadLinks(epData, false, subtitleCallback, callback)
+                        anineko.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[Anineko] FAILED: ${e.message}")
                 }
             },
             {
-                try {
+                runSource("2DHive", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val twoDHive = RaghavTwoDHive()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -507,14 +506,12 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "2DHive"
                     )
                     if (epData != null) {
-                        twoDHive.loadLinks(epData, false, subtitleCallback, callback)
+                        twoDHive.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[2DHive] FAILED: ${e.message}")
                 }
             },
             {
-                try {
+                runSource("AniKoto", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val anikoto = RaghavAnikoto()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -523,23 +520,19 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniKoto"
                     )
                     if (epData != null) {
-                        anikoto.loadLinks(epData, false, subtitleCallback, callback)
+                        anikoto.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniKoto] FAILED: ${e.message}")
                 }
             },
             {
-                if (aniId <= 0) return@runAllAsync
-                try {
+                runSource("Enma", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnime", "[Enma] SKIP: no anilist id"); return@runSource }
                     val enma = RaghavEnma()
-                    enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[Enma] FAILED: ${e.message}")
+                    enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, cSub, cLink)
                 }
             },
             {
-                try {
+                runSource("Animo", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val animo = RaghavAnimo()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -548,23 +541,19 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Animo"
                     )
                     if (epData != null) {
-                        animo.loadLinks(epData, false, subtitleCallback, callback)
+                        animo.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[Animo] FAILED: ${e.message}")
                 }
             },
             {
-                if (aniId <= 0) return@runAllAsync
-                try {
+                runSource("Anidap", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnime", "[Anidap] SKIP: no anilist id"); return@runSource }
                     val anidap = RaghavAnidap()
-                    anidap.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[Anidap] FAILED: ${e.message}")
+                    anidap.loadLinksByAnilistId(aniId, episode, isDub, cSub, cLink)
                 }
             },
             {
-                try {
+                runSource("Senshi", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val senshi = RaghavSenshi()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -573,30 +562,31 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "Senshi"
                     )
                     if (epData != null) {
-                        senshi.loadLinks(epData, false, subtitleCallback, callback)
+                        senshi.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[Senshi] FAILED: ${e.message}")
                 }
             },
             {
-                if (aniId <= 0) return@runAllAsync
-                try {
+                runSource("AniNami", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnime", "[AniNami] SKIP: no anilist id"); return@runSource }
                     val aniNami = RaghavAniNami()
                     val loadResult = aniNami.load("${aniNami.mainUrl}/anime/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
-                    if (loadResult != null) {
-                        val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
-                        val matchedEp = epList?.find { it.episode == episode }
-                        if (matchedEp != null) {
-                            aniNami.loadLinks(matchedEp.data, false, subtitleCallback, callback)
-                        }
+                    if (loadResult == null) {
+                        Log.d("RaghavAnime", "[AniNami] load returned null for anilist $aniId")
+                        return@runSource
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniNami] FAILED: ${e.message}")
+                    val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
+                    val matchedEp = epList?.find { it.episode == episode }
+                    if (matchedEp == null) {
+                        Log.d("RaghavAnime", "[AniNami] no episode $episode in ${if (isDub) "dub" else "sub"} list (size=${epList?.size ?: 0})")
+                        return@runSource
+                    }
+                    Log.d("RaghavAnime", "[AniNami] matched episode $episode, loading links")
+                    aniNami.loadLinks(matchedEp.data, false, cSub, cLink)
                 }
             },
             {
-                try {
+                runSource("AniDao", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
                     val aniDao = RaghavAniDao()
                     val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
                     val epData = findEpisodeData(searchTitles, listOfNotNull(title, jpTitle), episode, isDub, year = linkData.year,
@@ -605,24 +595,69 @@ class RaghavAnime : MainAPI() {
                         sourceTag = "AniDao"
                     )
                     if (epData != null) {
-                        aniDao.loadLinks(epData, false, subtitleCallback, callback)
+                        aniDao.loadLinks(epData, false, cSub, cLink)
                     }
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniDao] FAILED: ${e.message}")
                 }
             },
             {
-                if (aniId <= 0) return@runAllAsync
-                try {
+                runSource("AniChan", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnime", "[AniChan] SKIP: no anilist id"); return@runSource }
                     val anichan = RaghavAniChan()
-                    anichan.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
-                } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniChan] FAILED: ${e.message}")
+                    anichan.loadLinksByAnilistId(aniId, episode, isDub, cSub, cLink)
+                }
+            },
+            {
+                runSource("Kyren", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnime", "[Kyren] SKIP: no anilist id"); return@runSource }
+                    val kyren = RaghavKyren()
+                    kyren.loadLinksByAnilistId(aniId, title, episode, isDub, cSub, cLink)
                 }
             },
         )
 
+        Log.d("RaghavAnime", "[LoadLinks] SUMMARY aniId=$aniId ep=$episode ${if (isDub) "dub" else "sub"} -> ${summary.joinToString(" | ")}")
+
         return true
+    }
+
+    /**
+     * Runs one aggregator source with uniform, greppable logging.
+     *
+     * Log lines all use tag "RaghavAnime", so:
+     *   adb logcat -s RaghavAnime
+     * shows every source START / SKIP / NO_LINKS / OK / FAILED with
+     * emitted link+subtitle counts and elapsed time.
+     */
+    private suspend fun runSource(
+        tag: String,
+        linkData: LinkData,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+        summary: java.util.concurrent.ConcurrentLinkedQueue<String>,
+        block: suspend ((SubtitleFile) -> Unit, (ExtractorLink) -> Unit) -> Unit
+    ) {
+        var links = 0
+        var subs = 0
+        val countedSubs: (SubtitleFile) -> Unit = { subs++; subtitleCallback(it) }
+        val countedLinks: (ExtractorLink) -> Unit = { links++; callback(it) }
+        val dub = if (linkData.isDub) "dub" else "sub"
+        val start = System.currentTimeMillis()
+        Log.d("RaghavAnime", "[$tag] START aniId=${linkData.animeId} kitsuId=${linkData.kitsuId} ep=${linkData.episode} $dub")
+        try {
+            block(countedSubs, countedLinks)
+            val ms = System.currentTimeMillis() - start
+            if (links == 0) {
+                Log.w("RaghavAnime", "[$tag] NO_LINKS aniId=${linkData.animeId} ep=${linkData.episode} $dub subs=$subs elapsed=${ms}ms")
+                summary.add("$tag:0L/${subs}S")
+            } else {
+                Log.d("RaghavAnime", "[$tag] OK aniId=${linkData.animeId} ep=${linkData.episode} $dub links=$links subs=$subs elapsed=${ms}ms")
+                summary.add("$tag:${links}L/${subs}S")
+            }
+        } catch (t: Throwable) {
+            val ms = System.currentTimeMillis() - start
+            Log.e("RaghavAnime", "[$tag] FAILED aniId=${linkData.animeId} ep=${linkData.episode} $dub links=$links subs=$subs err=${t.javaClass.simpleName}: ${t.message} elapsed=${ms}ms")
+            summary.add("$tag:ERR")
+        }
     }
 
     private fun cleanTitle(s: String): String {
@@ -698,11 +733,19 @@ class RaghavAnime : MainAPI() {
                 Log.e("RaghavAnime", "[$sourceTag] search failed for '$t': ${e.message}")
                 continue
             }
+            Log.d("RaghavAnime", "[$sourceTag] search '$t' -> ${searchResults.size} results")
             for (r in searchResults) {
                 val c = cleanTitle(r.name)
+                if (c.isBlank()) continue
                 val titleScore = when {
+                    // exact match after normalization
                     cleanedTargets.contains(c) -> 2
-                    cleanedTargets.any { tgt -> tgt.contains(c) || c.contains(tgt) } -> 1
+                    // prefix relationship with a real name (guards against
+                    // trivial overlaps like "boku no"); prefix containment is
+                    // far safer than arbitrary substring for sequel detection
+                    c.length >= 6 && cleanedTargets.any { tgt ->
+                        (c.startsWith(tgt) || tgt.startsWith(c))
+                    } -> 1
                     else -> 0
                 }
                 if (titleScore == 0) continue
@@ -717,23 +760,55 @@ class RaghavAnime : MainAPI() {
             }
         }
 
-        if (allCandidates.isEmpty()) return null
+        if (allCandidates.isEmpty()) {
+            Log.d("RaghavAnime", "[$sourceTag] no matching search results for $searchTitles")
+            return null
+        }
 
         allCandidates.sortByDescending { it.combinedScore }
+        Log.d("RaghavAnime", "[$sourceTag] candidates: ${allCandidates.joinToString { "${it.result.name}(s${it.combinedScore},t${it.titleScore})" }}")
 
+        // Phase 1: exact title matches, best season/year score first
         for (cand in allCandidates) {
             if (cand.titleScore < 2) break
             try {
                 val loadResult = doLoad(cand.result.url) ?: continue
                 val ep = loadResult.episodes?.get(epKey)?.find { it.episode == episode }
                 if (ep != null) {
+                    Log.d("RaghavAnime", "[$sourceTag] matched '${cand.result.name}' ep $episode (exact)")
                     return ep.data
                 }
+                Log.d("RaghavAnime", "[$sourceTag] no episode $episode in '${cand.result.name}' (${loadResult.episodes?.get(epKey)?.size ?: 0} eps)")
             } catch (e: Throwable) {
                 Log.e("RaghavAnime", "[$sourceTag] load failed for '${cand.result.name}': ${e.message}")
             }
         }
 
+        // Phase 2: validated fuzzy fallback (prefix matches) — only season-
+        // and year-consistent candidates may be tried, so a sequel entry can
+        // never satisfy a different season's lookup
+        for (cand in allCandidates) {
+            if (cand.titleScore == 2) continue
+            val candSeasonNum = extractSeasonNumber(cand.result.name)
+            val candYear = extractYear(cand.result.name)
+            if (targetSeasonNum != null && candSeasonNum != null && candSeasonNum != targetSeasonNum) continue
+            if (targetSeasonNum == null && candSeasonNum != null && candSeasonNum > 1) continue
+            if (year != null && candYear != null && Math.abs(candYear - year) > 1) continue
+            Log.d("RaghavAnime", "[$sourceTag] trying fuzzy candidate '${cand.result.name}'")
+            try {
+                val loadResult = doLoad(cand.result.url) ?: continue
+                val ep = loadResult.episodes?.get(epKey)?.find { it.episode == episode }
+                if (ep != null) {
+                    Log.d("RaghavAnime", "[$sourceTag] matched '${cand.result.name}' ep $episode (fuzzy)")
+                    return ep.data
+                }
+                Log.d("RaghavAnime", "[$sourceTag] no episode $episode in fuzzy '${cand.result.name}'")
+            } catch (e: Throwable) {
+                Log.e("RaghavAnime", "[$sourceTag] load failed for fuzzy '${cand.result.name}': ${e.message}")
+            }
+        }
+
+        Log.d("RaghavAnime", "[$sourceTag] no episode data found for ep $episode (${if (isDub) "dub" else "sub"})")
         return null
     }
 
