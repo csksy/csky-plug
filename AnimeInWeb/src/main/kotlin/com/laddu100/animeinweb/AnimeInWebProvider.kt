@@ -53,9 +53,16 @@ class AnimeInWebProvider : MainAPI() {
         "Accept" to "application/json",
         "User-Agent" to USER_AGENT
     )
-    private val posterHeaders get() = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")
+    // the image host whitelists app-style user agents while browser agents
+    // need a referer that some app builds never forward for images; sending
+    // both covers every header-forwarding behaviour
+    private val posterHeaders get() = mapOf(
+        "User-Agent" to IMG_USER_AGENT,
+        "Referer" to "$mainUrl/"
+    )
 
-    // the image host rejects requests without the site's own referer
+    // the API returns absolute poster urls and a few relative ones that
+    // belong to the xyz asset family
     private fun fixPosterUrl(url: String?): String? {
         val value = url?.takeIf { it.isNotBlank() } ?: return null
         return if (value.startsWith("http")) value else "$imgHost$value"
@@ -264,7 +271,9 @@ class AnimeInWebProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-        val stream = fetchJson<StreamEnvelope>("${apiUrl("/episode/streamnew")}/$data").data
+        // some app builds hand back the episode url instead of the raw id
+        val epId = data.trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return false
+        val stream = fetchJson<StreamEnvelope>("${apiUrl("/episode/streamnew")}/$epId").data
         var found = false
 
         for (server in stream.server) {
@@ -302,7 +311,7 @@ class AnimeInWebProvider : MainAPI() {
             }
         }
 
-        Log.d(TAG, "[loadLinks] ep=$data found=$found")
+        Log.d(TAG, "[loadLinks] ep=$epId found=$found")
         return found
     }
 
@@ -310,6 +319,7 @@ class AnimeInWebProvider : MainAPI() {
         private const val TAG = "AnimeInWeb"
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        private const val IMG_USER_AGENT = "okhttp/4.12.0"
         private const val EXPLORE_PAGE_SIZE = 60
         private const val EPISODES_PER_PAGE = 30
         private const val PAGE_BATCH = 6
@@ -365,25 +375,41 @@ class AnimeInWebProvider : MainAPI() {
             val today: List<MovieItem> = emptyList()
         )
 
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class HomeEnvelope(val data: HomeData = HomeData())
 
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class ExploreData(val movie: List<MovieItem> = emptyList())
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class ExploreEnvelope(val data: ExploreData = ExploreData())
 
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class ScheduleData(val movie: List<MovieItem> = emptyList())
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class ScheduleEnvelope(val data: ScheduleData = ScheduleData())
 
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class DetailData(val movie: MovieItem = MovieItem(), val episode: EpisodeItem? = null)
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class DetailEnvelope(val data: DetailData = DetailData())
 
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class EpisodeListData(val episode: List<EpisodeItem> = emptyList())
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class EpisodeListEnvelope(val data: EpisodeListData = EpisodeListData())
 
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class StreamData(
             val episode: EpisodeItem? = null,
             val episode_next: EpisodeItem? = null,
             val server: List<ServerItem> = emptyList()
         )
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class StreamEnvelope(val data: StreamData = StreamData())
     }
 }
