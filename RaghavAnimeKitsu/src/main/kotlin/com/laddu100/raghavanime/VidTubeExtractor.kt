@@ -12,17 +12,8 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
-/**
- * Extractor for vidtube.site embeds used by AniKage/AniKoto style players:
- *   https://vidtube.site/stream/{base64-id}[/sub|/dub|/hsub]
- *
- * Validated live flow:
- *   1. embed page carries data-id on the player element
- *   2. GET {host}/stream/getSourcesNew?id={data-id}
- *      (headers: X-Requested-With: XMLHttpRequest, Referer = embed page)
- *   3. response: { sources: { file: master.m3u8 }, tracks: [{file,label,kind}] }
- *   4. playback requires Referer https://vidtube.site/ (CDN 403s otherwise)
- */
+// vidtube.site embeds: data-id on the player element -> /stream/getSourcesNew?id=
+// playback needs Referer https://vidtube.site/ (CDN 403s otherwise)
 class VidTubeExtractor(private val sourceName: String = "VidTube") : ExtractorApi() {
     override val name = sourceName
     override val mainUrl = "https://vidtube.site"

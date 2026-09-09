@@ -620,14 +620,6 @@ class RaghavAnime : MainAPI() {
         return true
     }
 
-    /**
-     * Runs one aggregator source with uniform, greppable logging.
-     *
-     * Log lines all use tag "RaghavAnime", so:
-     *   adb logcat -s RaghavAnime
-     * shows every source START / SKIP / NO_LINKS / OK / FAILED with
-     * emitted link+subtitle counts and elapsed time.
-     */
     private suspend fun runSource(
         tag: String,
         linkData: LinkData,
@@ -740,9 +732,8 @@ class RaghavAnime : MainAPI() {
                 val titleScore = when {
                     // exact match after normalization
                     cleanedTargets.contains(c) -> 2
-                    // prefix relationship with a real name (guards against
-                    // trivial overlaps like "boku no"); prefix containment is
-                    // far safer than arbitrary substring for sequel detection
+                    // prefix match against a real name (guards against
+                    // trivial overlaps like "boku no")
                     c.length >= 6 && cleanedTargets.any { tgt ->
                         (c.startsWith(tgt) || tgt.startsWith(c))
                     } -> 1
@@ -768,7 +759,7 @@ class RaghavAnime : MainAPI() {
         allCandidates.sortByDescending { it.combinedScore }
         Log.d("RaghavAnime", "[$sourceTag] candidates: ${allCandidates.joinToString { "${it.result.name}(s${it.combinedScore},t${it.titleScore})" }}")
 
-        // Phase 1: exact title matches, best season/year score first
+        // exact title matches first, best season/year score wins
         for (cand in allCandidates) {
             if (cand.titleScore < 2) break
             try {
@@ -784,9 +775,8 @@ class RaghavAnime : MainAPI() {
             }
         }
 
-        // Phase 2: validated fuzzy fallback (prefix matches) — only season-
-        // and year-consistent candidates may be tried, so a sequel entry can
-        // never satisfy a different season's lookup
+        // fuzzy fallback: only season- and year-consistent candidates,
+        // so a sequel entry can never satisfy another season's lookup
         for (cand in allCandidates) {
             if (cand.titleScore == 2) continue
             val candSeasonNum = extractSeasonNumber(cand.result.name)

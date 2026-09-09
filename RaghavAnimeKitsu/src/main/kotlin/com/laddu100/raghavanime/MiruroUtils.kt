@@ -425,6 +425,15 @@ private suspend fun miruroPipeRequestForDomain(
 
 const val ANILIST_URL = "https://graphql.anilist.co"
 
+// anilist 403s requests that look like they come from a scraper, it wants a browser referer
+val ANILIST_HEADERS = mapOf(
+    "Accept" to "application/json",
+    "Content-Type" to "application/json",
+    "User-Agent" to CF_USER_AGENT,
+    "Origin" to "https://anilist.co",
+    "Referer" to "https://anilist.co/"
+)
+
 val SEARCH_QUERY = """
     query (${'$'}search: String, ${'$'}page: Int, ${'$'}perPage: Int) {
         Page(page: ${'$'}page, perPage: ${'$'}perPage) {
@@ -563,11 +572,9 @@ private const val ANILIST_CACHE_TTL = 10 * 60 * 1000L
 private val anilistLocks = mutableMapOf<String, kotlinx.coroutines.sync.Mutex>()
 
 suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
-    Log.d("RaghavAnime", "[Miruro] anilistQuery: variables=${variables.toJson().take(120)}")
     val cacheKey = "$query|${variables.toJson()}"
     val now = System.currentTimeMillis()
     anilistCache[cacheKey]?.let { (cached, time) ->
-        Log.d("RaghavAnime", "[Miruro] anilistQuery: cache entry present, age=${now - time}ms (ttl=${ANILIST_CACHE_TTL}ms)")
         if (now - time < ANILIST_CACHE_TTL) return cached
     }
 
@@ -576,7 +583,6 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
     }
 
     if (lock.isLocked) {
-        Log.d("RaghavAnime", "[Miruro] anilistQuery: in-flight query detected, waiting for it")
         repeat(50) {
             kotlinx.coroutines.delay(100)
             anilistCache[cacheKey]?.let { (cached, time) ->
@@ -586,43 +592,32 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
     }
 
     anilistCache[cacheKey]?.let { (cached, time) ->
-        Log.d("RaghavAnime", "[Miruro] anilistQuery: cache rechecked, age=${now - time}ms")
         if (now - time < ANILIST_CACHE_TTL) return cached
     }
-    Log.d("RaghavAnime", "[Miruro] anilistQuery: cache miss, querying AniList API")
 
     val requestData = mapOf(
         "query" to query,
         "variables" to variables
     ).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
 
-    val headers = mapOf(
-        "Accept" to "application/json",
-        "Content-Type" to "application/json"
-    )
-
     try {
         val response = app.post(
             ANILIST_URL,
-            headers = headers,
+            headers = ANILIST_HEADERS,
             requestBody = requestData,
             timeout = 15_000L
         )
         val text = response.text
-        Log.d("RaghavAnime", "[Miruro] anilistQuery: response len=${text.length}")
         if (text.isNotBlank() && !text.contains("\"errors\"")) {
             anilistCache[cacheKey] = text to now
-            Log.d("RaghavAnime", "[Miruro] anilistQuery: success, cached")
             return text
         }
-        Log.w("RaghavAnime", "[Miruro] anilistQuery: response blank or contained errors, discarding")
+        Log.w("RaghavAnime", "[Miruro] anilist response rejected")
     } catch (e: Exception) {
-        Log.e("RaghavAnime", "[Miruro] anilistQuery: request failed: ${e.message}")
+        Log.e("RaghavAnime", "[Miruro] anilist query failed: ${e.message}")
     }
 
-    Log.d("RaghavAnime", "[Miruro] anilistQuery: no fresh response, trying stale cache")
     anilistCache[cacheKey]?.let { (cached, _) -> return cached }
-    Log.e("RaghavAnime", "[Miruro] anilistQuery: failed with no cache available")
     throw Exception("AniList query failed")
 }
 
