@@ -31,8 +31,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.net.URI
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -60,6 +63,80 @@ class AnimeInWebProvider : MainAPI() {
         "User-Agent" to IMG_USER_AGENT,
         "Referer" to "$mainUrl/"
     )
+
+    private val posterCache = ConcurrentHashMap<String, String>()
+    private val posterSemaphore = Semaphore(POSTER_CONCURRENCY)
+
+    // most app builds load images through their own image loader without the
+    // plugin's poster headers and the site's image hosts reject those
+    // requests outright, so posters are sourced from kitsu whose cdn serves
+    // every client regardless of headers; the site's own url stays as the
+    // fallback for titles kitsu does not know
+    private suspend fun posterFor(title: String?, siteUrl: String?): String? {
+        val fallback = fixPosterUrl(siteUrl) ?: return null
+        val key = title?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return fallback
+        posterCache[key]?.let { cached ->
+            return cached.takeIf { it.isNotEmpty() } ?: fallback
+        }
+        return try {
+            val found = posterSemaphore.withPermit { kitsuPoster(key) }
+            // signed s3 urls expire within minutes, only permanent cdn urls are cached
+            if (found != null && !found.contains("X-Amz-")) posterCache[key] = found
+            else if (found == null) posterCache[key] = ""
+            found ?: fallback
+        } catch (e: Exception) {
+            Log.e(TAG, "[poster] $key: ${e.message}")
+            fallback
+        }
+    }
+
+    private suspend fun kitsuPoster(key: String): String? {
+        val query = URLEncoder.encode(key, "UTF-8")
+        val text = app.get(
+            "$KITSU_API_URL/anime?filter[text]=$query&page%5Blimit%5D=5",
+            headers = mapOf(
+                "Accept" to "application/vnd.api+json",
+                "User-Agent" to USER_AGENT
+            )
+        ).text
+        val site = normalizeTitle(key)
+        var bestScore = 0
+        var bestUrl: String? = null
+        for (item in parseJson<KitsuEnvelope>(text).data) {
+            val attrs = item.attributes
+            val url = attrs.posterImage.large ?: attrs.posterImage.medium ?: attrs.posterImage.small ?: continue
+            val candidates = sequenceOf(attrs.canonicalTitle, attrs.titles["en"], attrs.titles["en_jp"])
+                .filterNotNull()
+                .distinct()
+            for (candidate in candidates) {
+                val score = titleMatchScore(site, normalizeTitle(candidate))
+                if (score > bestScore) {
+                    bestScore = score
+                    bestUrl = url
+                }
+            }
+        }
+        return bestUrl
+    }
+
+    private fun normalizeTitle(value: String): String = value.lowercase().filter { it.isLetterOrDigit() }
+
+    private fun titleTokens(value: String): List<String> =
+        value.lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+
+    // 3 exact, 2 prefix of a long enough stem, 1 strong word overlap, 0 no match
+    private fun titleMatchScore(site: String, candidate: String): Int {
+        if (site.isEmpty() || candidate.isEmpty()) return 0
+        if (site == candidate) return 3
+        if (minOf(site.length, candidate.length) >= 6 &&
+            (candidate.startsWith(site) || site.startsWith(candidate))
+        ) return 2
+        val siteTokens = titleTokens(site).toSet()
+        val candidateTokens = titleTokens(candidate).toSet()
+        val shared = siteTokens.intersect(candidateTokens).size
+        val smallest = minOf(siteTokens.size, candidateTokens.size)
+        return if (shared >= 2 && shared * 10 >= smallest * 6) 1 else 0
+    }
 
     // the API returns absolute poster urls and a few relative ones that
     // belong to the xyz asset family
@@ -122,9 +199,9 @@ class AnimeInWebProvider : MainAPI() {
         }.getOrNull()
     }
 
-    private fun MovieItem.toSearchResponse(): SearchResponse {
+    private suspend fun MovieItem.toSearchResponse(): SearchResponse {
         val url = "$mainUrl/anime/$id"
-        val poster = fixPosterUrl(image_poster)
+        val poster = posterFor(title, image_poster)
         val type = tvTypeOf(this.type)
         val titleValue = title?.takeIf { it.isNotBlank() } ?: "Unknown"
         return when (type) {
@@ -225,7 +302,7 @@ class AnimeInWebProvider : MainAPI() {
                 this.tags = movie.genre?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
                 this.year = movie.year?.toIntOrNull()
                 this.showStatus = showStatusOf(movie.status)
-                addPoster(fixPosterUrl(movie.image_poster), posterHeaders)
+                addPoster(posterFor(movie.title, movie.image_poster), posterHeaders)
             }
         } else {
             newAnimeLoadResponse(title, url, tvType) {
@@ -234,7 +311,7 @@ class AnimeInWebProvider : MainAPI() {
                 this.year = movie.year?.toIntOrNull()
                 this.showStatus = showStatusOf(movie.status)
                 this.synonyms = movie.synonyms?.split(";")?.map { it.trim() }?.filter { it.isNotEmpty() }
-                addPoster(fixPosterUrl(movie.image_poster), posterHeaders)
+                addPoster(posterFor(movie.title, movie.image_poster), posterHeaders)
                 addEpisodes(DubStatus.Subbed, episodes)
             }
         }
@@ -325,6 +402,8 @@ class AnimeInWebProvider : MainAPI() {
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         private const val IMG_USER_AGENT = "okhttp/4.12.0"
+        private const val KITSU_API_URL = "https://kitsu.app/api/edge"
+        private const val POSTER_CONCURRENCY = 8
         private const val EXPLORE_PAGE_SIZE = 60
         private const val EPISODES_PER_PAGE = 30
         private const val PAGE_BATCH = 6
@@ -416,5 +495,25 @@ class AnimeInWebProvider : MainAPI() {
 
         @JsonIgnoreProperties(ignoreUnknown = true)
         data class StreamEnvelope(val data: StreamData = StreamData())
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        data class KitsuPosterImage(
+            val small: String? = null,
+            val medium: String? = null,
+            val large: String? = null
+        )
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        data class KitsuAttributes(
+            val canonicalTitle: String? = null,
+            val titles: Map<String, String> = emptyMap(),
+            val posterImage: KitsuPosterImage = KitsuPosterImage()
+        )
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        data class KitsuItem(val attributes: KitsuAttributes = KitsuAttributes())
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        data class KitsuEnvelope(val data: List<KitsuItem> = emptyList())
     }
 }
