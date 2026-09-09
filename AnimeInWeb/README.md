@@ -11,9 +11,12 @@ CloudStream plugin for animeinweb.com (ANIMEIN Web, Indonesian hardsub anime).
   `schedule/data` (full Indonesian day names only), `movie/detail/{id}`,
   `movie/episode/{id}?page=N` (30/page, newest first),
   `episode/streamnew/{episode_id}` (server list).
-- Posters require `Referer: https://animeinweb.com/` plus a real UA, so every
-  response sets `posterHeaders` accordingly. Episode images have no header
-  support in CloudStream and are intentionally not used.
+- Posters: the site's image hosts only serve whitelisted app user agents
+  (or browser agents with the site referer), and most app builds load images
+  through their own loader without plugin headers, so titles are matched
+  against Kitsu and its header-free cdn urls are used. The site's own poster
+  url stays as fallback and `posterHeaders` are set for it. Episode images
+  have no header support in CloudStream and are intentionally not used.
 
 ## Sources
 
