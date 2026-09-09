@@ -122,7 +122,7 @@ class AnimeInWebProvider : MainAPI() {
     private fun normalizeTitle(value: String): String = value.lowercase().filter { it.isLetterOrDigit() }
 
     private fun titleTokens(value: String): List<String> =
-        value.lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        value.lowercase().split(TITLE_TOKEN_SEPARATOR).filter { it.isNotEmpty() }
 
     // 3 exact, 2 prefix of a long enough stem, 1 strong word overlap, 0 no match
     private fun titleMatchScore(site: String, candidate: String): Int {
@@ -404,6 +404,7 @@ class AnimeInWebProvider : MainAPI() {
         private const val IMG_USER_AGENT = "okhttp/4.12.0"
         private const val KITSU_API_URL = "https://kitsu.app/api/edge"
         private const val POSTER_CONCURRENCY = 8
+        private val TITLE_TOKEN_SEPARATOR = Regex("[^a-z0-9]+")
         private const val EXPLORE_PAGE_SIZE = 60
         private const val EPISODES_PER_PAGE = 30
         private const val PAGE_BATCH = 6
