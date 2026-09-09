@@ -137,8 +137,10 @@ class AnimeInWebProvider : MainAPI() {
         }
     }
 
+    // the explore API has no newest-first sort, so Terbaru uses the
+    // home/data "new" list, which is what the site itself shows there
     override val mainPage = mainPageOf(
-        "latest" to "Terbaru",
+        "home:new" to "Terbaru",
         "views" to "Populer",
         "schedule" to "Jadwal Hari Ini",
         "home:hot" to "Hot",
@@ -148,9 +150,11 @@ class AnimeInWebProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: com.lagradost.cloudstream3.MainPageRequest): com.lagradost.cloudstream3.HomePageResponse {
         return when {
-            request.data == "latest" || request.data == "views" -> explorePage(page, request, request.data)
+            request.data == "views" -> explorePage(page, request)
             request.data == "schedule" -> {
-                if (page > 0) return newHomePageResponse(request, emptyList(), false)
+                // the app's first homepage call is page 1, higher pages are
+                // row expansions and these sections have no more pages
+                if (page > 1) return newHomePageResponse(request, emptyList(), false)
                 val day = todayIndonesianDay()
                 val items = fetchJson<ScheduleEnvelope>("${apiUrl("/schedule/data")}?day=$day")
                     .data.movie.map { it.toSearchResponse() }
@@ -158,10 +162,11 @@ class AnimeInWebProvider : MainAPI() {
                 newHomePageResponse(request, items, false)
             }
             request.data.startsWith("home:") -> {
-                if (page > 0) return newHomePageResponse(request, emptyList(), false)
+                if (page > 1) return newHomePageResponse(request, emptyList(), false)
                 val key = request.data.removePrefix("home:")
                 val data = fetchJson<HomeEnvelope>("${apiUrl("/home/data")}?day=${todayIndonesianDay()}&limit=16").data
                 val list = when (key) {
+                    "new" -> data.new
                     "hot" -> data.hot
                     "waiting" -> data.waiting
                     "random" -> data.random
@@ -170,16 +175,16 @@ class AnimeInWebProvider : MainAPI() {
                 Log.d(TAG, "[main] home:$key -> ${list.size} titles")
                 newHomePageResponse(request, list.map { it.toSearchResponse() }, false)
             }
-            else -> explorePage(page, request, "latest")
+            else -> explorePage(page, request)
         }
     }
 
+    // the explore API pages start at 0 while cloudstream pages start at 1
     private suspend fun explorePage(
         page: Int,
-        request: com.lagradost.cloudstream3.MainPageRequest,
-        sort: String
+        request: com.lagradost.cloudstream3.MainPageRequest
     ): com.lagradost.cloudstream3.HomePageResponse {
-        val res = fetchJson<ExploreEnvelope>("${apiUrl("/explore/movie")}?page=$page&sort=$sort&keyword=")
+        val res = fetchJson<ExploreEnvelope>("${apiUrl("/explore/movie")}?page=${page - 1}&sort=views&keyword=")
         val items = res.data.movie.map { it.toSearchResponse() }
         return newHomePageResponse(request, items, items.size >= EXPLORE_PAGE_SIZE)
     }
