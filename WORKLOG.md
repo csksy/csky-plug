@@ -318,3 +318,33 @@ worked on it here.
   + subtitles), `megaplay` (embed, resolved through the existing MegaPlay
   extractor) and `tryembed` (embed attempt, logged when unsupported).
   Works for sub and dub.
+
+## 2026-09-10 — TheMoviesBoss v4 (live site re-study + full link coverage + playback hardening)
+
+**Status:** built locally (`:TheMoviesBoss:make` passed, cs3 v4 verified via dex strings) — CI will build on push
+
+### What was wrong (user report: sources show but error on play, only hubcloud handled, movies coverage unclear)
+- The site restructured since v3: tmbcloud moved to `tmbcloud.dev` -> `tmbcloud.lol/links|download|drivepacks` pages and the
+  whole download path now sits behind Cloudflare Turnstile (`/step2.php` token_b + `/gen-link.php` cf_turnstile_response,
+  enforced server-side, tested with dummy tokens -> rejected). tmbcloud links are therefore enumeration-only.
+- v3 emitted tmbplayer m3u8 and /stream-vid/ links with no reachability check, so dead entries reached the player.
+
+### Live-verified data flow (captured pages + python replication of the crypto chain)
+- Watch path works end to end: `li.dooplay_player_option` (single-quote attrs) -> `/wp-json/dooplayer/v2/{post}/{type}/{nume}`
+  -> `tmbplayer.site/video/*` embed -> page config (pd/ps/kaken/apx) -> PBKDF2+AES api -> status ok.
+  Verified for Dhamaal 4 (movie, 720p m3u8 + 360p/720p/Original stream-vid MP4s, range GET returned ftyp bytes) and
+  The Boys S1 (`/v2/1761/movie/1` -> `The.Boys.S01.720p` m3u8 whose master/variant/TS segment all serve, 0x47 sync byte).
+- Episode enumeration: `tmbcloud.lol` pack pages list per-episode anchors (drivepacks: Fauda S01E01-E12 anchor texts) and
+  `singlefiles.php` pages list `button[data-file]` (The Boys S01E01-E08). Anchor/button text carries the SxxExx names.
+
+### Changes
+- `TheMoviesBoss.kt` rewritten around an EpisodePayload JSON (page/season/episode/downloads): per-episode mirror links from
+  tmbcloud anchor mapping plus detail-page anchors tagged SxxExx (bare-season tags ride on the Season Full entry);
+  movies collect untagged + pack links so every title type with links loads sources; loadLinks resolves downloads first
+  in parallel via loadExtractor, then tmbplayer with a live m3u8 manifest probe and HEAD probe for progressive files
+  (dead links filtered, ambiguous network failures still emitted), honest emission-counted return value.
+- `Extractors.kt` (new): cs3-reference HubCloud/VCloud fan-out (FSL/FSLv2/Mega/Buzz/Pixeldrain/10Gbps/Gofile buttons),
+  Gofile with website-token auth, GDFlix and Driveleech/Driveseed per the CSX CineStream implementations.
+- `TmbCloud.kt` (new): surfaces mirror anchors on tmbcloud pages should the site re-add them, self-link guarded.
+- `TmbPlayer.kt`: file URLs normalized (protocol/root-relative paths anchored to the page origin).
+- Extractors registered in the plugin entry, version bumped to 4.

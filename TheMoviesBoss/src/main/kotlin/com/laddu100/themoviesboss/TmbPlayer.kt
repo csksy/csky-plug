@@ -38,11 +38,29 @@ object TmbPlayer {
     private data class Config(val pd: String, val ps: String, val kaken: String, val apx: String)
 
     // watch embed, gives the hls playlist plus the download page url
-    suspend fun resolve(embedUrl: String): TmbResult? = resolveFrom(embedUrl, PLAYER_URL)
+    suspend fun resolve(embedUrl: String): TmbResult? = normalize(resolveFrom(embedUrl, PLAYER_URL), embedUrl)
 
     // the download page carries a second config whose api returns progressive stream urls
     suspend fun resolveDownloads(downloadUrl: String, referer: String): TmbResult? =
-        resolveFrom(downloadUrl, referer)
+        normalize(resolveFrom(downloadUrl, referer), downloadUrl)
+
+    // the api sometimes returns protocol relative or root relative file paths which the
+    // player cannot play, anchor them to the page that produced them
+    private fun normalize(result: TmbResult?, pageUrl: String): TmbResult? {
+        result ?: return null
+        val origin = Regex("""(https?://[^/]+)""").find(pageUrl)?.groupValues?.get(1) ?: return result
+        val sources = result.sources.mapNotNull { source ->
+            val file = source.file?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val absolute = when {
+                file.startsWith("//") -> "https:$file"
+                file.startsWith("/") -> origin + file
+                file.startsWith("http") -> file
+                else -> "$origin/$file"
+            }
+            source.copy(file = absolute)
+        }
+        return result.copy(sources = sources)
+    }
 
     private suspend fun resolveFrom(url: String, referer: String): TmbResult? {
         return try {

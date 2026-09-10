@@ -5,10 +5,11 @@ import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -18,18 +19,37 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val TAG = "TheMoviesBoss"
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 private data class DooplayerResponse(val embed_url: String? = null, val type: String? = null)
 
-// episode data is "pageUrl|season|episode", episode 0 marks the merged whole season stream
+@JsonIgnoreProperties(ignoreUnknown = true)
+private data class EpisodePayload(
+    val page: String = "",
+    val season: Int = 0,
+    val episode: Int = 0,
+    val downloads: List<String> = emptyList()
+)
+
+// episode 0 marks a movie or a merged whole season stream
 private const val MERGED = 0
 
 private val seasonEpisodeRegex = Regex("""\bS(\d{1,2})E(\d{1,3})\b""", RegexOption.IGNORE_CASE)
+private val seasonOnlyRegex = Regex("""\b(?:S(\d{1,2})|Season\s*(\d{1,2}))\b""", RegexOption.IGNORE_CASE)
 private val seasonRegex = Regex("""Season\s*(\d+)""", RegexOption.IGNORE_CASE)
 private val episodeNumberRegex = Regex("""Episode\s*0*(\d+)""", RegexOption.IGNORE_CASE)
+
+// hosts whose pages resolve through the dedicated extractors registered by this plugin,
+// tmbcloud pages only enumerate files since their file generation sits behind a captcha
+private val MIRROR_HOSTS = listOf(
+    "hubcloud", "vcloud", "gofile.io", "gdflix", "gdlink", "driveleech",
+    "driveseed", "filepress", "filebee", "pixeldrain", "hubdrive"
+)
+
+private val directFileRegex = Regex("""\.(mp4|mkv|avi|webm)(\?|$)""", RegexOption.IGNORE_CASE)
 
 class TheMoviesBoss : MainAPI() {
     override var mainUrl = "https://ww2.themoviesboss.blog"
@@ -52,7 +72,9 @@ class TheMoviesBoss : MainAPI() {
         val episodeNumber: Int? = episodeNumberRegex.find(label)?.groupValues?.get(1)?.toIntOrNull()
     }
 
-    private data class CloudFile(val season: Int, val episode: Int, val fileName: String)
+    private data class CloudFile(val season: Int, val episode: Int, val fileName: String, val link: String?)
+
+    private data class CloudPage(val files: List<CloudFile>, val mirrors: List<String>)
 
     // pages are read in load() for the episode list and again in loadLinks on playback,
     // the cache keeps that second read from re-hitting the site while binge watching
@@ -153,43 +175,128 @@ class TheMoviesBoss : MainAPI() {
         }
     }
 
+    // every http link on the page hosted by a known mirror or a plain file url,
+    // tmbcloud entries excluded because they are handled with their own page reads
+    private fun pageMirrorLinks(doc: Document): List<String> {
+        val found = mutableListOf<String>()
+        doc.select("a[href]").forEach { anchor ->
+            val href = anchor.attr("href")
+            if (!href.startsWith("http")) return@forEach
+            if (MIRROR_HOSTS.any { href.contains(it, true) }) found += href
+            else if (directFileRegex.containsMatchIn(href)) found += href
+        }
+        return found.distinct()
+    }
+
     // tmbcloud pages come as folder listings, per-server spoiler groups, or single files;
-    // the actual file generation sits behind a browser captcha, so only the file names
-    // are read here and they drive the episode list
-    private suspend fun fetchCloudFiles(doc: Document): List<CloudFile> {
+    // per-file entries carry their own sub page which is what the player later resolves
+    private suspend fun fetchCloudPage(doc: Document): CloudPage {
         val cloudLinks = doc.select("a[href*=\"tmbcloud.\"]")
             .map { it.absUrl("href") }
             .filter { it.startsWith("http") }
             .distinct()
-        if (cloudLinks.isEmpty()) return emptyList()
+        if (cloudLinks.isEmpty()) return CloudPage(emptyList(), emptyList())
         return coroutineScope {
-            cloudLinks.map { link ->
+            val pages = cloudLinks.map { link ->
                 async(Dispatchers.IO) { readCloudPage(link) }
-            }.awaitAll().flatten()
+            }.awaitAll()
+            CloudPage(
+                files = pages.flatMap { it.files }.distinctBy { it.fileName },
+                mirrors = pages.flatMap { it.mirrors }.distinct()
+            )
         }
     }
 
-    private suspend fun readCloudPage(url: String): List<CloudFile> {
+    private suspend fun readCloudPage(url: String): CloudPage {
         return try {
             val doc = getCachedPage(url)
-            val names = sortedSetOf<String>()
-            doc.select(".file-list .file-item a.file-link").forEach { names += it.text().trim() }
-            doc.select("button[data-file]").forEach { names += it.attr("data-file").trim() }
-            if (names.isEmpty()) {
-                doc.selectFirst(".download-box h1, .download-box h2")?.text()?.trim()?.let { names += it }
+            val files = mutableListOf<CloudFile>()
+
+            // anchors on tmbcloud pages label their target with the file name, so an
+            // anchor text carrying SxxExx enumerates that episode even when the target
+            // is a captcha gated tmbcloud page that cannot resolve further
+            doc.select("a[href]").forEach { anchor ->
+                val href = anchor.absUrl("href")
+                if (!href.startsWith("http") || href == url) return@forEach
+                val text = anchor.text().trim()
+                val match = seasonEpisodeRegex.find(text)
+                    ?: seasonEpisodeRegex.find(href.substringAfterLast('/').substringBefore('?'))
+                    ?: return@forEach
+                val season = match.groupValues[1].toIntOrNull() ?: return@forEach
+                val episode = match.groupValues[2].toIntOrNull() ?: return@forEach
+                val link = if (href.contains("tmbcloud.", true)) null else href
+                files += CloudFile(season, episode, text.ifBlank { href.substringAfterLast('/') }, link)
             }
-            names.mapNotNull { toCloudFile(it) }
+
+            doc.select("button[data-file]").forEach { btn ->
+                val name = btn.attr("data-file").trim()
+                val match = seasonEpisodeRegex.find(name) ?: return@forEach
+                val season = match.groupValues[1].toIntOrNull() ?: return@forEach
+                val episode = match.groupValues[2].toIntOrNull() ?: return@forEach
+                files += CloudFile(season, episode, name, null)
+            }
+
+            if (files.isEmpty()) {
+                doc.selectFirst(".download-box h1, .download-box h2")?.text()?.trim()?.let { name ->
+                    val match = seasonEpisodeRegex.find(name)
+                    if (match != null) {
+                        val season = match.groupValues[1].toIntOrNull()
+                        val episode = match.groupValues[2].toIntOrNull()
+                        if (season != null && episode != null) files += CloudFile(season, episode, name, null)
+                    }
+                }
+            }
+
+            // single file pages expose their mirrors page wide, attach them to the one file
+            val mirrors = pageMirrorLinks(doc).filter { !it.contains("tmbcloud.", true) }
+            CloudPage(files.distinctBy { Triple(it.season, it.episode, it.link) }, if (files.size <= 1) mirrors else emptyList())
         } catch (e: Exception) {
             Log.d(TAG, "tmbcloud page: ${e.message}")
-            emptyList()
+            CloudPage(emptyList(), emptyList())
         }
     }
 
-    private fun toCloudFile(fileName: String): CloudFile? {
-        val match = seasonEpisodeRegex.find(fileName) ?: return null
-        val season = match.groupValues[1].toIntOrNull() ?: return null
-        val episode = match.groupValues[2].toIntOrNull() ?: return null
-        return CloudFile(season, episode, fileName)
+    // detail page mirror links are tagged with SxxExx when they belong to one episode and
+    // with a bare season marker when they belong to a season pack, the rest are whole title
+    private data class PageDownloads(
+        val perEpisode: Map<Pair<Int, Int>, List<String>>,
+        val perSeason: Map<Int, List<String>>,
+        val untagged: List<String>
+    )
+
+    private fun detailPageDownloads(doc: Document): PageDownloads {
+        val perEpisode = mutableMapOf<Pair<Int, Int>, MutableList<String>>()
+        val perSeason = mutableMapOf<Int, MutableList<String>>()
+        val untagged = mutableListOf<String>()
+        doc.select("a[href]").forEach { anchor ->
+            val href = anchor.attr("href")
+            if (!href.startsWith("http")) return@forEach
+            val isMirror = MIRROR_HOSTS.any { href.contains(it, true) }
+            val isDirect = directFileRegex.containsMatchIn(href)
+            if (!isMirror && !isDirect) return@forEach
+            val context = buildString {
+                append(anchor.text())
+                append(' ')
+                append(anchor.parent()?.text().orEmpty())
+                append(' ')
+                append(href.substringAfterLast("/").substringBefore("?"))
+            }
+            val episodeMatch = seasonEpisodeRegex.find(context)
+            val seasonMatch = seasonOnlyRegex.find(context)
+            when {
+                episodeMatch != null -> {
+                    val key = (episodeMatch.groupValues[1].toIntOrNull() ?: 0) to
+                        (episodeMatch.groupValues[2].toIntOrNull() ?: 0)
+                    perEpisode.getOrPut(key) { mutableListOf() }.add(href)
+                }
+                seasonMatch != null -> {
+                    val season = (seasonMatch.groupValues[1] ?: seasonMatch.groupValues[2]).toIntOrNull() ?: 0
+                    perSeason.getOrPut(season) { mutableListOf() }.add(href)
+                }
+                else -> untagged += href
+            }
+        }
+        return PageDownloads(perEpisode, perSeason, untagged.distinct())
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -210,15 +317,19 @@ class TheMoviesBoss : MainAPI() {
         val plot = findPlot(doc)
         val options = parsePlayerOptions(doc)
         val trailer = options.firstOrNull()?.let { addTrailerLink(it.dataType, it.postId) }
-        val cloudFiles = fetchCloudFiles(doc)
+        val cloud = fetchCloudPage(doc)
+        val pageDownloads = detailPageDownloads(doc)
 
-        val isSeries = isSeries(titleRaw) || cloudFiles.isNotEmpty()
+        val isSeries = isSeries(titleRaw) || cloud.files.isNotEmpty()
 
         return if (isSeries) {
             val defaultSeason = seasonRegex.find(titleRaw)?.groupValues?.get(1)?.toIntOrNull() ?: 1
             val episodesBySeason = sortedMapOf<Int, MutableSet<Int>>()
-            cloudFiles.forEach {
+            cloud.files.forEach {
                 episodesBySeason.getOrPut(it.season) { sortedSetOf() }.add(it.episode)
+            }
+            pageDownloads.perEpisode.keys.forEach { (season, ep) ->
+                if (ep > 0) episodesBySeason.getOrPut(season) { sortedSetOf() }.add(ep)
             }
             options.forEach { option ->
                 option.episodeNumber?.let { ep ->
@@ -229,27 +340,70 @@ class TheMoviesBoss : MainAPI() {
                 episodesBySeason.getOrPut(defaultSeason) { sortedSetOf() }
             }
 
+            val downloadLinkByEpisode = cloud.files
+                .filter { it.link != null }
+                .associateBy({ it.season to it.episode }, { it.link!! })
+
+            val seasonsWithSeasonPacks = pageDownloads.perSeason.keys.toMutableSet()
+
             val episodes = mutableListOf<Episode>()
             for ((season, episodeNumbers) in episodesBySeason) {
                 for (ep in episodeNumbers) {
+                    val downloads = buildList {
+                        downloadLinkByEpisode[season to ep]?.let { add(it) }
+                        addAll(pageDownloads.perEpisode[season to ep].orEmpty())
+                    }.distinct()
                     episodes.add(
-                        newEpisode("$url|$season|$ep") {
+                        newEpisode(EpisodePayload(url, season, ep, downloads).toJson()) {
                             this.name = "Episode $ep"
                             this.season = season
                             this.episode = ep
                         }
                     )
                 }
-                // the site streams whole seasons as one merged file per player option
+                // the site streams whole seasons as one merged file per player option,
+                // and season tagged download buttons ride along on the same entry
                 val hasSeasonStream = options.any {
                     it.episodeNumber == null &&
                         (it.seasonNumber == season || (it.seasonNumber == null && season == defaultSeason))
                 }
-                if (hasSeasonStream) {
+                val seasonPacks = pageDownloads.perSeason[season].orEmpty()
+                if (hasSeasonStream || seasonPacks.isNotEmpty()) {
+                    seasonsWithSeasonPacks.remove(season)
                     episodes.add(
-                        newEpisode("$url|$season|$MERGED") {
+                        newEpisode(
+                            EpisodePayload(url, season, MERGED, seasonPacks).toJson()
+                        ) {
                             this.name = "Season $season (Full)"
                             this.season = season
+                            this.episode = MERGED
+                        }
+                    )
+                }
+            }
+
+            // season packs whose season has no episode list still deserve a playable entry
+            for ((season, packs) in pageDownloads.perSeason) {
+                if (season in seasonsWithSeasonPacks) {
+                    episodes.add(
+                        newEpisode(EpisodePayload(url, season, MERGED, packs).toJson()) {
+                            this.name = "Season $season (Full)"
+                            this.season = season
+                            this.episode = MERGED
+                        }
+                    )
+                }
+            }
+
+            // whole title downloads land on the default season entry so they are reachable
+            if (pageDownloads.untagged.isNotEmpty() && cloud.mirrors.isNotEmpty()) {
+                val whole = (pageDownloads.untagged + cloud.mirrors).distinct()
+                val exists = episodes.any { it.season == defaultSeason && it.episode == MERGED }
+                if (!exists) {
+                    episodes.add(
+                        newEpisode(EpisodePayload(url, defaultSeason, MERGED, whole).toJson()) {
+                            this.name = "Season $defaultSeason (Full)"
+                            this.season = defaultSeason
                             this.episode = MERGED
                         }
                     )
@@ -265,7 +419,15 @@ class TheMoviesBoss : MainAPI() {
                 if (trailer != null) addTrailer(trailer)
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, "$url|0|$MERGED") {
+            val movieDownloads = (
+                pageDownloads.untagged + cloud.mirrors +
+                    cloud.files.mapNotNull { it.link } +
+                    pageDownloads.perSeason.values.flatten()
+                ).distinct()
+            newMovieLoadResponse(
+                title, url, TvType.Movie,
+                EpisodePayload(url, 0, MERGED, movieDownloads).toJson()
+            ) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
@@ -296,7 +458,7 @@ class TheMoviesBoss : MainAPI() {
                 headers = baseHeaders
             ).text
             parseJson<DooplayerResponse>(res).embed_url
-                ?.takeIf { it.contains("tmbplayer.site/video/") }
+                ?.takeIf { it.contains("tmbplayer.") && it.contains("video") }
         } catch (e: Exception) {
             Log.e(TAG, "dooplayer: ${e.message}")
             null
@@ -319,8 +481,8 @@ class TheMoviesBoss : MainAPI() {
     private fun TmbPlayer.TmbSource.streamQuality(fallbackTitle: String?): Int =
         qualityFromText(label) ?: qualityFromText(fallbackTitle) ?: Qualities.Unknown.value
 
-    // the tmbplayer streams redirect once before the bytes flow, the player follows
-    // that itself so the links stay valid for every device ip
+    // tmbplayer hands out an hls playlist plus a download page with progressive files.
+    // both are probed here so dead links never reach the player
     private suspend fun emitOptionSources(
         option: PlayerOption,
         suffix: String,
@@ -331,18 +493,23 @@ class TheMoviesBoss : MainAPI() {
         var found = false
 
         for (source in watch.sources) {
-            val file = source.file?.takeIf { it.contains("/hls/") } ?: continue
+            val file = source.file ?: continue
+            val isHls = file.contains("/hls/") || file.substringBefore("?").endsWith(".m3u8")
+            if (!isHls) continue
+            if (!m3u8Responds(file)) continue
             callback.invoke(
-                newExtractorLink(
+                ExtractorLink(
                     source = name,
                     name = "TMBPlayer ${source.label?.ifBlank { null } ?: "Stream"}$suffix",
                     url = file,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = TmbPlayer.PLAYER_URL
-                    this.quality = source.streamQuality(watch.title)
-                    this.headers = mapOf("User-Agent" to baseHeaders["User-Agent"]!!)
-                }
+                    referer = TmbPlayer.PLAYER_URL,
+                    quality = source.streamQuality(watch.title),
+                    type = ExtractorLinkType.M3U8,
+                    headers = mapOf(
+                        "User-Agent" to baseHeaders["User-Agent"]!!,
+                        "Referer" to TmbPlayer.PLAYER_URL
+                    )
+                )
             )
             found = true
         }
@@ -350,21 +517,91 @@ class TheMoviesBoss : MainAPI() {
         val downloadUrl = watch.download_url ?: return found
         val downloads = TmbPlayer.resolveDownloads(downloadUrl, embedUrl) ?: return found
         for (source in downloads.sources.distinctBy { it.file }) {
-            val file = source.file?.takeIf { it.contains("/stream-vid/") } ?: continue
+            val file = source.file ?: continue
+            if (file.contains("/hls/") || file.substringBefore("?").endsWith(".m3u8")) continue
+            if (!urlResponds(file, embedUrl)) continue
             callback.invoke(
-                newExtractorLink(
+                ExtractorLink(
                     source = name,
                     name = "TMB Download ${source.label?.ifBlank { null } ?: "File"}$suffix",
                     url = file,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    this.quality = source.streamQuality(downloads.title ?: watch.title)
-                    this.headers = mapOf("User-Agent" to baseHeaders["User-Agent"]!!)
-                }
+                    referer = embedUrl,
+                    quality = source.streamQuality(downloads.title ?: watch.title),
+                    type = ExtractorLinkType.VIDEO,
+                    headers = mapOf("User-Agent" to baseHeaders["User-Agent"]!!)
+                )
             )
             found = true
         }
         return found
+    }
+
+    // a manifest answer proves the playlist alive, http level rejections prove it dead,
+    // network level failures stay ambiguous and still reach the player
+    private suspend fun m3u8Responds(url: String): Boolean {
+        return try {
+            val res = app.get(
+                url,
+                headers = mapOf(
+                    "User-Agent" to baseHeaders["User-Agent"]!!,
+                    "Referer" to TmbPlayer.PLAYER_URL
+                ),
+                timeout = 10000L
+            )
+            if (res.code in 200..299) {
+                res.text.contains("#EXTM3U") || res.text.contains("#EXT-X")
+            } else {
+                Log.d(TAG, "m3u8 probe code ${res.code}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "m3u8 probe: ${e.message}")
+            true
+        }
+    }
+
+    // progressive files redirect once before serving, a head request filters the dead ones
+    private suspend fun urlResponds(url: String, referer: String): Boolean {
+        return try {
+            val res = app.head(
+                url,
+                headers = mapOf(
+                    "User-Agent" to baseHeaders["User-Agent"]!!,
+                    "Referer" to referer
+                ),
+                timeout = 10000L
+            )
+            res.code < 400 || res.code == 405
+        } catch (e: Exception) {
+            Log.d(TAG, "probe $url: ${e.message}")
+            true
+        }
+    }
+
+    private suspend fun resolveDownload(
+        link: String,
+        referer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            if (!MIRROR_HOSTS.any { link.contains(it, true) } && directFileRegex.containsMatchIn(link)) {
+                callback.invoke(
+                    ExtractorLink(
+                        source = name,
+                        name = "Direct ${link.substringAfterLast('/').substringBefore('?')}",
+                        url = link,
+                        referer = mainUrl,
+                        quality = getIndexQuality(link),
+                        type = ExtractorLinkType.VIDEO
+                    )
+                )
+                return
+            }
+            loadExtractor(link, referer, subtitleCallback, callback)
+        } catch (e: Exception) {
+            Log.e(TAG, "download $link: ${e.message}")
+        }
     }
 
     override suspend fun loadLinks(
@@ -374,19 +611,38 @@ class TheMoviesBoss : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-        val parts = data.split('|', limit = 3)
-        val pageUrl = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: return false
-        val season = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        val episode = parts.getOrNull(2)?.toIntOrNull() ?: MERGED
+        val payload = try {
+            parseJson<EpisodePayload>(data)
+        } catch (e: Exception) {
+            Log.e(TAG, "payload: ${e.message}")
+            null
+        } ?: return false
+
+        val pageUrl = payload.page.takeIf { it.isNotBlank() } ?: return false
+        val season = payload.season
+        val episode = payload.episode
+
+        val emitted = AtomicInteger(0)
+        val counted: (ExtractorLink) -> Unit = { link ->
+            emitted.incrementAndGet()
+            callback.invoke(link)
+        }
+
+        // download links resolve first so the sources list fills without waiting on the player api
+        coroutineScope {
+            payload.downloads.map { link ->
+                async(Dispatchers.IO) { resolveDownload(link, pageUrl, subtitleCallback, counted) }
+            }.awaitAll()
+        }
 
         val page = try {
             getCachedPage(pageUrl)
         } catch (e: Exception) {
             Log.e(TAG, "loadLinks page: ${e.message}")
-            return false
+            return emitted.get() > 0
         }
         val options = parsePlayerOptions(page)
-        if (options.isEmpty()) return false
+        if (options.isEmpty()) return emitted.get() > 0
 
         val merged = options.filter { it.episodeNumber == null }
         val targets: List<Pair<PlayerOption, String>> = when {
@@ -404,11 +660,10 @@ class TheMoviesBoss : MainAPI() {
             }
         }
 
-        var found = false
         for ((option, suffix) in targets) {
-            found = emitOptionSources(option, suffix, callback) || found
+            emitOptionSources(option, suffix, counted)
         }
-        return found
+        return emitted.get() > 0
     }
 
     private fun findPlot(doc: Document): String? {

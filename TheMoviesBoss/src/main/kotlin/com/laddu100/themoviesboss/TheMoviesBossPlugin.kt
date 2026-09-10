@@ -8,5 +8,12 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class TheMoviesBossPlugin : Plugin() {
     override fun load(context: Context) {
         registerMainAPI(TheMoviesBoss())
+        registerExtractorAPI(TmbCloudExtractor())
+        registerExtractorAPI(HubCloudExtractor())
+        registerExtractorAPI(VCloudExtractor())
+        registerExtractorAPI(GofileExtractor())
+        registerExtractorAPI(GDFlixExtractor())
+        registerExtractorAPI(DriveleechExtractor())
+        registerExtractorAPI(DriveseedExtractor())
     }
 }
