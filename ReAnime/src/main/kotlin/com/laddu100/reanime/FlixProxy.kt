@@ -5,10 +5,12 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.URI
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -16,11 +18,14 @@ import okhttp3.Request
 object FlixProxy {
 
     private const val TAG = "ReAnime"
+    private const val MAX_STREAMS = 20
 
     private var serverSocket: ServerSocket? = null
     private var serverPort = 0
     @Volatile
     private var serverRunning = false
+
+    private val pool = Executors.newCachedThreadPool()
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -28,6 +33,7 @@ object FlixProxy {
         .build()
 
     private val streams = ConcurrentHashMap<String, StreamEntry>()
+    private val order = ArrayDeque<String>()
 
     class StreamEntry(
         val id: String,
@@ -48,7 +54,7 @@ object FlixProxy {
                 while (serverRunning) {
                     try {
                         val conn = socket.accept()
-                        handleRequest(conn)
+                        pool.execute { handleRequest(conn) }
                     } catch (e: Exception) {
                         if (serverRunning) Log.e(TAG, "accept failed: ${e.message}")
                     }
@@ -60,6 +66,7 @@ object FlixProxy {
         return serverPort
     }
 
+    @Synchronized
     fun registerMaster(masterUrl: String, masterContent: String, pkKey: ByteArray): String? {
         val port = ensureServerRunning()
         if (port == 0) return null
@@ -67,12 +74,19 @@ object FlixProxy {
             .digest(masterUrl.toByteArray())
             .joinToString("") { "%02x".format(it) }
             .take(12)
+        if (!streams.containsKey(id)) {
+            order.addLast(id)
+            while (order.size > MAX_STREAMS) {
+                order.removeFirstOrNull()?.let { streams.remove(it) }
+            }
+        }
         streams[id] = StreamEntry(id, masterUrl, masterContent, pkKey)
         return "http://127.0.0.1:$port/$id/master.m3u8"
     }
 
-    private fun handleRequest(conn: java.net.Socket) {
+    private fun handleRequest(conn: Socket) {
         try {
+            conn.soTimeout = 15000
             val reader = BufferedReader(InputStreamReader(conn.getInputStream()))
             val requestLine = reader.readLine() ?: return
             val parts = requestLine.split(" ")
@@ -81,7 +95,10 @@ object FlixProxy {
 
             val pathOnly = rawPath.substringBefore("?")
             val query = rawPath.substringAfter("?", "")
-            val segments = pathOnly.trim('/').split("/")
+            var segments = pathOnly.split("/").filter { it.isNotEmpty() }
+            if (segments.size >= 2 && segments[0] == segments[1]) {
+                segments = segments.drop(1)
+            }
             if (segments.size < 2) {
                 send404(conn)
                 return
@@ -99,10 +116,6 @@ object FlixProxy {
                     val target = decodeUrl(segments.drop(2).joinToString("/"))
                     if (target == null) send404(conn) else servePlaylist(conn, entry, target)
                 }
-                "k" -> {
-                    val target = decodeUrl(segments.drop(2).joinToString("/"))
-                    if (target == null) send404(conn) else serveKey(conn, target)
-                }
                 else -> send404(conn)
             }
         } catch (e: Exception) {
@@ -112,7 +125,7 @@ object FlixProxy {
         }
     }
 
-    private fun serveMaster(conn: java.net.Socket, entry: StreamEntry, query: String) {
+    private fun serveMaster(conn: Socket, entry: StreamEntry, query: String) {
         val lang = Regex("""(?:^|&)lang=([^&]*)""").find(query)?.groupValues?.get(1) ?: "sub"
         val rewritten = rewriteMaster(entry, lang)
         if (rewritten == null) {
@@ -146,10 +159,18 @@ object FlixProxy {
             var pendingVariant = false
             for (i in lines.indices) {
                 val line = lines[i]
-                if (line.startsWith("#EXT-X-MEDIA") && line.contains("TYPE=AUDIO")) {
-                    if (i in keep) {
-                        out.append(rewriteUri(line, masterUri, entry)).append('\n')
+                if (line.startsWith("#EXT-X-MEDIA")) {
+                    if (line.contains("TYPE=AUDIO")) {
+                        if (i in keep) {
+                            out.append(rewriteProxied(line, masterUri, entry)).append('\n')
+                        }
+                        continue
                     }
+                    out.append(rewriteAbsolute(line, masterUri)).append('\n')
+                    continue
+                }
+                if (line.startsWith("#EXT-X-SESSION-KEY")) {
+                    out.append(rewriteAbsolute(line, masterUri)).append('\n')
                     continue
                 }
                 if (line.startsWith("#EXT-X-STREAM-INF")) {
@@ -159,7 +180,7 @@ object FlixProxy {
                 }
                 if (pendingVariant && !line.startsWith("#")) {
                     val abs = resolveUri(line, masterUri) ?: return null
-                    out.append(proxyPath(entry, abs, "p")).append('\n')
+                    out.append(proxyPath(entry, abs)).append('\n')
                     pendingVariant = false
                     continue
                 }
@@ -172,16 +193,9 @@ object FlixProxy {
         }
     }
 
-    private fun rewriteUri(line: String, base: URI, entry: StreamEntry): String {
-        val m = Regex("""URI="([^"]+)"""").find(line) ?: return line
-        val abs = resolveUri(m.groupValues[1], base) ?: return line
-        return line.replaceRange(m.range, """URI="${proxyPath(entry, abs, "p")}"""")
-    }
-
-    private fun servePlaylist(conn: java.net.Socket, entry: StreamEntry, target: String) {
+    private fun servePlaylist(conn: Socket, entry: StreamEntry, target: String) {
         try {
-            val resp = fetch(target)
-            val body = resp ?: run { send404(conn); return }
+            val body = fetch(target) ?: run { send404(conn); return }
             val plain = FlixResolver.decryptPlaylist(body, entry.pkKey) ?: run { send404(conn); return }
             val base = URI(target.substringBefore("?"))
             val out = StringBuilder()
@@ -189,12 +203,12 @@ object FlixProxy {
                 val line = raw.trim()
                 if (line.isEmpty()) continue
                 if (line.startsWith("#EXT-X-KEY") || line.startsWith("#EXT-X-MAP")) {
-                    out.append(rewriteUri(line, base, entry)).append('\n')
+                    out.append(rewriteAbsolute(line, base)).append('\n')
                     continue
                 }
                 if (!line.startsWith("#")) {
-                    val abs = resolveUri(line, base) ?: line
-                    out.append(abs).append('\n')
+                    val abs = resolveUri(line, base)
+                    out.append(abs ?: line).append('\n')
                     continue
                 }
                 out.append(line).append('\n')
@@ -206,23 +220,21 @@ object FlixProxy {
         }
     }
 
-    private fun serveKey(conn: java.net.Socket, target: String) {
-        try {
-            val bytes = fetchBytes(target)
-            if (bytes == null) {
-                send404(conn)
-                return
-            }
-            sendBytes(conn, bytes, "application/octet-stream")
-        } catch (e: Exception) {
-            Log.e(TAG, "key fetch failed: ${e.message}")
-            send404(conn)
-        }
+    private fun rewriteAbsolute(line: String, base: URI): String {
+        val m = Regex("""URI="([^"]+)"""").find(line) ?: return line
+        val abs = resolveUri(m.groupValues[1], base) ?: return line
+        return line.replaceRange(m.range, """URI="$abs"""")
     }
 
-    private fun proxyPath(entry: StreamEntry, abs: String, kind: String): String {
+    private fun rewriteProxied(line: String, base: URI, entry: StreamEntry): String {
+        val m = Regex("""URI="([^"]+)"""").find(line) ?: return line
+        val abs = resolveUri(m.groupValues[1], base) ?: return line
+        return line.replaceRange(m.range, """URI="${proxyPath(entry, abs)}"""")
+    }
+
+    private fun proxyPath(entry: StreamEntry, abs: String): String {
         val enc = URLEncoder.encode(abs, "UTF-8")
-        return "/${entry.id}/$kind/$enc"
+        return "/${entry.id}/p/$enc"
     }
 
     private fun resolveUri(ref: String, base: URI): String? {
@@ -242,13 +254,13 @@ object FlixProxy {
     }
 
     private fun fetch(url: String): String? {
-        val req = Request.Builder()
-            .url(url)
-            .addHeader("User-Agent", ReAnimeApi.BROWSER_HEADERS["User-Agent"]!!)
-            .addHeader("Referer", "${ReAnimeApi.FLIX_EMBED_BASE}/")
-            .get()
-            .build()
         return try {
+            val req = Request.Builder()
+                .url(url)
+                .addHeader("User-Agent", ReAnimeApi.BROWSER_HEADERS["User-Agent"]!!)
+                .addHeader("Referer", "${ReAnimeApi.FLIX_EMBED_BASE}/")
+                .get()
+                .build()
             client.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) resp.body?.string() else null
             }
@@ -257,23 +269,7 @@ object FlixProxy {
         }
     }
 
-    private fun fetchBytes(url: String): ByteArray? {
-        val req = Request.Builder()
-            .url(url)
-            .addHeader("User-Agent", ReAnimeApi.BROWSER_HEADERS["User-Agent"]!!)
-            .addHeader("Referer", "${ReAnimeApi.FLIX_EMBED_BASE}/")
-            .get()
-            .build()
-        return try {
-            client.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) resp.body?.bytes() else null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun sendBytes(conn: java.net.Socket, bytes: ByteArray, contentType: String) {
+    private fun sendBytes(conn: Socket, bytes: ByteArray, contentType: String) {
         try {
             val out: OutputStream = conn.getOutputStream()
             val head = "HTTP/1.1 200 OK\r\n" +
@@ -287,7 +283,7 @@ object FlixProxy {
         } catch (_: Exception) {}
     }
 
-    private fun send404(conn: java.net.Socket) {
+    private fun send404(conn: Socket) {
         try {
             val out: OutputStream = conn.getOutputStream()
             val head = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"

@@ -250,6 +250,7 @@ class ReAnimeProvider : MainAPI() {
                         callback.invoke(
                             newExtractorLink(label, label, url, type = ExtractorLinkType.M3U8) {
                                 height?.let { this.quality = it }
+                                this.headers = mapOf("Referer" to "${ReAnimeApi.FLIX_EMBED_BASE}/")
                             }
                         )
                     }
