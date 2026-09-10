@@ -19,7 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 object EnmaDecryptor {
-    private const val TAG = "EnmaDecryptor"
+    private const val TAG = "EnmaDecryptorKitsu"
     private const val PAGE_URL = "https://www.enma.lol/home"
     private val mapper = ObjectMapper()
 

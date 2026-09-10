@@ -232,6 +232,7 @@ class RaghavAnime : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         isAniListDown()
+        Log.d("RaghavAnime", "search '$query'")
         val results = try {
             val variables = mapOf<String, Any?>("search" to query, "page" to 1, "perPage" to 20)
             val responseText = anilistQuery(SEARCH_QUERY, variables)
@@ -248,13 +249,16 @@ class RaghavAnime : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            Log.e("RaghavAnime", "search '$query' failed: ${e.message}")
             emptyList()
         }
+        Log.d("RaghavAnime", "search '$query' -> ${results.size} results")
         return results
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val anilistId = Regex("""/info/(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        Log.d("RaghavAnime", "load $url")
 
         isAniListDown()
 
@@ -363,6 +367,7 @@ class RaghavAnime : MainAPI() {
         val jpTitle = linkData.jpTitle
         val episode = linkData.episode
         val isDub = linkData.isDub
+        Log.d("RaghavAnime", "loadLinks: '$title' ep $episode ${if (isDub) "dub" else "sub"} anilistId=$aniId")
 
         if (RaghavAnimeFeatures.isEnabled("watch_time")) {
             try { RaghavAnimeFeatures.recordWatchTime(aniId, title, null, 24 * 60 * 1000L) } catch (_: Exception) {}
@@ -374,12 +379,14 @@ class RaghavAnime : MainAPI() {
                     val miruro = Miruro()
                     val loadResult = miruro.load("${miruro.mainUrl}/info/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
                     if (loadResult == null) {
+                        Log.d("RaghavAnime", "[Miruro] no load result for anilistId $aniId")
                     } else {
                         val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
                         val matchedEp = epList?.find { it.episode == episode }
                         if (matchedEp != null) {
                             miruro.loadLinks(matchedEp.data, false, subtitleCallback, callback)
                         } else {
+                            Log.d("RaghavAnime", "[Miruro] ep $episode not listed for anilistId $aniId")
                         }
                     }
                 } catch (e: Throwable) {
@@ -444,6 +451,7 @@ class RaghavAnime : MainAPI() {
                         if (matchedData != null) break
                     }
                     if (matchedData == null) {
+                        Log.d("RaghavAnime", "[AniWaves] no match for '$title' ep $episode")
                     } else {
                         aniWaves.loadLinks(matchedData, false, subtitleCallback, callback)
                     }
@@ -509,8 +517,6 @@ class RaghavAnime : MainAPI() {
                 } catch (e: Throwable) {
                     Log.e("RaghavAnime", "[Anineko] FAILED: ${e.message}")
                 }
-            },
-            {
             },
             {
                 try {
@@ -601,12 +607,14 @@ class RaghavAnime : MainAPI() {
                     val aniNami = RaghavAniNami()
                     val loadResult = aniNami.load("${aniNami.mainUrl}/anime/$aniId") as? com.lagradost.cloudstream3.AnimeLoadResponse
                     if (loadResult == null) {
+                        Log.d("RaghavAnime", "[AniNami] no load result for anilistId $aniId")
                     } else {
                         val epList = if (isDub) loadResult.episodes?.get(DubStatus.Dubbed) else loadResult.episodes?.get(DubStatus.Subbed)
                         val matchedEp = epList?.find { it.episode == episode }
                         if (matchedEp != null) {
                             aniNami.loadLinks(matchedEp.data, false, subtitleCallback, callback)
                         } else {
+                            Log.d("RaghavAnime", "[AniNami] ep $episode not listed for anilistId $aniId")
                         }
                     }
                 } catch (e: Throwable) {
@@ -746,6 +754,7 @@ class RaghavAnime : MainAPI() {
         }
 
         if (allCandidates.isEmpty()) {
+            Log.d("RaghavAnime", "[$sourceTag] no title match in $totalSearchResults search results")
             return null
         }
 
@@ -759,14 +768,15 @@ class RaghavAnime : MainAPI() {
                 val loadResult = doLoad(cand.result.url) ?: continue
                 val ep = loadResult.episodes?.get(epKey)?.find { it.episode == episode }
                 if (ep != null) {
+                    Log.d("RaghavAnime", "[$sourceTag] matched '${cand.result.name}' for ep $episode")
                     return ep.data
-                } else {
                 }
             } catch (e: Throwable) {
                 Log.e("RaghavAnime", "[$sourceTag] load failed for '${cand.result.name}': ${e.message}")
             }
         }
 
+        Log.d("RaghavAnime", "[$sourceTag] ep $episode not found on ${allCandidates.size} candidates")
         return null
     }
 

@@ -2,6 +2,7 @@ package com.laddu100.raghavanime
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -47,6 +48,7 @@ class AnimetsuProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("animetsu") ?: mainUrl
+        Log.d("RaghavAnime", "[Animetsu] getMainPage '${request.name}' page $page on $mainUrl")
         val items = try {
             if (request.data == "recent") {
                 val resp = parseJson<PaginatedResponse>(apiGet("$apiBase/recent?page=$page&per_page=20"))
@@ -66,8 +68,10 @@ class AnimetsuProvider : MainAPI() {
                 list?.mapNotNull { it.toSearchResponse() } ?: emptyList()
             }
         } catch (e: Exception) {
+            Log.e("RaghavAnime", "[Animetsu] getMainPage '${request.name}' failed: ${e.message}")
             emptyList()
         }
+        Log.d("RaghavAnime", "[Animetsu] getMainPage '${request.name}' parsed ${items.size} items")
         val hasNext = request.data == "recent"
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
@@ -75,23 +79,29 @@ class AnimetsuProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("animetsu") ?: mainUrl
         if (query.isBlank()) return emptyList()
+        Log.d("RaghavAnime", "[Animetsu] search '$query' on $mainUrl")
         return try {
             val encoded = URLEncoder.encode(query, "UTF-8")
             val resp = parseJson<PaginatedResponse>(apiGet("$apiBase/search/?query=$encoded"))
-            resp.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            val results = resp.results?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            Log.d("RaghavAnime", "[Animetsu] search '$query' -> ${results.size} results")
+            results
         } catch (e: Exception) {
+            Log.e("RaghavAnime", "[Animetsu] search '$query' failed: ${e.message}")
             emptyList()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("animetsu") ?: mainUrl
+        Log.d("RaghavAnime", "[Animetsu] load $url on $mainUrl")
 
         val animeId = url.substringAfterLast("/").takeIf { it.isNotBlank() } ?: return null
 
         val info = try {
             parseJson<AnimeInfo>(apiGet("$apiBase/info/$animeId"))
         } catch (e: Exception) {
+            Log.e("RaghavAnime", "[Animetsu] info fetch failed for '$animeId': ${e.message}")
             return null
         }
 
@@ -106,8 +116,10 @@ class AnimetsuProvider : MainAPI() {
         val eps = try {
             parseJson<List<EpisodeItem>>(apiGet("$apiBase/eps/$animeId"))
         } catch (e: Exception) {
+            Log.e("RaghavAnime", "[Animetsu] episode list fetch failed for '$animeId': ${e.message}")
             emptyList()
         }
+        Log.d("RaghavAnime", "[Animetsu] load '$animeId': ${eps.size} episodes")
 
         var hasDub = false
         if (eps.isNotEmpty()) {
@@ -123,11 +135,15 @@ class AnimetsuProvider : MainAPI() {
                             hasDub = true
                             break
                         }
-                    } catch (e: Exception) { e.message }
+                    } catch (e: Exception) {
+                        Log.e("RaghavAnime", "[Animetsu] dub probe failed on server '${server.id}': ${e.message}")
+                    }
                 }
             } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Animetsu] dub detection failed for '$animeId': ${e.message}")
             }
         }
+        Log.d("RaghavAnime", "[Animetsu] load '$animeId': dub available=$hasDub")
 
         val subEpisodes = eps.map { ep ->
             newEpisode("animetsu|$animeId|${ep.epNum}|sub") {
@@ -179,12 +195,15 @@ class AnimetsuProvider : MainAPI() {
         val animeId = parts[1]
         val epNum = parts[2]
         val sourceType = parts[3]
+        Log.d("RaghavAnime", "[Animetsu] loadLinks anime=$animeId ep=$epNum type=$sourceType")
 
         val servers = try {
             parseJson<List<ServerItem>>(apiGet("$apiBase/servers/$animeId/$epNum"))
         } catch (e: Exception) {
+            Log.e("RaghavAnime", "[Animetsu] server list fetch failed for ep $epNum: ${e.message}")
             return false
         }
+        Log.d("RaghavAnime", "[Animetsu] loadLinks ep $epNum: ${servers.size} servers")
 
         var found = false
         val displayType = if (sourceType == "dub") "DUB" else "SUB"
@@ -195,6 +214,7 @@ class AnimetsuProvider : MainAPI() {
                 val oppai = parseJson<OppaiResponse>(oppaiText)
                 val sources = oppai.sources ?: continue
                 if (sources.isEmpty()) continue
+                Log.d("RaghavAnime", "[Animetsu] server '${server.id}' returned ${sources.size} sources")
 
                 for (source in sources) {
                     val rawUrl = source.url ?: continue
@@ -278,9 +298,11 @@ class AnimetsuProvider : MainAPI() {
                     subtitleCallback.invoke(newSubtitleFile(sub.lang ?: "English", fullSubUrl))
                 }
             } catch (e: Exception) {
+                Log.e("RaghavAnime", "[Animetsu] server '${server.id}' failed: ${e.message}")
             }
         }
 
+        Log.d("RaghavAnime", "[Animetsu] loadLinks ep $epNum done, found=$found")
         return found
     }
 

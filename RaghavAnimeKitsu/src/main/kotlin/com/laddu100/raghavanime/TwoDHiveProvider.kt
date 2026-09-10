@@ -92,7 +92,7 @@ class RaghavTwoDHive : MainAPI() {
         val html = quickGet(url)
         val soup = Jsoup.parse(html)
         val items = parseGrid(soup)
-        Log.d("RaghavAnime", "[2DHive] getMainPage '${request.name}' page $page -> ${items.size} items")
+        Log.d("RaghavAnimeKitsu", "[2DHive] getMainPage '${request.name}' page $page -> ${items.size} items")
         return newHomePageResponse(request.name, items)
     }
 
@@ -102,7 +102,7 @@ class RaghavTwoDHive : MainAPI() {
         val html = quickGet("$mainUrl/?q=$encodedQuery")
         val soup = Jsoup.parse(html)
         val results = parseGrid(soup)
-        Log.d("RaghavAnime", "[2DHive] search '$query' -> ${results.size} results")
+        Log.d("RaghavAnimeKitsu", "[2DHive] search '$query' -> ${results.size} results")
         return results
     }
 
@@ -160,7 +160,7 @@ class RaghavTwoDHive : MainAPI() {
                 val apiResp = quickGet("$mainUrl/api/anime/summary?malId=$malId")
                 val apiJson = mapper.readTree(apiResp)
                 plot = apiJson.get("anime")?.get("synopsis")?.asText() ?: ""
-            } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+            } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "2DHive: ${e.message}") }
         }
 
         val genres = mutableListOf<String>()
@@ -174,7 +174,7 @@ class RaghavTwoDHive : MainAPI() {
                     genresNode.forEach { g -> genres.add(g.asText()) }
                 }
                 year = apiJson.get("anime")?.get("year")?.asInt()
-            } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+            } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "2DHive: ${e.message}") }
         }
         if (year == null) {
             soup.select("div, span, p, small").forEach { el ->
@@ -210,7 +210,7 @@ class RaghavTwoDHive : MainAPI() {
                             }
                         }
                     }
-                } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+                } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "2DHive: ${e.message}") }
             }
         }
 
@@ -249,7 +249,7 @@ class RaghavTwoDHive : MainAPI() {
             }
         } else emptyList()
 
-        Log.d("RaghavAnime", "[2DHive] load '$title' malId=$malId eps=$epCount sub=${subEpisodes.size} dub=${dubEpisodes.size} (hasDub=$hasDub)")
+        Log.d("RaghavAnimeKitsu", "[2DHive] load '$title' malId=$malId eps=$epCount sub=${subEpisodes.size} dub=${dubEpisodes.size} (hasDub=$hasDub)")
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
@@ -269,10 +269,10 @@ class RaghavTwoDHive : MainAPI() {
                 timeout = 15_000L
             ).text
             val hasDub = html.contains("data-id=") || html.contains("data-realid=")
-            Log.d("RaghavAnime", "[2DHive] probeDub malId=$malId -> $hasDub")
+            Log.d("RaghavAnimeKitsu", "[2DHive] probeDub malId=$malId -> $hasDub")
             hasDub
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[2DHive] probeDub malId=$malId failed: ${e.message}")
+            Log.e("RaghavAnimeKitsu", "[2DHive] probeDub malId=$malId failed: ${e.message}")
             false
         }
     }
@@ -287,7 +287,7 @@ class RaghavTwoDHive : MainAPI() {
         if (parts.size < 2) return@coroutineScope false
         val epUrl = parts[0]
         val type = parts[1]
-        Log.d("RaghavAnime", "[2DHive] loadLinks ep=$epUrl type=$type")
+        Log.d("RaghavAnimeKitsu", "[2DHive] loadLinks ep=$epUrl type=$type")
 
         val html = quickGet(epUrl)
         val soup = Jsoup.parse(html)
@@ -299,7 +299,7 @@ class RaghavTwoDHive : MainAPI() {
             cu.contains("EpisodePlayer", ignoreCase = true) || cu.contains("MultiServerPlayer", ignoreCase = true)
         }
         if (island == null) {
-            Log.e("RaghavAnime", "[2DHive] no EpisodePlayer/MultiServerPlayer island on page, falling back to URL params")
+            Log.e("RaghavAnimeKitsu", "[2DHive] no EpisodePlayer/MultiServerPlayer island on page, falling back to URL params")
         }
         val propsStr = island?.attr("props")?.takeIf { it.isNotEmpty() }
         val decoded = if (propsStr != null) decodeAstro(mapper.readTree(propsStr)) else null
@@ -313,10 +313,10 @@ class RaghavTwoDHive : MainAPI() {
             ?: 1
 
         if (malId == null) {
-            Log.e("RaghavAnime", "[2DHive] could not resolve malId, aborting")
+            Log.e("RaghavAnimeKitsu", "[2DHive] could not resolve malId, aborting")
             return@coroutineScope false
         }
-        Log.d("RaghavAnime", "[2DHive] resolved malId=$malId epNum=$epNum type=$type")
+        Log.d("RaghavAnimeKitsu", "[2DHive] resolved malId=$malId epNum=$epNum type=$type")
 
         val results = mutableListOf<Deferred<Boolean>>()
 
@@ -324,7 +324,7 @@ class RaghavTwoDHive : MainAPI() {
             try {
                 resolveMegaPlay(malId, epNum, type, epUrl, subtitleCallback, callback)
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[2DHive] MegaPlay failed: ${e.message}")
+                Log.e("RaghavAnimeKitsu", "[2DHive] MegaPlay failed: ${e.message}")
                 false
             }
         })
@@ -333,13 +333,13 @@ class RaghavTwoDHive : MainAPI() {
             try {
                 resolveBabaStream(malId, epNum, type, epUrl, callback)
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[2DHive] BabaStream failed: ${e.message}")
+                Log.e("RaghavAnimeKitsu", "[2DHive] BabaStream failed: ${e.message}")
                 false
             }
         })
 
         val anyOk = results.awaitAll().any { it }
-        Log.d("RaghavAnime", "[2DHive] loadLinks done malId=$malId epNum=$epNum -> $anyOk")
+        Log.d("RaghavAnimeKitsu", "[2DHive] loadLinks done malId=$malId epNum=$epNum -> $anyOk")
         anyOk
     }
 
@@ -357,7 +357,7 @@ class RaghavTwoDHive : MainAPI() {
         val playerId = Regex("""data-id=["'](\d+)""").find(playerHtml)?.groupValues?.get(1)
             ?: Regex("""data-realid=["'](\d+)""").find(playerHtml)?.groupValues?.get(1)
             ?: run {
-                Log.e("RaghavAnime", "[2DHive] MegaPlay player page has no data-id/data-realid (malId=$malId ep=$epNum type=$type)")
+                Log.e("RaghavAnimeKitsu", "[2DHive] MegaPlay player page has no data-id/data-realid (malId=$malId ep=$epNum type=$type)")
                 return false
             }
 
@@ -379,7 +379,7 @@ class RaghavTwoDHive : MainAPI() {
         } else {
             sources?.get("file")?.asText()
         } ?: run {
-            Log.e("RaghavAnime", "[2DHive] MegaPlay getSources returned no m3u8 (playerId=$playerId)")
+            Log.e("RaghavAnimeKitsu", "[2DHive] MegaPlay getSources returned no m3u8 (playerId=$playerId)")
             return false
         }
 
@@ -406,7 +406,7 @@ class RaghavTwoDHive : MainAPI() {
                 this.referer = "https://megaplay.buzz/"
             }
         )
-        Log.d("RaghavAnime", "[2DHive] MegaPlay emitted: $label ($m3u8Url)")
+        Log.d("RaghavAnimeKitsu", "[2DHive] MegaPlay emitted: $label ($m3u8Url)")
         return true
     }
 
@@ -430,14 +430,14 @@ class RaghavTwoDHive : MainAPI() {
                         this.headers = mapOf("User-Agent" to userAgent, "Referer" to "https://babastream.top/")
                     }
                 )
-                Log.d("RaghavAnime", "[2DHive] BabaStream emitted: $resolved")
+                Log.d("RaghavAnimeKitsu", "[2DHive] BabaStream emitted: $resolved")
                 true
             } else {
-                Log.d("RaghavAnime", "[2DHive] BabaStream resolved to non-media url: $resolved")
+                Log.d("RaghavAnimeKitsu", "[2DHive] BabaStream resolved to non-media url: $resolved")
                 false
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[2DHive] BabaStream failed: ${e.message}")
+            Log.e("RaghavAnimeKitsu", "[2DHive] BabaStream failed: ${e.message}")
             false
         }
     }

@@ -49,14 +49,14 @@ class Anikai : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("anikai") ?: mainUrl
-        Log.d("RaghavAnime", "[Anikai] getMainPage page=$page name='${request.name}' data=${request.data} mainUrl=$mainUrl")
+        Log.d("RaghavAnimeKitsu", "[Anikai] getMainPage page=$page name='${request.name}' data=${request.data} mainUrl=$mainUrl")
         val doc = app.get("$mainUrl/home").document
         val home = mutableListOf<SearchResponse>()
         val category = request.data
 
         if (category == "latest-updates") {
             val items = doc.select(".r-update .aitem, .load-widget .aitem")
-            Log.d("RaghavAnime", "[Anikai] latest-updates items=${items.size}")
+            Log.d("RaghavAnimeKitsu", "[Anikai] latest-updates items=${items.size}")
             for (item in items) {
                 val aTag = item.selectFirst("a.poster") ?: continue
                 var href = aTag.attr("href")
@@ -77,10 +77,10 @@ class Anikai : MainAPI() {
             val section = doc.select("div.inner, section.swiper-slide").firstOrNull { sec ->
                 sec.select("span.stitle").text().contains(category, ignoreCase = true)
             }
-            Log.d("RaghavAnime", "[Anikai] section for category '$category' found=${section != null}")
+            Log.d("RaghavAnimeKitsu", "[Anikai] section for category '$category' found=${section != null}")
             if (section != null) {
                 val items = section.select(".aitem")
-                Log.d("RaghavAnime", "[Anikai] section items=${items.size}")
+                Log.d("RaghavAnimeKitsu", "[Anikai] section items=${items.size}")
                 for (item in items) {
                     var href = item.attr("href").ifEmpty { item.selectFirst("a")?.attr("href") } ?: continue
                     href = href.replace(Regex("/ep-\\d+$"), "")
@@ -99,19 +99,19 @@ class Anikai : MainAPI() {
             }
         }
 
-        Log.d("RaghavAnime", "[Anikai] getMainPage done home=${home.size}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] getMainPage done home=${home.size}")
         return newHomePageResponse(request.name, home)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("anikai") ?: mainUrl
-        Log.d("RaghavAnime", "[Anikai] search query='$query' mainUrl=$mainUrl")
+        Log.d("RaghavAnimeKitsu", "[Anikai] search query='$query' mainUrl=$mainUrl")
         val url = "$mainUrl/browser?keyword=${java.net.URLEncoder.encode(query, "utf-8")}"
         val doc = app.get(url).document
         val results = mutableListOf<SearchResponse>()
 
         val items = doc.select(".aitem")
-        Log.d("RaghavAnime", "[Anikai] search items=${items.size}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] search items=${items.size}")
         for (item in items) {
             val aTag = item.selectFirst("a.poster") ?: continue
             var href = aTag.attr("href")
@@ -129,13 +129,13 @@ class Anikai : MainAPI() {
             })
         }
 
-        Log.d("RaghavAnime", "[Anikai] search done results=${results.size}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] search done results=${results.size}")
         return results
     }
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("anikai") ?: mainUrl
-        Log.d("RaghavAnime", "[Anikai] load url=$url")
+        Log.d("RaghavAnimeKitsu", "[Anikai] load url=$url")
         val doc = app.get(url).document
 
         val title = doc.selectFirst("h1.title")?.text()?.trim() ?: return null
@@ -170,7 +170,7 @@ class Anikai : MainAPI() {
         val dubEpisodes = mutableListOf<Episode>()
 
         val epLinks = doc.select(".eplist ul.range li a")
-        Log.d("RaghavAnime", "[Anikai] load title='$title' epLinks=${epLinks.size}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] load title='$title' epLinks=${epLinks.size}")
         for (ep in epLinks) {
             val epHref = ep.attr("href")
             if (epHref.isEmpty()) continue
@@ -197,7 +197,7 @@ class Anikai : MainAPI() {
             }
         }
 
-        Log.d("RaghavAnime", "[Anikai] load done sub=${subEpisodes.size} dub=${dubEpisodes.size}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] load done sub=${subEpisodes.size} dub=${dubEpisodes.size}")
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = posterUrl
             this.backgroundPosterUrl = backgroundUrl
@@ -217,26 +217,26 @@ class Anikai : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[Anikai] loadLinks data=${data.take(120)}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] loadLinks data=${data.take(120)}")
         val parts = data.split("|")
-        Log.d("RaghavAnime", "[Anikai] loadLinks parts=${parts.size}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] loadLinks parts=${parts.size}")
         if (parts.size < 2) return false
 
         val dubOrSub = parts[0]
         val watchUrl = parts[1]
-        Log.d("RaghavAnime", "[Anikai] loadLinks dubOrSub=$dubOrSub watchUrl=$watchUrl")
+        Log.d("RaghavAnimeKitsu", "[Anikai] loadLinks dubOrSub=$dubOrSub watchUrl=$watchUrl")
 
         val doc = app.get(watchUrl).document
 
         val types = if ("sub" in dubOrSub) listOf("sub", "hsub") else listOf("dub")
-        Log.d("RaghavAnime", "[Anikai] types=$types")
+        Log.d("RaghavAnimeKitsu", "[Anikai] types=$types")
 
         val servers = types.flatMap { type ->
             doc.select("div.server-items[data-id=$type] span.server-video")
                 .map { span -> Pair(type, span) }
         }
 
-        Log.d("RaghavAnime", "[Anikai] servers=${servers.size}")
+        Log.d("RaghavAnimeKitsu", "[Anikai] servers=${servers.size}")
         if (servers.isEmpty()) return false
 
         var foundAnySources = false
@@ -247,7 +247,7 @@ class Anikai : MainAPI() {
             val serverName = server.text().trim()
             val isDub = type == "dub"
             val label = "$serverName (${if (isDub) "Dub" else "Sub"})"
-            Log.d("RaghavAnime", "[Anikai] server '$label' embed=${embedUrl.take(120)}")
+            Log.d("RaghavAnimeKitsu", "[Anikai] server '$label' embed=${embedUrl.take(120)}")
 
             try {
                 val urlObj = URL(embedUrl)
@@ -257,21 +257,21 @@ class Anikai : MainAPI() {
                     val decodedSub = URLDecoder.decode(subParam, "UTF-8")
                     val subLabel = Regex("""(?:sub_1|c1_label)=([^&]+)""").find(query)?.groupValues?.get(1)
                         ?.let { URLDecoder.decode(it, "UTF-8") } ?: "English"
-                    Log.d("RaghavAnime", "[Anikai] subtitle '$subLabel': ${decodedSub.take(120)}")
+                    Log.d("RaghavAnimeKitsu", "[Anikai] subtitle '$subLabel': ${decodedSub.take(120)}")
                     subtitleCallback.invoke(newSubtitleFile(subLabel, decodedSub))
                 }
-            } catch (e: Exception) { Log.e("RaghavAnime", "Anikai: ${e.message}") }
+            } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "Anikai: ${e.message}") }
 
             try {
                 when {
                     embedUrl.contains("vivibebe.site") || embedUrl.contains("bibiemb.xyz") -> {
-                        Log.d("RaghavAnime", "[Anikai] vivibebe route: ${embedUrl.take(120)}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] vivibebe route: ${embedUrl.take(120)}")
                         val embedHtml = app.get(embedUrl, headers = mapOf("Referer" to "$mainUrl/")).text
-                        Log.d("RaghavAnime", "[Anikai] vivibebe embedHtml length=${embedHtml.length}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] vivibebe embedHtml length=${embedHtml.length}")
                         val m3u8Url = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(embedHtml)?.groupValues?.get(1)
-                        Log.d("RaghavAnime", "[Anikai] vivibebe m3u8 found=${m3u8Url != null}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] vivibebe m3u8 found=${m3u8Url != null}")
                         if (m3u8Url != null) {
-                            Log.d("RaghavAnime", "[Anikai] link: $label -> ${m3u8Url.take(120)}")
+                            Log.d("RaghavAnimeKitsu", "[Anikai] link: $label -> ${m3u8Url.take(120)}")
                             callback.invoke(
                                 newExtractorLink(
                                     source = name,
@@ -286,21 +286,21 @@ class Anikai : MainAPI() {
                         }
                     }
                     embedUrl.contains("otakuhg.site") || embedUrl.contains("otakuvid.online") || embedUrl.contains("earnvids.com") -> {
-                        Log.d("RaghavAnime", "[Anikai] otakuhg route: ${embedUrl.take(120)}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] otakuhg route: ${embedUrl.take(120)}")
                         val embedHtml = app.get(embedUrl, headers = mapOf("Referer" to "$mainUrl/")).text
-                        Log.d("RaghavAnime", "[Anikai] otakuhg embedHtml length=${embedHtml.length}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] otakuhg embedHtml length=${embedHtml.length}")
                         var m3u8Url = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(embedHtml)?.groupValues?.get(1)
-                        Log.d("RaghavAnime", "[Anikai] otakuhg direct m3u8 found=${m3u8Url != null}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] otakuhg direct m3u8 found=${m3u8Url != null}")
                         if (m3u8Url == null) {
                             val unpacked = JsPacker.parseAndUnpack(embedHtml)
-                            Log.d("RaghavAnime", "[Anikai] JsPacker unpacked=${unpacked != null} len=${unpacked?.length}")
+                            Log.d("RaghavAnimeKitsu", "[Anikai] JsPacker unpacked=${unpacked != null} len=${unpacked?.length}")
                             if (unpacked != null) {
                                 m3u8Url = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(unpacked)?.groupValues?.get(1)
                             }
                         }
-                        Log.d("RaghavAnime", "[Anikai] otakuhg final m3u8 found=${m3u8Url != null}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] otakuhg final m3u8 found=${m3u8Url != null}")
                         if (m3u8Url != null) {
-                            Log.d("RaghavAnime", "[Anikai] link: $label -> ${m3u8Url.take(120)}")
+                            Log.d("RaghavAnimeKitsu", "[Anikai] link: $label -> ${m3u8Url.take(120)}")
                             callback.invoke(
                                 newExtractorLink(
                                     source = name,
@@ -315,27 +315,27 @@ class Anikai : MainAPI() {
                         }
                     }
                     embedUrl.contains("playmogo.com") -> {
-                        Log.d("RaghavAnime", "[Anikai] playmogo route, delegating to loadExtractor: ${embedUrl.take(120)}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] playmogo route, delegating to loadExtractor: ${embedUrl.take(120)}")
                         val loaded = loadExtractor(embedUrl, watchUrl, subtitleCallback, callback)
-                        Log.d("RaghavAnime", "[Anikai] playmogo loadExtractor loaded=$loaded")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] playmogo loadExtractor loaded=$loaded")
                         if (loaded) {
                             foundAnySources = true
                         }
                     }
                     else -> {
-                        Log.d("RaghavAnime", "[Anikai] generic route, delegating to loadExtractor: ${embedUrl.take(120)}")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] generic route, delegating to loadExtractor: ${embedUrl.take(120)}")
                         val loaded = loadExtractor(embedUrl, watchUrl, subtitleCallback, callback)
-                        Log.d("RaghavAnime", "[Anikai] generic loadExtractor loaded=$loaded")
+                        Log.d("RaghavAnimeKitsu", "[Anikai] generic loadExtractor loaded=$loaded")
                         if (loaded) {
                             foundAnySources = true
                         } else {
-                            Log.d("RaghavAnime", "[Anikai] loadExtractor failed, scanning embed page for m3u8")
+                            Log.d("RaghavAnimeKitsu", "[Anikai] loadExtractor failed, scanning embed page for m3u8")
                             val embedHtml = app.get(embedUrl, headers = mapOf("Referer" to "$mainUrl/")).text
-                            Log.d("RaghavAnime", "[Anikai] fallback embedHtml length=${embedHtml.length}")
+                            Log.d("RaghavAnimeKitsu", "[Anikai] fallback embedHtml length=${embedHtml.length}")
                             val m3u8Url = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(embedHtml)?.groupValues?.get(1)
-                            Log.d("RaghavAnime", "[Anikai] fallback m3u8 found=${m3u8Url != null}")
+                            Log.d("RaghavAnimeKitsu", "[Anikai] fallback m3u8 found=${m3u8Url != null}")
                             if (m3u8Url != null) {
-                                Log.d("RaghavAnime", "[Anikai] link: $label -> ${m3u8Url.take(120)}")
+                                Log.d("RaghavAnimeKitsu", "[Anikai] link: $label -> ${m3u8Url.take(120)}")
                                 callback.invoke(
                                     newExtractorLink(
                                         source = name,
@@ -351,10 +351,10 @@ class Anikai : MainAPI() {
                         }
                     }
                 }
-            } catch (e: Exception) { Log.e("RaghavAnime", "Anikai: ${e.message}") }
+            } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "Anikai: ${e.message}") }
         }
 
-        Log.d("RaghavAnime", "[Anikai] loadLinks done foundAnySources=$foundAnySources")
+        Log.d("RaghavAnimeKitsu", "[Anikai] loadLinks done foundAnySources=$foundAnySources")
         return foundAnySources
     }
 }

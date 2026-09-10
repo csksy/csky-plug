@@ -1,2 +1,0 @@
-com.laddu100
-string anichan_app_name

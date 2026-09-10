@@ -23,7 +23,6 @@ class RaghavAnidap : MainAPI() {
 
     private val chadHost get() = mainUrl.replace("://", "://chad.")
     private val chadUrl get() = "$chadHost/rest/api"
-    private val TAG = "RaghavAnidap"
     private val baseHeaders get() = mapOf("Referer" to "$mainUrl/home")
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -129,7 +128,8 @@ class RaghavAnidap : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-
+        Log.d("RaghavAnime", "[Anidap] search: q='${query.take(40)}'")
+        // Firebase returns dead domain, use hardcoded
         if (query.length < 2) return emptyList()
         val encoded = URLEncoder.encode(query, "UTF-8")
         val url = "$mainUrl/api/anime/search?q=$encoded"
@@ -147,6 +147,7 @@ class RaghavAnidap : MainAPI() {
                 }
                 val parsed = parseJson<SearchResponseData>(body)
                 val results = parsed.results ?: emptyList()
+                Log.d("RaghavAnime", "[Anidap] search: ${results.size} results")
                 return results.mapNotNull { item ->
                     val title = item.title?.userPreferred ?: item.title?.english ?: item.title?.romaji
                         ?: return@mapNotNull null
@@ -168,8 +169,9 @@ class RaghavAnidap : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-
+        // Firebase returns dead domain, use hardcoded
         val animeId = url.removePrefix("$mainUrl/").removePrefix("$mainUrl|").trim()
+        Log.d("RaghavAnime", "[Anidap] load: animeId=$animeId")
 
         return try {
 
@@ -183,6 +185,7 @@ class RaghavAnidap : MainAPI() {
             val poster = detail.coverImage?.extraLarge ?: detail.coverImage?.large
             val totalEps = detail.episodes ?: detail.totalEpisodes ?: 0
 
+
             val serversUrl = "$chadUrl/servers?id=$slug&epNum=1"
             val serversRes = cfAppGetAnidap(
                 serversUrl,
@@ -195,6 +198,8 @@ class RaghavAnidap : MainAPI() {
 
             val subProviders = servers.subProviders?.filter { it.id.isNotBlank() } ?: emptyList()
             val dubProviders = servers.dubProviders?.filter { it.id.isNotBlank() } ?: emptyList()
+            Log.d("RaghavAnime", "[Anidap] load servers: code=${serversRes.code} sub=${subProviders.size} dub=${dubProviders.size}")
+
 
             if (totalEps <= 0) return null
 
@@ -222,6 +227,7 @@ class RaghavAnidap : MainAPI() {
                 else -> TvType.Anime
             }
 
+            Log.d("RaghavAnime", "[Anidap] load ok: title='${title.take(40)}' totalEps=$totalEps sub=${subEpisodes.size} dub=${dubEpisodes.size}")
             return newAnimeLoadResponse(title, url, tvType) {
                 this.posterUrl = poster
                 if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
@@ -241,6 +247,7 @@ class RaghavAnidap : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
+            Log.d("RaghavAnime", "[Anidap] loadLinksByAnilistId: anilist=$anilistId ep=$episode dub=$isDub")
             val detailRes = app.get("$mainUrl/api/anime/$anilistId", headers = baseHeaders, timeout = 15_000L)
             val detailRoot = parseJson<com.fasterxml.jackson.databind.JsonNode>(detailRes.text)
             val dataNode = detailRoot.path("data")
@@ -250,6 +257,7 @@ class RaghavAnidap : MainAPI() {
             }
             val detail = parseJson<AnimeDetail>(dataNode.toString())
             val slug = detail.slug ?: detail.id ?: return false
+            Log.d("RaghavAnime", "[Anidap] anilist=$anilistId -> slug=$slug")
 
             val serversUrl = "$chadUrl/servers?id=$slug&epNum=$episode"
             val serversRes = cfAppGetAnidap(serversUrl, headers = mapOf("Referer" to "$mainUrl/", "Accept" to "application/json"))
@@ -261,6 +269,7 @@ class RaghavAnidap : MainAPI() {
             val providers = if (isDub) servers.dubProviders?.filter { it.id.isNotBlank() } ?: emptyList()
                            else servers.subProviders?.filter { it.id.isNotBlank() } ?: emptyList()
 
+            Log.d("RaghavAnime", "[Anidap] providers: ${providers.size} (isDub=$isDub)")
             if (providers.isEmpty()) return false
 
             val type = if (isDub) "dub" else "sub"
@@ -269,6 +278,7 @@ class RaghavAnidap : MainAPI() {
                 try {
                     val sourcesUrl = "$chadUrl/sources?id=$slug&epNum=$episode&type=$type&providerId=${provider.id}"
                     val sourcesRes = cfAppGetAnidap(sourcesUrl, headers = mapOf("Referer" to "$mainUrl/", "Accept" to "application/json"))
+                    Log.d("RaghavAnime", "[Anidap] provider=${provider.id} sources: code=${sourcesRes.code} len=${sourcesRes.text.length}")
                     if (sourcesRes.code != 200 || sourcesRes.text.contains("bot_detected") || sourcesRes.text.contains("\"error\"")) continue
                     val sourcesData = try { parseJson<SourcesResponse>(sourcesRes.text) } catch (e: Exception) { continue }
                     val sources = sourcesData.sources ?: emptyList()
@@ -276,6 +286,7 @@ class RaghavAnidap : MainAPI() {
                     val apiHeaders: Map<String, String> = sourcesData.headers ?: emptyMap()
                     if (sources.isEmpty()) continue
 
+                    Log.d("RaghavAnime", "[Anidap] provider=${provider.id}: ${sources.size} sources, ${tracks.size} tracks")
                     for (track in tracks) {
                         var trackUrl = track.url ?: continue
                         if (trackUrl.isBlank()) continue
@@ -288,6 +299,7 @@ class RaghavAnidap : MainAPI() {
                                 trackUrl.contains("megaplay.buzz") -> mapOf("Referer" to "https://megaplay.buzz/")
                                 else -> apiHeaders
                             }
+                            Log.d("RaghavAnime", "[Anidap] subtitle: $label url=${trackUrl.take(120)}")
                             subtitleCallback.invoke(newSubtitleFile(label, trackUrl) { this.headers = subHeaders })
                         }
                     }
@@ -299,6 +311,7 @@ class RaghavAnidap : MainAPI() {
                         val quality = source.quality ?: "auto"
                         val qualityInt = parseQuality(quality)
                         val label = buildLabel(provider.id, quality)
+                        Log.d("RaghavAnime", "[Anidap] link: $label url=${sourceUrl.take(120)}")
                         val isM3u8 = sourceUrl.contains(".m3u8") || sourceType.contains("mpegurl", ignoreCase = true) || sourceType.contains("m3u8", ignoreCase = true)
                         if (isM3u8) {
                             callback.invoke(newExtractorLink("Anidap", label, sourceUrl, type = ExtractorLinkType.M3U8) {
@@ -319,6 +332,7 @@ class RaghavAnidap : MainAPI() {
                     Log.e("RaghavAnime", "[Anidap] provider ${provider.id} failed: ${e.message}")
                 }
             }
+            Log.d("RaghavAnime", "[Anidap] loadLinksByAnilistId done: found=$found")
             return found
         } catch (e: Exception) {
             Log.e("RaghavAnime", "[Anidap] loadLinksByAnilistId failed: ${e.message}")
@@ -342,6 +356,7 @@ class RaghavAnidap : MainAPI() {
         val epNum = parts[1]
         val type = parts[2]
         val providerIds = parts[3].split(",").filter { it.isNotBlank() }
+        Log.d("RaghavAnime", "[Anidap] loadLinks: slug=$slug ep=$epNum type=$type providers=${providerIds.size}")
         val tipsMap: Map<String, String> = if (parts[4].isNotBlank()) {
             parts[4].split(";;").mapNotNull { entry ->
                 val eqIdx = entry.indexOf('=')
@@ -356,6 +371,7 @@ class RaghavAnidap : MainAPI() {
         for (providerId in providerIds) {
             val tip = tipsMap[providerId]
             try {
+                Log.d("RaghavAnime", "[Anidap] loadLinks: provider=$providerId")
                 val sourcesUrl = "$chadUrl/sources?id=$slug&epNum=$epNum&type=$type&providerId=$providerId"
                 val sourcesRes = cfAppGetAnidap(
                     sourcesUrl,
@@ -378,6 +394,7 @@ class RaghavAnidap : MainAPI() {
 
                 if (sources.isEmpty()) continue
 
+                Log.d("RaghavAnime", "[Anidap] provider=$providerId: ${sources.size} sources, ${tracks.size} tracks")
                 for (track in tracks) {
                     var trackUrl = track.url ?: continue
                     if (trackUrl.isBlank()) continue
@@ -392,6 +409,7 @@ class RaghavAnidap : MainAPI() {
                             trackUrl.contains("megaplay.buzz") -> mapOf("Referer" to "https://megaplay.buzz/")
                             else -> apiHeaders
                         }
+                        Log.d("RaghavAnime", "[Anidap] subtitle: $label url=${trackUrl.take(120)}")
                         subtitleCallback.invoke(newSubtitleFile(label, trackUrl) {
                             this.headers = subHeaders
                         })
@@ -405,6 +423,7 @@ class RaghavAnidap : MainAPI() {
                     val quality = source.quality ?: "auto"
                     val qualityInt = parseQuality(quality)
                     val label = buildLabel(providerId, quality)
+                    Log.d("RaghavAnime", "[Anidap] link: $label url=${sourceUrl.take(120)}")
 
                     val isM3u8 = sourceUrl.contains(".m3u8") ||
                         sourceType.contains("mpegurl", ignoreCase = true) ||
@@ -434,6 +453,7 @@ class RaghavAnidap : MainAPI() {
                         }
                         else -> {
                             val referer = apiHeaders["Referer"] ?: apiHeaders["referer"] ?: "$mainUrl/"
+                            Log.d("RaghavAnime", "[Anidap] no direct media, trying loadExtractor: ${sourceUrl.take(120)}")
                             val loaded = try {
                                 loadExtractor(sourceUrl, referer, subtitleCallback, callback)
                             } catch (e: Exception) {
@@ -441,6 +461,7 @@ class RaghavAnidap : MainAPI() {
                                 false
                             }
                             if (loaded) {
+                                Log.d("RaghavAnime", "[Anidap] loadExtractor ok for $label")
                                 found = true
                             } else {
                                 Log.w("RaghavAnime", "[Anidap] loadExtractor failed, emitting raw: $label")
@@ -460,6 +481,7 @@ class RaghavAnidap : MainAPI() {
             }
         }
 
+        Log.d("RaghavAnime", "[Anidap] loadLinks done: found=$found")
         return found
     }
 }

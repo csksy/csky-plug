@@ -27,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
@@ -38,8 +39,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import kotlin.coroutines.resume
-
-private const val CF_TAG = "Senshi_CFBypass"
 
 private val CF_BLOCKER_PHRASES = listOf(
     "just a moment", "checking your browser", "ddos-guard",
@@ -162,6 +161,7 @@ class SenshiCFDialog(
                     else scheduleNextPoll()
                 }
                 pollElapsedMs >= POLL_TIMEOUT_MS -> {
+                    Log.w("RaghavAnimeKitsu", "[Senshi] CF: cookie poll timed out after ${pollElapsedMs / 1000}s for $targetHost")
                     updateStatus("Timed out. Try solving the CAPTCHA then tap Bypass again.")
                 }
                 else -> scheduleNextPoll()
@@ -288,6 +288,7 @@ class SenshiCFDialog(
                     val title = view?.title ?: ""
 
                     if (isChallengeTitle(title)) {
+                        Log.d("RaghavAnimeKitsu", "[Senshi] CF: challenge page detected (title '${title.take(40)}')")
                         updateStatus("Challenge active - solve the CAPTCHA above")
                         return
                     }
@@ -325,6 +326,7 @@ class SenshiCFDialog(
 
         val ua = webView?.settings?.userAgentString ?: ""
         SenshiCFStore.save(cookieStr, ua, targetHost)
+        Log.d("RaghavAnimeKitsu", "[Senshi] CF: cookies saved for $targetHost (len ${cookieStr.length})")
 
         updateStatus("Done! Cookies saved.")
 
@@ -339,6 +341,7 @@ class SenshiCFDialog(
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
         if (!cookiesSaved) {
+            Log.w("RaghavAnimeKitsu", "[Senshi] CF: dialog dismissed without cookies (bypass failed)")
             handler.removeCallbacks(cookiePollRunnable)
             onFinished?.invoke(false)
         }
@@ -370,6 +373,7 @@ class SenshiCFDialog(
 private suspend fun showSenshiCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
     val activity = CommonActivity.activity as? AppCompatActivity
     if (activity == null || activity.isFinishing || activity.isDestroyed) {
+        Log.e("RaghavAnimeKitsu", "[Senshi] CF: no valid activity to show bypass dialog")
         return@withContext false
     }
     suspendCancellableCoroutine { cont ->
@@ -379,6 +383,7 @@ private suspend fun showSenshiCFBypassDialogAndWait(url: String): Boolean = with
         try {
             dialog.show(activity.supportFragmentManager, "SenshiCFDialog")
         } catch (e: Exception) {
+            Log.e("RaghavAnimeKitsu", "[Senshi] CF: failed to show bypass dialog: ${e.message}")
             if (cont.isActive) cont.resume(false)
         }
         cont.invokeOnCancellation { dialog.dismissAllowingStateLoss() }
@@ -425,18 +430,21 @@ internal suspend fun cfGet(
     }
 
     if (!isSenshiCloudflareBlocked(response)) return response
-
+    Log.d("RaghavAnimeKitsu", "[Senshi] CF: Cloudflare block detected (code=${response.code}) for ${url.take(80)}")
 
     senshiCfBypassMutex.withLock {
 
         val cachedCookies = SenshiCFStore.getCookies()
         if (cachedCookies != null && SenshiCFStore.getHost() == targetHost) {
+            Log.d("RaghavAnimeKitsu", "[Senshi] CF: have cached cookies for $targetHost, retrying with them")
             response = try { app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout) } catch (e: Exception) { throw e }
             if (!isSenshiCloudflareBlocked(response)) return response
+            Log.d("RaghavAnimeKitsu", "[Senshi] CF: still blocked after cached-cookie retry for $targetHost")
         }
 
         SenshiCFStore.clear()
         val bypassSuccess = showSenshiCFBypassDialogAndWait(url)
+        Log.d("RaghavAnimeKitsu", "[Senshi] CF: bypass dialog finished: success=$bypassSuccess for $targetHost")
 
         if (!bypassSuccess) {
             return@withLock
@@ -445,9 +453,11 @@ internal suspend fun cfGet(
         for (attempt in 1..2) {
             response = try { app.get(url, headers = buildSenshiHeaders(headers), timeout = timeout) } catch (e: Exception) { throw e }
             if (!isSenshiCloudflareBlocked(response)) {
+                Log.d("RaghavAnimeKitsu", "[Senshi] CF: retry succeeded on attempt $attempt for $targetHost")
                 return@withLock
             }
         }
+        Log.e("RaghavAnimeKitsu", "[Senshi] CF: still blocked for $targetHost after bypass retries, giving up")
     }
 
     return response
@@ -478,20 +488,23 @@ internal suspend fun cfPost(
     }
 
     if (!isSenshiCloudflareBlocked(response)) return response
-
+    Log.d("RaghavAnimeKitsu", "[Senshi] CF: Cloudflare block detected on post (code=${response.code}) for ${url.take(80)}")
 
     senshiCfBypassMutex.withLock {
         val cachedCookies = SenshiCFStore.getCookies()
         if (cachedCookies != null && SenshiCFStore.getHost() == targetHost) {
+            Log.d("RaghavAnimeKitsu", "[Senshi] CF: have cached cookies for $targetHost, retrying post with them")
             response = try {
                 val reqBody = body.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
                 app.post(url, requestBody = reqBody, headers = fullHeaders, timeout = timeout)
             } catch (e: Exception) { throw e }
             if (!isSenshiCloudflareBlocked(response)) return response
+            Log.d("RaghavAnimeKitsu", "[Senshi] CF: still blocked after cached-cookie retry for $targetHost")
         }
 
         SenshiCFStore.clear()
         val bypassSuccess = showSenshiCFBypassDialogAndWait(url)
+        Log.d("RaghavAnimeKitsu", "[Senshi] CF: bypass dialog finished: success=$bypassSuccess for $targetHost")
 
         if (!bypassSuccess) {
             return@withLock
@@ -509,9 +522,11 @@ internal suspend fun cfPost(
                 app.post(url, requestBody = reqBody, headers = retryHeaders, timeout = timeout)
             } catch (e: Exception) { throw e }
             if (!isSenshiCloudflareBlocked(response)) {
+                Log.d("RaghavAnimeKitsu", "[Senshi] CF: retry succeeded on attempt $attempt for $targetHost")
                 return@withLock
             }
         }
+        Log.e("RaghavAnimeKitsu", "[Senshi] CF: still blocked for $targetHost after bypass retries, giving up")
     }
 
     return response
@@ -521,5 +536,6 @@ internal fun initSenshiCFBypass(context: Context) {
     try {
         SenshiCFStore.init(context)
     } catch (e: Exception) {
+        Log.e("RaghavAnimeKitsu", "[Senshi] CF bypass init failed: ${e.message}")
     }
 }

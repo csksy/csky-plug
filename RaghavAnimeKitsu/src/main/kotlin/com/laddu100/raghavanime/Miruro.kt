@@ -69,7 +69,7 @@ class Miruro : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        Log.d("RaghavAnime", "[Miruro] getMainPage: page=$page tab=${request.name} data=${request.data}")
+        Log.d("RaghavAnimeKitsu", "[Miruro] getMainPage: page=$page tab=${request.name} data=${request.data}")
         // Firebase returns dead domain, use hardcoded
         val query = when (request.data) {
             "TRENDING" -> TRENDING_QUERY
@@ -81,7 +81,7 @@ class Miruro : MainAPI() {
         val responseText = anilistQuery(query, variables)
         val response = parseJson<AniListResponse>(responseText)
         val mediaList = response.data?.Page?.media ?: emptyList()
-        Log.d("RaghavAnime", "[Miruro] getMainPage '${request.name}': fetched ${mediaList.size} media from AniList")
+        Log.d("RaghavAnimeKitsu", "[Miruro] getMainPage '${request.name}': fetched ${mediaList.size} media from AniList")
 
         val home = mediaList.mapNotNull { media ->
             val id = media.id ?: return@mapNotNull null
@@ -92,18 +92,18 @@ class Miruro : MainAPI() {
                 addDubStatus(dubExist = true, subExist = true, dubEpisodes = media.episodes, subEpisodes = media.episodes)
             }
         }
-        Log.d("RaghavAnime", "[Miruro] getMainPage '${request.name}': built ${home.size} items")
+        Log.d("RaghavAnimeKitsu", "[Miruro] getMainPage '${request.name}': built ${home.size} items")
         return newHomePageResponse(request.name, home)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        Log.d("RaghavAnime", "[Miruro] search: query='$query'")
+        Log.d("RaghavAnimeKitsu", "[Miruro] search: query='$query'")
         // Firebase returns dead domain, use hardcoded
         val variables = mapOf<String, Any?>("search" to query, "page" to 1, "perPage" to 20)
         val responseText = anilistQuery(SEARCH_QUERY, variables)
         val response = parseJson<AniListResponse>(responseText)
         val mediaList = response.data?.Page?.media ?: emptyList()
-        Log.d("RaghavAnime", "[Miruro] search '$query' -> ${mediaList.size} results")
+        Log.d("RaghavAnimeKitsu", "[Miruro] search '$query' -> ${mediaList.size} results")
 
         return mediaList.mapNotNull { media ->
             val id = media.id ?: return@mapNotNull null
@@ -117,17 +117,17 @@ class Miruro : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        Log.d("RaghavAnime", "[Miruro] load: url=${url.take(120)}")
+        Log.d("RaghavAnimeKitsu", "[Miruro] load: url=${url.take(120)}")
         // Firebase returns dead domain, use hardcoded
         val anilistId = Regex("""/info/(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull() ?: return null
-        Log.d("RaghavAnime", "[Miruro] load: anilistId=$anilistId")
+        Log.d("RaghavAnimeKitsu", "[Miruro] load: anilistId=$anilistId")
 
         val infoText = anilistQuery(INFO_QUERY, mapOf("id" to anilistId))
         val infoResponse = parseJson<AniListResponse>(infoText)
         val media = infoResponse.data?.Media ?: return null
 
         val title = media.title?.english ?: media.title?.romaji ?: "Unknown"
-        Log.d("RaghavAnime", "[Miruro] load: title='$title' format=${media.format} status=${media.status} episodes=${media.episodes}")
+        Log.d("RaghavAnimeKitsu", "[Miruro] load: title='$title' format=${media.format} status=${media.status} episodes=${media.episodes}")
         val posterUrl = media.coverImage?.extraLarge ?: media.coverImage?.large
         val bannerUrl = media.bannerImage
         val plot = media.description?.replace(Regex("<[^>]*>"), "")
@@ -153,7 +153,7 @@ class Miruro : MainAPI() {
             val episodesJson = miruroPipeRequest("episodes", mapOf("anilistId" to anilistId))
             val episodesData = parseJson<MiruroEpisodesResponse>(episodesJson)
             val providers = episodesData.providers ?: emptyMap()
-            Log.d("RaghavAnime", "[Miruro] episodes: providers found: ${providers.size} [${providers.keys.joinToString(",")}]")
+            Log.d("RaghavAnimeKitsu", "[Miruro] episodes: providers found: ${providers.size} [${providers.keys.joinToString(",")}]")
 
             var bestSubProvider: String? = null
             var bestSubCount = 0
@@ -164,7 +164,7 @@ class Miruro : MainAPI() {
                 if (count > bestSubCount) { bestSubCount = count; bestSubProvider = provName }
             }
             if (bestSubProvider != null) {
-                Log.d("RaghavAnime", "[Miruro] episodes: best sub provider=$bestSubProvider (count=$bestSubCount)")
+                Log.d("RaghavAnimeKitsu", "[Miruro] episodes: best sub provider=$bestSubProvider (count=$bestSubCount)")
                 val epList = providers[bestSubProvider]!!.episodes!!.let { it.sub ?: it.ssub } ?: emptyList()
                 epList.forEach { ep ->
                     val epNum = ep.number ?: return@forEach
@@ -189,7 +189,7 @@ class Miruro : MainAPI() {
                 }
             }
 
-            Log.d("RaghavAnime", "[Miruro] episodes: sub episodes parsed: ${subEpisodes.size}")
+            Log.d("RaghavAnimeKitsu", "[Miruro] episodes: sub episodes parsed: ${subEpisodes.size}")
             var bestDubProvider: String? = null
             var bestDubCount = 0
             for (provName in providerOrder) {
@@ -197,7 +197,7 @@ class Miruro : MainAPI() {
                 if (count > bestDubCount) { bestDubCount = count; bestDubProvider = provName }
             }
             if (bestDubProvider != null) {
-                Log.d("RaghavAnime", "[Miruro] episodes: best dub provider=$bestDubProvider (count=$bestDubCount)")
+                Log.d("RaghavAnimeKitsu", "[Miruro] episodes: best dub provider=$bestDubProvider (count=$bestDubCount)")
                 val dubList = providers[bestDubProvider]!!.episodes!!.dub!!
                 dubList.forEach { ep ->
                     val epNum = ep.number ?: return@forEach
@@ -222,9 +222,9 @@ class Miruro : MainAPI() {
                     }
                 }
             }
-            Log.d("RaghavAnime", "[Miruro] episodes: dub episodes parsed: ${dubEpisodes.size}")
+            Log.d("RaghavAnimeKitsu", "[Miruro] episodes: dub episodes parsed: ${dubEpisodes.size}")
         } catch (e: Exception) { e.message }
-        Log.d("RaghavAnime", "[Miruro] load done: title='$title' subEpisodes=${subEpisodes.size} dubEpisodes=${dubEpisodes.size}")
+        Log.d("RaghavAnimeKitsu", "[Miruro] load done: title='$title' subEpisodes=${subEpisodes.size} dubEpisodes=${dubEpisodes.size}")
 
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = posterUrl
@@ -246,7 +246,7 @@ class Miruro : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[Miruro] loadLinks: data=${data.take(120)}")
+        Log.d("RaghavAnimeKitsu", "[Miruro] loadLinks: data=${data.take(120)}")
 
         val parts = data.split("|")
         if (parts.size < 3) return false
@@ -254,7 +254,7 @@ class Miruro : MainAPI() {
         val dubOrSub = parts[0]
         val anilistId = parts[1].toIntOrNull()
         val providerEntries = parts.drop(2)
-        Log.d("RaghavAnime", "[Miruro] loadLinks: dubOrSub=$dubOrSub anilistId=$anilistId entries=${providerEntries.size}")
+        Log.d("RaghavAnimeKitsu", "[Miruro] loadLinks: dubOrSub=$dubOrSub anilistId=$anilistId entries=${providerEntries.size}")
 
         var foundAnySources = false
         val seenUrls = mutableSetOf<String>()
@@ -268,7 +268,7 @@ class Miruro : MainAPI() {
                     val provider = colonParts[0]
                     val episodeId = colonParts[1]
                     val category = dubOrSub
-                    Log.d("RaghavAnime", "[Miruro] loadLinks: legacy 2-part entry provider=$provider episodeId=$episodeId category=$category")
+                    Log.d("RaghavAnimeKitsu", "[Miruro] loadLinks: legacy 2-part entry provider=$provider episodeId=$episodeId category=$category")
                     processProvider(provider, episodeId, category, anilistId, seenUrls, subtitleCallback, callback)?.let {
                         foundAnySources = true
                     }
@@ -286,7 +286,7 @@ class Miruro : MainAPI() {
                 foundAnySources = true
             }
         }
-        Log.d("RaghavAnime", "[Miruro] loadLinks done: foundAnySources=$foundAnySources uniqueUrls=${seenUrls.size}")
+        Log.d("RaghavAnimeKitsu", "[Miruro] loadLinks done: foundAnySources=$foundAnySources uniqueUrls=${seenUrls.size}")
         return foundAnySources
     }
 
@@ -300,7 +300,7 @@ class Miruro : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean? {
         val displayName = providerDisplayNames[provider] ?: provider
-        Log.d("RaghavAnime", "[Miruro] processProvider: provider=$provider ($displayName) episodeId=$episodeId category=$category anilistId=$anilistId")
+        Log.d("RaghavAnimeKitsu", "[Miruro] processProvider: provider=$provider ($displayName) episodeId=$episodeId category=$category anilistId=$anilistId")
 
         try {
             val queryMap = mutableMapOf<String, Any>(
@@ -315,7 +315,7 @@ class Miruro : MainAPI() {
             val sourcesJson = miruroPipeRequest("sources", queryMap)
             val sourcesData = parseJson<MiruroSourcesResponse>(sourcesJson)
             val streams = sourcesData.streams ?: return null
-            Log.d("RaghavAnime", "[Miruro] processProvider $displayName: streams=${streams.size} subtitles=${sourcesData.subtitles?.size ?: 0}")
+            Log.d("RaghavAnimeKitsu", "[Miruro] processProvider $displayName: streams=${streams.size} subtitles=${sourcesData.subtitles?.size ?: 0}")
 
             var found = false
 
@@ -343,7 +343,7 @@ class Miruro : MainAPI() {
                         )
                     }
                 )
-                Log.d("RaghavAnime", "[Miruro] emit HLS link: $displayName$fansubLabel - $qualityLabel url=${m3u8Url.take(120)}")
+                Log.d("RaghavAnimeKitsu", "[Miruro] emit HLS link: $displayName$fansubLabel - $qualityLabel url=${m3u8Url.take(120)}")
                 found = true
             }
 
@@ -368,35 +368,35 @@ class Miruro : MainAPI() {
                         )
                     }
                 )
-                Log.d("RaghavAnime", "[Miruro] emit MP4 link: $displayName (MP4) - $qualityLabel url=${mp4Url.take(120)}")
+                Log.d("RaghavAnimeKitsu", "[Miruro] emit MP4 link: $displayName (MP4) - $qualityLabel url=${mp4Url.take(120)}")
                 found = true
             }
 
             for (stream in streams.filter { it.type == "embed" && !it.url.isNullOrEmpty() }) {
                 val embedUrl = stream.url ?: continue
                 if (!seenUrls.add(embedUrl)) continue
-                Log.d("RaghavAnime", "[Miruro] processProvider $displayName: embed url=${embedUrl.take(120)}")
+                Log.d("RaghavAnimeKitsu", "[Miruro] processProvider $displayName: embed url=${embedUrl.take(120)}")
 
                 val referer = stream.referer ?: "$mainUrl/"
                 try {
                     if (embedUrl.contains("megaplay.buzz") || embedUrl.contains("megaplay")) {
-                        Log.d("RaghavAnime", "[Miruro] embed routed to MegaPlay extractor")
+                        Log.d("RaghavAnimeKitsu", "[Miruro] embed routed to MegaPlay extractor")
                         MiruroMegaPlay().getUrl(embedUrl, referer, subtitleCallback, callback)
                         found = true
                     } else if (embedUrl.contains("vidwish.live") || embedUrl.contains("vidwish")) {
-                        Log.d("RaghavAnime", "[Miruro] embed routed to VidWish extractor")
+                        Log.d("RaghavAnimeKitsu", "[Miruro] embed routed to VidWish extractor")
                         MiruroVidWish().getUrl(embedUrl, referer, subtitleCallback, callback)
                         found = true
                     } else {
-                        Log.d("RaghavAnime", "[Miruro] embed routed to generic loadExtractor")
+                        Log.d("RaghavAnimeKitsu", "[Miruro] embed routed to generic loadExtractor")
                         try {
                             loadExtractor(embedUrl, referer, subtitleCallback, callback)
                             found = true
                         } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[Miruro] loadExtractor failed for embed: ${e.message}, falling back to MiruroWebView")
+                            Log.e("RaghavAnimeKitsu", "[Miruro] loadExtractor failed for embed: ${e.message}, falling back to MiruroWebView")
                             val host = try { java.net.URL(embedUrl).host } catch (_: Exception) { "" }
                             if (host.isNotEmpty()) {
-                                Log.d("RaghavAnime", "[Miruro] embed routed to MiruroWebView (host=$host)")
+                                Log.d("RaghavAnimeKitsu", "[Miruro] embed routed to MiruroWebView (host=$host)")
                                 MiruroWebView(host, "https://$host").getUrl(embedUrl, referer, subtitleCallback, callback)
                                 found = true
                             }
@@ -407,15 +407,15 @@ class Miruro : MainAPI() {
 
             sourcesData.subtitles?.forEach { sub ->
                 if (!sub.url.isNullOrEmpty()) {
-                    Log.d("RaghavAnime", "[Miruro] emit subtitle: lang=${sub.lang ?: "English"} url=${sub.url?.take(120)}")
+                    Log.d("RaghavAnimeKitsu", "[Miruro] emit subtitle: lang=${sub.lang ?: "English"} url=${sub.url?.take(120)}")
                     subtitleCallback.invoke(SubtitleFile(sub.lang ?: "English", sub.url))
                 }
             }
 
-            Log.d("RaghavAnime", "[Miruro] processProvider $displayName done: found=$found")
+            Log.d("RaghavAnimeKitsu", "[Miruro] processProvider $displayName done: found=$found")
             return if (found) true else null
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[Miruro] processProvider $displayName failed: ${e.message}")
+            Log.e("RaghavAnimeKitsu", "[Miruro] processProvider $displayName failed: ${e.message}")
             return null
         }
     }
