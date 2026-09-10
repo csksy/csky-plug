@@ -84,6 +84,32 @@ open class MegaPlayBaseExtractor(
 ) : ExtractorApi() {
     override val requiresReferer = true
 
+    // legacy imgnex cdn paths carry an /anime prefix the megap hosts dropped
+    private fun migrateLegacyUrl(url: String, cdnOrigin: String?): String {
+        if (!url.contains("https://cdn.imgnex.top/anime")) return url
+        return url.replace("https://cdn.imgnex.top/anime", cdnOrigin ?: "https://megap.norami.top")
+    }
+
+    private fun cdnOriginFor(streamUrl: String): String? {
+        if (streamUrl.contains("cdn.imgnex.top")) return null
+        return Regex("""https?://[^/]+""").find(streamUrl)?.value
+    }
+
+    private suspend fun fetchSourcesRoot(endpoint: String, headers: Map<String, String>): JsonObject? {
+        val text = try {
+            app.get(endpoint, headers = headers).text
+        } catch (e: Exception) {
+            Log.e(name, "sources request failed ($endpoint): ${e.message}")
+            return null
+        }
+        return try {
+            JsonParser.parseString(text).asJsonObject
+        } catch (e: Exception) {
+            Log.e(name, "sources JSON parse failed: ${e.message}")
+            null
+        }
+    }
+
     override suspend fun getUrl(
         url: String,
         referer: String?,
@@ -114,38 +140,27 @@ open class MegaPlayBaseExtractor(
             "User-Agent" to USER_AGENT,
             "Accept" to "*/*",
             "X-Requested-With" to "XMLHttpRequest",
-            "Origin" to mainUrl,
             "Referer" to url,
         )
 
-        val jsonText = try {
-            app.get(
-                "$mainUrl/stream/getSources?id=$streamId&type=$type",
-                headers = ajaxHeaders,
-                referer = url
-            ).text
-        } catch (e: Exception) {
-            Log.e(name, "getSources failed: ${e.message}")
+        // getSourcesNew answers with a plain file url on the current megap cdn;
+        // legacy getSources still returns the encrypted payload pinned to the dead imgnex host
+        val root = fetchSourcesRoot("$mainUrl/stream/getSourcesNew?id=$streamId&type=$type", ajaxHeaders)
+            ?: fetchSourcesRoot("$mainUrl/stream/getSources?id=$streamId&type=$type", ajaxHeaders)
+            ?: return
+
+        val resolved = extractStreamUrl(root)
+        if (resolved.isNullOrBlank()) {
+            Log.e(name, "No stream url in sources response for id=$streamId")
             return
         }
 
-        val root = try {
-            JsonParser.parseString(jsonText).asJsonObject
-        } catch (e: Exception) {
-            Log.e(name, "Failed to parse sources JSON: ${e.message}")
-            return
-        }
-
-        val m3u8 = extractStreamUrl(root)
-        if (m3u8.isNullOrBlank()) {
-            Log.e(name, "No stream url in getSources response for id=$streamId")
-            return
-        }
+        val cdnOrigin = cdnOriginFor(resolved)
+        val m3u8 = migrateLegacyUrl(resolved, cdnOrigin)
 
         val playbackHeaders = mapOf(
             "User-Agent" to USER_AGENT,
             "Accept" to "*/*",
-            "Origin" to mainUrl,
             "Referer" to "$mainUrl/",
         )
 
@@ -161,7 +176,7 @@ open class MegaPlayBaseExtractor(
             )
         }
 
-        emitSubtitles(root, playbackHeaders, subtitleCallback)
+        emitSubtitles(root, cdnOrigin, playbackHeaders, subtitleCallback)
     }
 
     private suspend fun extractStreamUrl(root: JsonObject): String? {
@@ -179,6 +194,7 @@ open class MegaPlayBaseExtractor(
 
     private suspend fun emitSubtitles(
         root: JsonObject,
+        cdnOrigin: String?,
         headers: Map<String, String>,
         subtitleCallback: (SubtitleFile) -> Unit
     ) {
@@ -191,7 +207,7 @@ open class MegaPlayBaseExtractor(
                 val file = track.get("file")?.asString ?: continue
                 val label = track.get("label")?.asString ?: "Unknown"
                 subtitleCallback(
-                    newSubtitleFile(label, file) {
+                    newSubtitleFile(label, migrateLegacyUrl(file, cdnOrigin)) {
                         this.headers = headers
                     }
                 )
@@ -272,8 +288,9 @@ class NineAnimeMoon : ExtractorApi() {
                 // the byse player mounts inside a cross-origin iframe, clicking the
                 // outer container forwards the action to the inner play button
                 script = """document.querySelector('button,[role="button"],.vjs-big-play-button,.jw-icon-display,.vds-play-button,[onclick]')?.click();""",
+                // the moon player handshake routinely takes over a minute to clear
                 useOkhttp = false,
-                timeout = 35_000L
+                timeout = 90_000L
             )
             val resolved = app.get(url, referer = referer ?: "https://9anime.org.lv/", interceptor = resolver).url
             val headers = mapOf("Referer" to url)
