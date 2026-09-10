@@ -338,107 +338,23 @@ class RaghavAnikoto : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("RaghavAnime", "[AniKoto] resolveMegaPlayInline: url='${url.take(100)}' domain=$domain audioType=$audioType referer='${referer.take(60)}'")
-        val host = "https://$domain"
         val serverName = when {
             domain.contains("megaplay", ignoreCase = true) -> "MegaPlay"
             domain.contains("vidwish", ignoreCase = true) -> "Vidwish"
             else -> "Vidtube"
         }
-        val type = if (url.contains("/dub", ignoreCase = true) || audioType == "dub") "dub" else "sub"
+        val displayType = if (audioType == "dub") "DUB" else "SUB"
+        val label = "AniKoto $serverName $displayType"
 
-        val pageHeaders = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer" to referer,
-        )
-
-        val ajaxHeaders = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-            "Accept" to "*/*",
-            "X-Requested-With" to "XMLHttpRequest",
-            "Origin" to host,
-            "Referer" to url,
-        )
-
-        val playbackHeaders = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-            "Accept" to "*/*",
-            "Origin" to host,
-            "Referer" to "$host/",
-        )
-
-        try {
-
-            val doc = app.get(url, headers = pageHeaders).document
-            val playerEl = doc.selectFirst("#megaplay-player")
-            val streamId = playerEl?.attr("data-id")
-                ?: playerEl?.attr("data-realid")
-                ?: Regex("""/stream/s-\d+/(\d+)""").find(url)?.groupValues?.get(1)
-                ?: return false
-            Log.d("RaghavAnime", "[AniKoto] megaplay streamId='$streamId' type=$type")
-            if (streamId.isBlank()) return false
-
-            val sourcesText = app.get("$host/stream/getSources?id=$streamId&type=$type",
-                headers = ajaxHeaders, referer = url).text
-            val root = JsonParser.parseString(sourcesText).asJsonObject
-            Log.d("RaghavAnime", "[AniKoto] megaplay getSources response length ${sourcesText.length}")
-
-            val m3u8 = try {
-                val sourcesEl = root.get("sources")
-                if (sourcesEl?.isJsonObject == true) {
-                    sourcesEl.asJsonObject.get("file")?.asString
-                } else if (sourcesEl?.isJsonArray == true && sourcesEl.asJsonArray.size() > 0) {
-                    sourcesEl.asJsonArray[0].asJsonObject.get("file")?.asString
-                } else null
-            } catch (_: Exception) { null }
-
-            Log.d("RaghavAnime", "[AniKoto] megaplay getSources m3u8: ${m3u8?.take(120)}")
-            if (m3u8.isNullOrBlank()) {
-                return false
-            }
-
-            val displayType = if (type == "dub") "DUB" else "SUB"
-            val generated = M3u8Helper.generateM3u8(
-                "AniKoto $serverName $displayType", m3u8, host, headers = playbackHeaders
-            )
-            Log.d("RaghavAnime", "[AniKoto] megaplay generated ${generated.size} m3u8 quality links")
-            if (generated.isNotEmpty()) {
-                generated.forEach(callback)
-            } else {
-                Log.d("RaghavAnime", "[AniKoto] megaplay no generated qualities, emitting direct m3u8 link")
-                callback.invoke(
-                    newExtractorLink(
-                        source = "AniKoto",
-                        name = "AniKoto $serverName $displayType",
-                        url = m3u8,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = "$host/"
-                        this.headers = playbackHeaders
-                    }
-                )
-            }
-
-            try {
-                val tracks = root.getAsJsonArray("tracks")
-                if (tracks != null) {
-                    for (element in tracks) {
-                        val track = element.asJsonObject
-                        val kind = track.get("kind")?.asString ?: continue
-                        if (kind != "captions" && kind != "subtitles") continue
-                        val file = track.get("file")?.asString ?: continue
-                        val label = track.get("label")?.asString ?: "English"
-                        Log.d("RaghavAnime", "[AniKoto] subtitle '$label' -> ${file.take(120)}")
-                        subtitleCallback.invoke(newSubtitleFile(label, file))
-                    }
-                }
-            } catch (e: Exception) { e.message }
-
-            return true
-        } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKoto] megaplay resolve failed for '$url': ${e.message}")
+        val stream = MegaPlayHelper.resolveStream(url, referer, "AniKoto")
+        if (stream == null) {
+            Log.d("RaghavAnime", "[AniKoto] megaplay resolve failed for '$url'")
             return false
         }
+        return MegaPlayHelper.emitLinks(
+            "AniKoto", label, stream.m3u8, "https://$domain/",
+            stream.subtitles, subtitleCallback, callback
+        )
     }
 
     private fun jsonResultString(json: String): String {

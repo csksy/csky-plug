@@ -349,65 +349,18 @@ class RaghavTwoDHive : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val playerUrl = "https://megaplay.buzz/stream/mal/$malId/$epNum/$type"
-        val playerHtml = app.get(playerUrl, headers = mapOf(
-            "User-Agent" to userAgent,
-            "Referer" to epUrl
-        ), timeout = 15_000L).text
-
-        val playerId = Regex("""data-id=["'](\d+)""").find(playerHtml)?.groupValues?.get(1)
-            ?: Regex("""data-realid=["'](\d+)""").find(playerHtml)?.groupValues?.get(1)
-            ?: run {
-                Log.e("RaghavAnimeKitsu", "[2DHive] MegaPlay player page has no data-id/data-realid (malId=$malId ep=$epNum type=$type)")
-                return false
-            }
-
-        val sourcesText = app.get(
-            "https://megaplay.buzz/stream/getSources?id=$playerId&type=$type",
-            headers = mapOf(
-                "User-Agent" to userAgent,
-                "Referer" to playerUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "Origin" to "https://megaplay.buzz"
-            ),
-            timeout = 15_000L
-        ).text
-
-        val sourcesJson = mapper.readTree(sourcesText)
-        val sources = sourcesJson.get("sources")
-        val m3u8Url = if (sources != null && sources.isArray) {
-            sources.get(0)?.get("file")?.asText()
-        } else {
-            sources?.get("file")?.asText()
-        } ?: run {
-            Log.e("RaghavAnimeKitsu", "[2DHive] MegaPlay getSources returned no m3u8 (playerId=$playerId)")
+        val stream = MegaPlayHelper.resolveStream(playerUrl, epUrl, "2DHive")
+        if (stream == null) {
+            Log.e("RaghavAnimeKitsu", "[2DHive] MegaPlay gave no stream (malId=$malId ep=$epNum type=$type)")
             return false
         }
 
-        val tracks = sourcesJson.get("tracks")
-        if (tracks != null && tracks.isArray) {
-            tracks.forEach { track ->
-                val file = track.get("file")?.asText() ?: return@forEach
-                val label = track.get("label")?.asText() ?: "English"
-                subtitleCallback(newSubtitleFile(label, file) {
-                    this.headers = mapOf("Referer" to "https://megaplay.buzz/")
-                })
-            }
-        }
-
         val label = if (type == "dub") "MegaPlay Dub" else "MegaPlay Sub"
-        // the cdn rejects requests without a megaplay referer
-        callback(
-            newExtractorLink(label, label, m3u8Url, type = ExtractorLinkType.M3U8) {
-                this.headers = mapOf(
-                    "User-Agent" to userAgent,
-                    "Referer" to "https://megaplay.buzz/",
-                    "Origin" to "https://megaplay.buzz"
-                )
-                this.referer = "https://megaplay.buzz/"
-            }
+        // the megap cdn rejects requests without a megaplay referer
+        return MegaPlayHelper.emitLinks(
+            "2DHive", label, stream.m3u8, "https://megaplay.buzz/",
+            stream.subtitles, subtitleCallback, callback
         )
-        Log.d("RaghavAnimeKitsu", "[2DHive] MegaPlay emitted: $label ($m3u8Url)")
-        return true
     }
 
     private suspend fun resolveBabaStream(
@@ -419,8 +372,10 @@ class RaghavTwoDHive : MainAPI() {
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
                 additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
-                script = """document.querySelector('button,[role="button"],.jw-icon-display,.vds-play-button')?.click();""",
-                useOkhttp = false, timeout = 15_000L
+                script = """document.querySelector('button,[role="button"],.vjs-big-play-button,.jw-icon-display,.vds-play-button,[onclick]')?.click();""",
+                // the babastream cloudflare managed challenge plus the moon player
+                // handshake routinely take over a minute to clear
+                useOkhttp = false, timeout = 90_000L
             )
             val resolved = app.get(embedUrl, referer = epUrl, interceptor = resolver).url
             if (resolved.contains(".m3u8") || resolved.contains(".mp4")) {

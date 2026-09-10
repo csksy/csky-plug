@@ -613,6 +613,25 @@ class RaghavAnime : MainAPI() {
                     kyren.loadLinksByAnilistId(aniId, title, episode, isDub, cSub, cLink)
                 }
             },
+            {
+                runSource("ReAnime", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    if (aniId <= 0) { Log.d("RaghavAnimeKitsu", "[ReAnime] SKIP: no anilist id"); return@runSource }
+                    val reanime = RaghavReAnime()
+                    reanime.loadLinksByAnilistId(aniId, episode, isDub, cSub, cLink)
+                }
+            },
+            {
+                runSource("9anime", linkData, subtitleCallback, callback, summary) { cSub, cLink ->
+                    val nineAnime = RaghavNineAnime()
+                    val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
+                    val watchUrl = nineAnime.findEpisodeLink(searchTitles, episode, isDub)
+                    if (watchUrl == null) {
+                        Log.d("RaghavAnimeKitsu", "[9anime] no watch page for '$title' ep $episode")
+                        return@runSource
+                    }
+                    nineAnime.loadLinks(watchUrl, false, cSub, cLink)
+                }
+            },
         )
 
         Log.d("RaghavAnimeKitsu", "[LoadLinks] SUMMARY aniId=$aniId ep=$episode ${if (isDub) "dub" else "sub"} -> ${summary.joinToString(" | ")}")

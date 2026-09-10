@@ -654,6 +654,32 @@ class RaghavAnime : MainAPI() {
                     Log.e("RaghavAnime", "[Kyren] FAILED: ${e.message}")
                 }
             },
+            {
+                try {
+                    val reanime = RaghavReAnime()
+                    if (aniId <= 0) {
+                        Log.d("RaghavAnime", "[ReAnime] SKIP: no anilist id")
+                    } else {
+                        reanime.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                    }
+                } catch (e: Throwable) {
+                    Log.e("RaghavAnime", "[ReAnime] FAILED: ${e.message}")
+                }
+            },
+            {
+                try {
+                    val nineAnime = RaghavNineAnime()
+                    val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
+                    val watchUrl = nineAnime.findEpisodeLink(searchTitles, episode, isDub)
+                    if (watchUrl == null) {
+                        Log.d("RaghavAnime", "[9anime] no watch page for '$title' ep $episode")
+                    } else {
+                        nineAnime.loadLinks(watchUrl, false, subtitleCallback, callback)
+                    }
+                } catch (e: Throwable) {
+                    Log.e("RaghavAnime", "[9anime] FAILED: ${e.message}")
+                }
+            },
         )
 
         return true

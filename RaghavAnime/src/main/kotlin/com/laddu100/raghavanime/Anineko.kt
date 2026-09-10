@@ -18,17 +18,10 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
-import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
-import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.addDubStatus
 import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.extractors.StreamWishExtractor
 import com.lagradost.cloudstream3.addDate
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.amap
 
 class Anineko : MainAPI() {
     override var mainUrl = "https://anineko.to"
@@ -248,96 +241,27 @@ class Anineko : MainAPI() {
         if (panels.isEmpty()) Log.d("RaghavAnime", "[Anineko] no server panels found in page, using whole document")
         Log.d("RaghavAnime", "[Anineko] ${panels.size} panels total, ${targetPanels.size} matched audio '$audioType'")
 
-        targetPanels.amap { panel ->
-            panel.select(".server-video").amap { serverBtn ->
+        var found = false
+        targetPanels.forEach { panel ->
+            panel.select(".server-video").forEach { serverBtn ->
                 val videoUrl = serverBtn.attr("data-video")
+                if (videoUrl.isBlank()) return@forEach
                 val serverName = serverBtn.ownText().trim()
                 val typeName = serverBtn.selectFirst("span")?.text()
+                val label = if (typeName != null) "Anineko $serverName - $typeName" else "Anineko $serverName"
                 Log.d("RaghavAnime", "[Anineko] server '$serverName' video: ${videoUrl.take(80)}")
 
-                val subMatch = Regex("""(?:sub|caption_1|c1_file)=([^&]+)""").find(videoUrl)
-                if (subMatch != null) {
-                    val subUrl = subMatch.groupValues[1]
-                    val subLang = Regex("""(?:sub_1|c1_label)=([^&]+)""").find(videoUrl)?.groupValues?.get(1) ?: "English"
-                    subtitleCallback.invoke(newSubtitleFile(subLang, subUrl))
-                }
-
-            val finalUrl = if (videoUrl.startsWith("//")) "https:$videoUrl" else videoUrl
-            val embedDoc = app.get(finalUrl, headers = mapOf("Referer" to "$mainUrl/")).text
-
-            val hlsRegexes = listOf(
-                Regex("""const\s+src\s*=\s*["'](https?://[^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
-                Regex("""file\s*:\s*["'](https?://[^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
-                Regex("""["'](https?://[^"']+/master\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
-                Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
-            )
-
-            var m3u8Url: String? = null
-            for (regex in hlsRegexes) {
-                val match = regex.find(embedDoc)
-                if (match != null) {
-                    m3u8Url = match.groupValues[1]
-                    break
-                }
-            }
-
-                Log.d("RaghavAnime", "[Anineko] server '$serverName' m3u8: ${m3u8Url?.take(80) ?: "none"} (embed html len ${embedDoc.length})")
-                if (m3u8Url != null) {
-                    val sourceName = if (typeName != null) "$serverName - $typeName" else serverName
-                    generateM3u8(
-                        sourceName,
-                        m3u8Url,
-                        finalUrl
-                    ).forEach(callback)
-                } else if (serverName.contains("HD-")) {
-                    val host = Regex("""https?://([^/]+)""").find(finalUrl)?.groupValues?.get(1) ?: ""
-                    Log.d("RaghavAnime", "[Anineko] server '$serverName' m3u8 not found, trying StreamWish extractor (host $host)")
-                    val extractor = object : StreamWishExtractor() {
-                        override var mainUrl = "https://$host"
-                        override var name = serverName
+                try {
+                    if (RaghavEmbeds.resolveEmbed(videoUrl, "$mainUrl/", label, "Anineko", audioType, subtitleCallback, callback)) {
+                        found = true
                     }
-                    val links = mutableListOf<ExtractorLink>()
-                    extractor.getUrl(finalUrl, "$mainUrl/", subtitleCallback) { link ->
-                        links.add(link)
-                    }
-                    Log.d("RaghavAnime", "[Anineko] StreamWish '$serverName' produced ${links.size} links")
-                    links.forEach { link ->
-                        val newLink = newExtractorLink(
-                            source = link.source,
-                            name = link.name + if (typeName != null) " - $typeName" else "",
-                            url = link.url,
-                            type = if (link.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) {
-                            this.quality = link.quality
-                            this.headers = link.headers
-                            this.extractorData = link.extractorData
-                        }
-                        callback.invoke(newLink)
-                    }
-                } else {
-                    val links = mutableListOf<ExtractorLink>()
-                    loadExtractor(finalUrl, "$mainUrl/", subtitleCallback) { link ->
-                        links.add(link)
-                    }
-                    Log.d("RaghavAnime", "[Anineko] loadExtractor for '$serverName' produced ${links.size} links")
-                    links.forEach { link ->
-                        val newLink = newExtractorLink(
-                            source = link.source,
-                            name = link.name + if (typeName != null) " - $typeName" else "",
-                            url = link.url,
-                            type = if (link.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) {
-                            this.quality = link.quality
-                            this.headers = link.headers
-                            this.extractorData = link.extractorData
-                        }
-                        callback.invoke(newLink)
-                    }
+                } catch (e: Exception) {
+                    Log.e("RaghavAnime", "[Anineko] server '$serverName' failed: ${e.message}")
                 }
             }
         }
 
-        Log.d("RaghavAnime", "[Anineko] loadLinks done for '$audioType' episode")
-        return true
+        Log.d("RaghavAnime", "[Anineko] loadLinks done for '$audioType' episode (found=$found)")
+        return found
     }
 }

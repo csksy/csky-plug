@@ -19,10 +19,10 @@ class VidTubeExtractor(private val sourceName: String = "VidTube") : ExtractorAp
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        Log.d("RaghavAnimeKitsu", "[VidTube] getUrl: ${url.take(120)} referer=$referer")
+        Log.d("RaghavAnime", "[VidTube] getUrl: ${url.take(120)} referer=$referer")
         val stream = MegaPlayHelper.resolveStream(url, referer ?: "$mainUrl/", "VidTube")
         if (stream == null) {
-            Log.d("RaghavAnimeKitsu", "[VidTube] no stream for ${url.take(120)}")
+            Log.d("RaghavAnime", "[VidTube] no stream for ${url.take(120)}")
             return
         }
         MegaPlayHelper.emitLinks(
