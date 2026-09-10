@@ -88,16 +88,15 @@ data class AnimeDetail(
     @JsonProperty("season_year") val seasonYear: Int? = null,
     @JsonProperty("episodes") val episodes: Int? = null,
     @JsonProperty("episodes_total") val episodesTotal: Int? = null,
-    @JsonProperty("duration") val duration: String? = null,
+    @JsonProperty("duration") val duration: Int? = null,
     @JsonProperty("subbed") val subbed: Int? = null,
     @JsonProperty("dubbed") val dubbed: Int? = null,
     @JsonProperty("average_score") val averageScore: Int? = null,
     @JsonProperty("studios") val studios: List<Studio>? = null,
     @JsonProperty("start_date") val startDate: AirDate? = null,
-    @JsonProperty("next_airing_episode") val nextAiring: NextAiring? = null,
     @JsonProperty("is_adult") val isAdult: Boolean? = null
 ) {
-    fun durationMinutes(): Int? = duration?.removeSuffix("m")?.toIntOrNull()
+    fun durationMinutes(): Int? = duration
 }
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -122,13 +121,6 @@ data class AirDate(
     @JsonProperty("year") val year: Int? = null,
     @JsonProperty("month") val month: Int? = null,
     @JsonProperty("day") val day: Int? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NextAiring(
-    @JsonProperty("episode") val episode: Int? = null,
-    @JsonProperty("airingAt") val airingAt: Long? = null,
-    @JsonProperty("airing_at") val airingAtAlt: Long? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)

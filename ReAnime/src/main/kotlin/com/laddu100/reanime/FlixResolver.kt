@@ -4,8 +4,8 @@ import android.util.Base64
 import com.lagradost.cloudstream3.app
 import java.security.MessageDigest
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 object FlixResolver {
@@ -71,22 +71,18 @@ object FlixResolver {
             val keySeed = wasm.readMemory(base + 3 * k, k)
             if (keySeed.all { it == 0.toByte() }) return null
 
-            val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-            val spec = PBEKeySpec(
-                keySeed.map { it.toInt().toChar() }.toCharArray(),
-                seed.toByteArray(Charsets.UTF_8),
-                1000, 256
-            )
-            val pbkdf2 = factory.generateSecret(spec).encoded
+            val pbkdf2 = pbkdf2Sha256(keySeed, seed.toByteArray(Charsets.UTF_8), 1000, 32)
             val xored = ByteArray(32)
             val seedBytes = seed.toByteArray(Charsets.UTF_8)
             for (i in 0 until 32) xored[i] = (pbkdf2[i].toInt() xor seedBytes[i % seedBytes.size].toInt()).toByte()
             val aesKey = MessageDigest.getInstance("SHA-256").digest(xored)
 
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            val cipher = Cipher.getInstance("AES/CBC/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), IvParameterSpec(b64d(ivf)))
-            val urlBytes = cipher.doFinal(b64d(encVideo))
-            val url = String(urlBytes, Charsets.UTF_8).trim()
+            val padded = cipher.doFinal(b64d(encVideo))
+            val pad = padded.last().toInt() and 0xFF
+            val cut = if (pad in 1..16 && padded.size > pad) padded.size - pad else padded.size
+            val url = String(padded.copyOfRange(0, cut), Charsets.UTF_8).trim()
             if (!url.startsWith("http")) return null
 
             val pk = derivePk(wasm.dataBytes) ?: return null
@@ -132,6 +128,29 @@ object FlixResolver {
         val out = ByteArray(32)
         for (i in 0 until 32) out[i] = (data[i].toInt() xor data[i + 32].toInt()).toByte()
         return out
+    }
+
+    private fun pbkdf2Sha256(password: ByteArray, salt: ByteArray, iterations: Int, keyLen: Int): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(password, "HmacSHA256"))
+        val blocks = (keyLen + 31) / 32
+        val out = ByteArray(blocks * 32)
+        val index = ByteArray(4)
+        for (i in 1..blocks) {
+            index[0] = (i ushr 24).toByte()
+            index[1] = ((i ushr 16) and 0xFF).toByte()
+            index[2] = ((i ushr 8) and 0xFF).toByte()
+            index[3] = (i and 0xFF).toByte()
+            mac.reset()
+            var u = mac.doFinal(salt + index)
+            val t = u.copyOf()
+            repeat(iterations - 1) {
+                u = mac.doFinal(u)
+                for (j in t.indices) t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
+            }
+            System.arraycopy(t, 0, out, (i - 1) * 32, 32)
+        }
+        return out.copyOf(keyLen)
     }
 
     private fun shaChain(seed: String): String {
