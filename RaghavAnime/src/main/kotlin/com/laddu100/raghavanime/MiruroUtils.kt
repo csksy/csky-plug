@@ -425,6 +425,15 @@ private suspend fun miruroPipeRequestForDomain(
 
 const val ANILIST_URL = "https://graphql.anilist.co"
 
+// anilist 403s requests that look like they come from a scraper, it wants a browser referer
+val ANILIST_HEADERS = mapOf(
+    "Accept" to "application/json",
+    "Content-Type" to "application/json",
+    "User-Agent" to CF_USER_AGENT,
+    "Origin" to "https://anilist.co",
+    "Referer" to "https://anilist.co/"
+)
+
 val SEARCH_QUERY = """
     query (${'$'}search: String, ${'$'}page: Int, ${'$'}perPage: Int) {
         Page(page: ${'$'}page, perPage: ${'$'}perPage) {
@@ -596,15 +605,10 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
         "variables" to variables
     ).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
 
-    val headers = mapOf(
-        "Accept" to "application/json",
-        "Content-Type" to "application/json"
-    )
-
     try {
         val response = app.post(
             ANILIST_URL,
-            headers = headers,
+            headers = ANILIST_HEADERS,
             requestBody = requestData,
             timeout = 15_000L
         )

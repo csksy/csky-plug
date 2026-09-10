@@ -19,27 +19,25 @@ data class AninekoAniListData(@param:JsonProperty("Media") val Media: AninekoAni
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AninekoAniListMedia(@param:JsonProperty("id") val id: Int? = null)
 
+private val ANILIST_ID_QUERY = """
+    query(${'$'}search: String) {
+        Media(search: ${'$'}search, type: ANIME) {
+            id
+        }
+    }
+""".trimIndent()
+
 suspend fun getAnilistId(title: String): Int? {
     Log.d("RaghavAnime", "[Anineko] getAnilistId querying anilist graphql for '$title'")
     return try {
-        val query = """
-            query(${'$'}search: String) {
-                Media(search: ${'$'}search, type: ANIME) {
-                    id
-                }
-            }
-        """.trimIndent()
-
         val requestData = mapOf(
-            "query" to query,
+            "query" to ANILIST_ID_QUERY,
             "variables" to mapOf("search" to title)
         ).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
 
-        val headers = mapOf("Accept" to "application/json", "Content-Type" to "application/json")
-
         val res = app.post(
             "https://graphql.anilist.co",
-            headers = headers,
+            headers = ANILIST_HEADERS,
             requestBody = requestData
         ).parsedSafe<AninekoAniListSearchResponse>()
 
