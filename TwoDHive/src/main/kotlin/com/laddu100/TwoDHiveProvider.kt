@@ -403,44 +403,75 @@ class TwoDHiveProvider : MainAPI() {
             ?: Regex("""data-realid=["'](\d+)""").find(playerHtml)?.groupValues?.get(1)
             ?: return false
 
-        val sourcesText = app.get(
-            "https://megaplay.buzz/stream/getSources?id=$playerId&type=$type",
-            headers = mapOf(
-                "User-Agent" to userAgent,
-                "Referer" to playerUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "Origin" to "https://megaplay.buzz"
-            ),
-            timeout = 15_000L
-        ).text
+        val ajaxHeaders = mapOf(
+            "User-Agent" to userAgent,
+            "X-Requested-With" to "XMLHttpRequest",
+            "Referer" to playerUrl,
+        )
 
-        val sourcesJson = mapper.readTree(sourcesText)
-        val m3u8Url = extractMegaPlayStreamUrl(sourcesJson) ?: return false
+        // getSourcesNew answers with a plain file url on the current megap cdn;
+        // legacy getSources still returns the encrypted payload pinned to the dead imgnex host
+        val sourcesJson = fetchJson(
+            "https://megaplay.buzz/stream/getSourcesNew?id=$playerId&type=$type", ajaxHeaders
+        ) ?: fetchJson(
+            "https://megaplay.buzz/stream/getSources?id=$playerId&type=$type", ajaxHeaders
+        ) ?: return false
+
+        val resolved = extractMegaPlayStreamUrl(sourcesJson) ?: return false
+        val cdnOrigin = cdnOriginFor(resolved)
+        val m3u8Url = migrateLegacyUrl(resolved, cdnOrigin)
 
         val tracks = sourcesJson.get("tracks")
         if (tracks != null && tracks.isArray) {
             tracks.forEach { track ->
                 val file = track.get("file")?.asText() ?: return@forEach
                 val label = track.get("label")?.asText() ?: "English"
-                subtitleCallback(newSubtitleFile(label, file) {
-                    this.headers = mapOf("Referer" to "https://megaplay.buzz/")
+                subtitleCallback(newSubtitleFile(label, migrateLegacyUrl(file, cdnOrigin)) {
+                    this.headers = mapOf(
+                        "User-Agent" to userAgent,
+                        "Referer" to "https://megaplay.buzz/"
+                    )
                 })
             }
         }
 
         val label = if (type == "dub") "MegaPlay Dub" else "MegaPlay Sub"
-        // the cdn rejects requests without a megaplay referer
+        // the megap cdn rejects requests without a megaplay referer
         callback(
             newExtractorLink(label, label, m3u8Url, type = ExtractorLinkType.M3U8) {
                 this.headers = mapOf(
                     "User-Agent" to userAgent,
-                    "Referer" to "https://megaplay.buzz/",
-                    "Origin" to "https://megaplay.buzz"
+                    "Referer" to "https://megaplay.buzz/"
                 )
                 this.referer = "https://megaplay.buzz/"
             }
         )
         return true
+    }
+
+    private fun migrateLegacyUrl(url: String, cdnOrigin: String?): String {
+        if (!url.contains("https://cdn.imgnex.top/anime")) return url
+        return url.replace("https://cdn.imgnex.top/anime", cdnOrigin ?: "https://megap.norami.top")
+    }
+
+    private fun cdnOriginFor(streamUrl: String): String? {
+        if (streamUrl.contains("cdn.imgnex.top")) return null
+        return Regex("""https?://[^/]+""").find(streamUrl)?.value
+    }
+
+    private suspend fun fetchJson(url: String, headers: Map<String, String>): JsonNode? {
+        val text = try {
+            app.get(url, headers = headers, timeout = 15_000L).text
+        } catch (e: Exception) {
+            Log.e("MegaPlay", "sources request failed ($url): ${e.message}")
+            return null
+        }
+        return try {
+            mapper.readTree(text)
+        } catch (e: Exception) {
+            Log.e("MegaPlay", "sources JSON parse failed: ${e.message}")
+            null
+        }
     }
 
     private suspend fun extractMegaPlayStreamUrl(sourcesJson: JsonNode): String? {
@@ -465,7 +496,9 @@ class TwoDHiveProvider : MainAPI() {
                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
                 additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
                 script = """document.querySelector('button,[role="button"],.vjs-big-play-button,.jw-icon-display,.vds-play-button,[onclick]')?.click();""",
-                useOkhttp = false, timeout = 40_000L
+                // the babastream cloudflare managed challenge plus the moon player
+                // handshake routinely take over a minute to clear
+                useOkhttp = false, timeout = 90_000L
             )
             val resolved = app.get(embedUrl, referer = epUrl, interceptor = resolver).url
             if (resolved.contains(".m3u8") || resolved.contains(".mp4")) {
