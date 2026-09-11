@@ -7,7 +7,13 @@ import android.content.Context
 @CloudstreamPlugin
 class Multimovies : Plugin() {
     override fun load(context: Context) {
-        // All providers should be added in this manner. Please don't edit the providers list directly.
+        initMMCFBypass()
         registerMainAPI(MultimoviesProvider())
+        openSettings = { ctx ->
+            (ctx as? androidx.appcompat.app.AppCompatActivity)?.let { activity ->
+                MMSettingsFragment(this).show(activity.supportFragmentManager, "MultimoviesSettings")
+            }
+            kotlin.Unit
+        }
     }
 }
