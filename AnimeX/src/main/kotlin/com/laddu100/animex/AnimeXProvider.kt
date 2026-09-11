@@ -129,12 +129,17 @@ class AnimeXProvider : MainAPI() {
         }
         if (subEps.isEmpty() && dubEps.isEmpty()) {
             // Episode-list API failed: still split sub/dub from the GraphQL counters
-            // so the Sub/Dub selector keeps working.
+            // so the Sub/Dub selector keeps working. Dub-only anime must not get
+            // phantom sub entries, so guard the sub list on subCount (defaulting
+            // to sub when both counters are missing/zero).
             val total = anime.episodeCount ?: 1
             val nums = (1..total).toList().ifEmpty { listOf(1) }
             val hasDubTrack = (anime.dubCount ?: 0) > 0
+            val hasSubTrack = (anime.subCount ?: 0) > 0 || !hasDubTrack
             for (num in nums) {
-                subEps.add(refBase.copy(ep = num, lang = "sub").toFallbackEpisode())
+                if (hasSubTrack) {
+                    subEps.add(refBase.copy(ep = num, lang = "sub").toFallbackEpisode())
+                }
             }
             if (hasDubTrack) {
                 for (num in nums) {
@@ -153,7 +158,12 @@ class AnimeXProvider : MainAPI() {
             }
         }
 
-        return newAnimeLoadResponse(title, "$mainUrl/anime/$slug", type) {
+        // CloudStream hides the SUB/DUB selector for movie types (isMovieType covers
+        // AnimeMovie), so present sub+dub movies as a 1-episode series to keep the
+        // dropdown - same trick AniKuro/Anistream use. Sub-only movies stay movies.
+        val finalType = if (type == TvType.AnimeMovie && dubEps.isNotEmpty()) TvType.Anime else type
+
+        return newAnimeLoadResponse(title, "$mainUrl/anime/$slug", finalType) {
             this.engName = anime.titleEnglish
             this.japName = anime.titleRomaji
             this.posterUrl = anime.coverImage?.best()

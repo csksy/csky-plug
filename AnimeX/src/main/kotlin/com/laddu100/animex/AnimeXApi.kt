@@ -25,6 +25,7 @@ object AnimeXApi {
     val BROWSER_HEADERS = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "application/json",
+        "Origin" to MAIN_URL,
         "Referer" to "$MAIN_URL/"
     )
 
@@ -36,6 +37,26 @@ object AnimeXApi {
         "Origin" to "https://animex.one",
         "Referer" to "https://plyr.animex.one/"
     )
+
+    /**
+     * GET on pp.animex.one with a Referer fallback: the WAF sometimes rejects
+     * the player referer, so retry with the main site's referer (both carry
+     * the required Origin header) before giving up.
+     */
+    private suspend fun providerGet(path: String): String? {
+        val attempts = listOf(PROVIDER_HEADERS, BROWSER_HEADERS)
+        for (headers in attempts) {
+            val body = try {
+                val resp = app.get("$PROVIDER_API$path", headers = headers)
+                if (resp.isSuccessful) resp.text else continue
+            } catch (e: Exception) {
+                Log.d(TAG, "providerGet $path failed: ${e.message?.take(80)}")
+                continue
+            }
+            return body
+        }
+        return null
+    }
 
     private inline fun <reified T> parse(text: String): T? =
         try {
@@ -129,30 +150,12 @@ object AnimeXApi {
     }
 
     suspend fun episodes(slug: String): List<EpisodeEntry> {
-        val body = try {
-            val resp = app.get(
-                "$PROVIDER_API/rest/api/episodes?id=${urlEncode(slug)}",
-                headers = PROVIDER_HEADERS
-            )
-            if (resp.isSuccessful) resp.text else return emptyList()
-        } catch (e: Exception) {
-            Log.d(TAG, "episodes failed: ${e.message?.take(80)}")
-            return emptyList()
-        }
+        val body = providerGet("/rest/api/episodes?id=${urlEncode(slug)}") ?: return emptyList()
         return parse<List<EpisodeEntry>>(body) ?: emptyList()
     }
 
     suspend fun servers(slug: String, epNum: Int): ServersResponse? {
-        val body = try {
-            val resp = app.get(
-                "$PROVIDER_API/rest/api/servers?id=${urlEncode(slug)}&epNum=$epNum",
-                headers = PROVIDER_HEADERS
-            )
-            if (resp.isSuccessful) resp.text else return null
-        } catch (e: Exception) {
-            Log.d(TAG, "servers failed: ${e.message?.take(80)}")
-            return null
-        }
+        val body = providerGet("/rest/api/servers?id=${urlEncode(slug)}&epNum=$epNum") ?: return null
         return parse<ServersResponse>(body)
     }
 
@@ -162,17 +165,10 @@ object AnimeXApi {
         type: String,
         providerId: String
     ): SourcesResponse? {
-        val body = try {
-            val resp = app.get(
-                "$PROVIDER_API/rest/api/sources?id=${urlEncode(slug)}&epNum=$epNum" +
-                    "&type=$type&providerId=${urlEncode(providerId)}",
-                headers = PROVIDER_HEADERS
-            )
-            if (resp.isSuccessful) resp.text else return null
-        } catch (e: Exception) {
-            Log.d(TAG, "sources $providerId failed: ${e.message?.take(80)}")
-            return null
-        }
+        val body = providerGet(
+            "/rest/api/sources?id=${urlEncode(slug)}&epNum=$epNum" +
+                "&type=$type&providerId=${urlEncode(providerId)}"
+        ) ?: return null
         return parse<SourcesResponse>(body)
     }
 
