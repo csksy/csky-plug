@@ -128,9 +128,28 @@ class AnimeXProvider : MainAPI() {
             if (hasDub) dubEps.add(ep.toEpisode(refBase, num, "dub"))
         }
         if (subEps.isEmpty() && dubEps.isEmpty()) {
-            val fallback = (1..(anime.episodeCount ?: 1)).map { it }
-            for (num in fallback.takeIf { it.isNotEmpty() } ?: listOf(1)) {
-                subEps.add(refBase.copy(ep = num).toFallbackEpisode())
+            // Episode-list API failed: still split sub/dub from the GraphQL counters
+            // so the Sub/Dub selector keeps working.
+            val total = anime.episodeCount ?: 1
+            val nums = (1..total).toList().ifEmpty { listOf(1) }
+            val hasDubTrack = (anime.dubCount ?: 0) > 0
+            for (num in nums) {
+                subEps.add(refBase.copy(ep = num, lang = "sub").toFallbackEpisode())
+            }
+            if (hasDubTrack) {
+                for (num in nums) {
+                    dubEps.add(refBase.copy(ep = num, lang = "dub").toFallbackEpisode())
+                }
+            }
+        } else {
+            // Some anime list dub availability only on the anime-level counters; make sure
+            // the Dub tab exists whenever the site reports any dub episodes.
+            val siteHasDub = (anime.dubCount ?: 0) > 0
+            if (siteHasDub && dubEps.isEmpty() && subEps.isNotEmpty()) {
+                for (ep in subEps) {
+                    val num = ep.episode ?: continue
+                    dubEps.add(refBase.copy(ep = num, lang = "dub").toFallbackEpisode())
+                }
             }
         }
 

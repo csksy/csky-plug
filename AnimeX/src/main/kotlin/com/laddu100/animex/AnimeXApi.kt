@@ -28,9 +28,12 @@ object AnimeXApi {
         "Referer" to "$MAIN_URL/"
     )
 
+    // Cloudflare on pp.animex.one rejects requests without an Origin header (403),
+    // which silently killed episodes/servers/sources -> no sub/dub episode split.
     private val PROVIDER_HEADERS = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "application/json",
+        "Origin" to "https://animex.one",
         "Referer" to "https://plyr.animex.one/"
     )
 
