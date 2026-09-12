@@ -1,6 +1,5 @@
 package com.laddu100.senshi
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
@@ -34,8 +33,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
 
 class SenshiProvider : MainAPI() {
     override var mainUrl = "https://senshi.to"
@@ -81,9 +78,9 @@ class SenshiProvider : MainAPI() {
         "all" to "All Anime"
     )
 
-    private suspend fun getJson(url: String, timeout: Long = 15_000L): String? {
+    private suspend fun getJson(url: String, timeout: Long = 20_000L): String? {
         return try {
-            val res = app.get(url, headers = apiHeaders, timeout = timeout)
+            val res = cfGet(url, headers = apiHeaders, timeout = timeout)
             if (res.code == 200) res.text else null
         } catch (e: Exception) {
             Log.d(TAG, "GET $url failed: ${e.message}")
@@ -91,11 +88,9 @@ class SenshiProvider : MainAPI() {
         }
     }
 
-    private suspend fun postFilter(body: SenshiFilterBody, timeout: Long = 15_000L): SenshiFilterResponse? {
+    private suspend fun postFilter(body: SenshiFilterBody, timeout: Long = 20_000L): SenshiFilterResponse? {
         return try {
-            val payload = body.toJson()
-                .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-            val res = app.post("$mainUrl/anime/filter", requestBody = payload, headers = postHeaders, timeout = timeout)
+            val res = cfPost("$mainUrl/anime/filter", body = body.toJson(), headers = postHeaders, timeout = timeout)
             if (res.code == 200 || res.code == 201) parseJson<SenshiFilterResponse>(res.text) else null
         } catch (e: Exception) {
             Log.d(TAG, "filter request failed: ${e.message}")
@@ -107,12 +102,8 @@ class SenshiProvider : MainAPI() {
         return try {
             when (request.data) {
                 "latest" -> {
-                    // the paginated variant of this endpoint ignores its page/limit
-                    // params, so the plain list is all there is
                     val text = getJson("$mainUrl/episode-embeds/latest") ?: return emptyPage(request)
                     val resp = parseJson<List<SenshiLatestEmbed>>(text)
-                    // batch dumps and single episodes of the same anime can both be listed,
-                    // keep one card per anime
                     val seen = mutableSetOf<Int>()
                     val home = resp.asSequence()
                         .mapNotNull { it.anime }
@@ -229,15 +220,15 @@ class SenshiProvider : MainAPI() {
     }
 
     // dub episodes normally run from episode 1 up to dub_count, but on ongoing
-    // shows the count can lag behind the episode list, so trailing episodes are
-    // checked for dub embeds before cutting the list short
+    // shows the count can lag behind the episode list, so the last few trailing
+    // episodes are checked for dub embeds before cutting the list short
     private suspend fun buildDubEpisodes(
         malId: Int,
         episodes: List<SenshiEpisode>,
         dubCount: Int
     ): List<Episode> {
         val base = if (dubCount in 1..episodes.size) episodes.take(dubCount) else episodes
-        val trailing = if (dubCount in 1..episodes.size) episodes.drop(dubCount) else emptyList()
+        val trailing = if (dubCount in 1..episodes.size) episodes.drop(dubCount).takeLast(6) else emptyList()
         val extra = if (trailing.isEmpty()) emptyList() else coroutineScope {
             trailing.map { ep ->
                 async {
@@ -272,6 +263,7 @@ class SenshiProvider : MainAPI() {
             return false
         }
         val wantDub = epData.type == "dub"
+        val modeLabel = if (wantDub) "Dub" else "Sub"
 
         val embeds = probeEmbeds(epData.malId, epData.ep) ?: run {
             Log.e(TAG, "loadLinks: no embeds for malId=${epData.malId} ep=${epData.ep}")
@@ -298,7 +290,7 @@ class SenshiProvider : MainAPI() {
             val source = fetchVidcloud(sourceId) ?: continue
             val file = source.source ?: continue
             val master = file.src ?: continue
-            val audio = file.audio ?: ""
+            val apiQuality = file.quality?.takeIf { it.isNotBlank() && it != "Unknown" }
 
             for (track in source.subtitlesFor(wantDub)) {
                 val url = track.vtt_url?.takeIf { it.isNotBlank() } ?: track.url ?: continue
@@ -310,58 +302,109 @@ class SenshiProvider : MainAPI() {
                 )
             }
 
-            val qualityName = file.quality?.takeIf { it.isNotBlank() && it != "Unknown" }
-            val linkName = buildString {
-                if (audio == "both") append(if (wantDub) "DUB" else "SUB")
-                if (qualityName != null) {
-                    if (isNotEmpty()) append(" • ")
-                    append(qualityName)
-                }
+            if (emitStreamLinks(master, modeLabel, wantDub, apiQuality, callback)) {
+                found = true
             }
-
-            callback.invoke(
-                newExtractorLink(
-                    source = name,
-                    name = if (linkName.isBlank()) name else linkName,
-                    url = master,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = "$mainUrl/"
-                    this.headers = streamHeaders
-                    this.quality = getQualityFromName(qualityName)
-                }
-            )
-            found = true
         }
         return found
     }
 
-    private suspend fun fetchVidcloud(sourceId: Int): VidcloudSource? {
-        var text = try {
-            val res = app.get("$vidcloudApi$sourceId", headers = apiHeaders, timeout = 15_000L)
-            if (res.code != 200) {
-                Log.e(TAG, "vidcloud source $sourceId returned http ${res.code}")
-                return null
-            }
-            res.text
+    // the master playlist holds one variant per resolution plus separate audio
+    // renditions; serving a locally rewritten copy lets each link force both the
+    // picked resolution and the english or original audio track
+    private suspend fun emitStreamLinks(
+        master: String,
+        modeLabel: String,
+        wantDub: Boolean,
+        apiQuality: String?,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val masterText = try {
+            val res = app.get(master, headers = streamHeaders, timeout = 20_000L)
+            if (res.code == 200) res.text else null
         } catch (e: Exception) {
-            Log.e(TAG, "vidcloud source $sourceId request failed: ${e.message}")
-            return null
+            Log.d(TAG, "master fetch failed: ${e.message}")
+            null
         }
-        if (text.contains("too_many_requests")) {
-            // the api throttles bursts; one short retry covers quick episode hops
-            delay(3000L)
-            text = try {
-                val res = app.get("$vidcloudApi$sourceId", headers = apiHeaders, timeout = 15_000L)
-                if (res.code != 200) {
-                    Log.e(TAG, "vidcloud source $sourceId retry returned http ${res.code}")
-                    return null
+
+        if (masterText != null && masterText.startsWith("#EXTM3U")) {
+            val proxyBase = SenshiProxy.register(master, masterText, streamHeaders)
+            if (proxyBase != null) {
+                val mode = if (wantDub) "dub" else "sub"
+                val variants = parseVariantQualities(masterText)
+                if (variants.isEmpty()) {
+                    val label = "Senshi $modeLabel${apiQuality?.let { " $it" } ?: ""}"
+                    callback.invoke(
+                        newExtractorLink(source = name, name = label, url = "$proxyBase/m/$mode/0/master.m3u8", type = ExtractorLinkType.M3U8) {
+                            this.quality = getQualityFromName(apiQuality)
+                        }
+                    )
+                } else {
+                    variants.forEach { q ->
+                        val label = "Senshi $modeLabel ${q.first}"
+                        callback.invoke(
+                            newExtractorLink(source = name, name = label, url = "$proxyBase/m/$mode/${q.second}/master.m3u8", type = ExtractorLinkType.M3U8) {
+                                this.quality = getQualityFromName(q.first)
+                            }
+                        )
+                    }
                 }
-                res.text
-            } catch (e: Exception) {
-                Log.e(TAG, "vidcloud source $sourceId retry failed: ${e.message}")
-                return null
+                return true
             }
+        }
+
+        val label = "Senshi $modeLabel${apiQuality?.let { " $it" } ?: ""}"
+        callback.invoke(
+            newExtractorLink(source = name, name = label, url = master, type = ExtractorLinkType.M3U8) {
+                this.referer = "$mainUrl/"
+                this.headers = streamHeaders
+                this.quality = getQualityFromName(apiQuality)
+            }
+        )
+        return true
+    }
+
+    private val resolutionTag = Regex("""RESOLUTION=(\d+)x(\d+)""")
+
+    private fun parseVariantQualities(master: String): List<Pair<String, Int>> {
+        val lines = master.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        val qualities = mutableListOf<Pair<String, Int>>()
+        var currentRes: String? = null
+        var pending = false
+        var ordinal = 0
+        for (line in lines) {
+            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                pending = true
+                currentRes = resolutionTag.find(line)?.groupValues?.get(2)?.toIntOrNull()
+                    ?.takeIf { it > 0 }?.let { "${it}p" }
+            } else if (pending && !line.startsWith("#")) {
+                currentRes?.let { qualities.add(it to ordinal) }
+                ordinal++
+                pending = false
+            }
+        }
+        return qualities.sortedByDescending { it.first.dropLast(1).toIntOrNull() ?: 0 }
+    }
+
+    private suspend fun fetchVidcloud(sourceId: Int): VidcloudSource? {
+        var text: String? = null
+        for (attempt in 0..2) {
+            if (attempt > 0) {
+                delay(2500L * attempt)
+            }
+            text = try {
+                val res = app.get("$vidcloudApi$sourceId", headers = apiHeaders, timeout = 20_000L)
+                if (res.code == 200) res.text else null
+            } catch (e: Exception) {
+                Log.d(TAG, "vidcloud source $sourceId request failed: ${e.message}")
+                null
+            }
+            if (text != null && !text.contains("too_many_requests")) break
+            text = null
+        }
+        if (text == null) {
+            Log.e(TAG, "vidcloud source $sourceId unavailable")
+            return null
         }
         return try {
             parseJson<List<VidcloudSource>>(text).firstOrNull()
@@ -454,7 +497,7 @@ class SenshiProvider : MainAPI() {
         return if (wantDub) dub.ifEmpty { sub } else sub.ifEmpty { dub }
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     data class SenshiFilterBody(
         val searchTerm: String? = null,
         val page: Int = 1,
