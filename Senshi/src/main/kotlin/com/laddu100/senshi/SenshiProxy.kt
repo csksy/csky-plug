@@ -49,7 +49,9 @@ object SenshiProxy {
         val masterUrl: String,
         val masterContent: String,
         val headers: Map<String, String>
-    )
+    ) {
+        val servedPlaylists = ConcurrentHashMap<String, String>()
+    }
 
     @Synchronized
     private fun ensureServerRunning(): Int {
@@ -59,6 +61,7 @@ object SenshiProxy {
             serverSocket = socket
             serverPort = socket.localPort
             serverRunning = true
+            Log.d(TAG, "proxy listening on 127.0.0.1:$serverPort")
             Thread {
                 while (serverRunning) {
                     try {
@@ -78,7 +81,10 @@ object SenshiProxy {
     @Synchronized
     fun register(masterUrl: String, masterContent: String, headers: Map<String, String>): String? {
         val port = ensureServerRunning()
-        if (port == 0) return null
+        if (port == 0) {
+            Log.e(TAG, "proxy unavailable, cannot register stream")
+            return null
+        }
         val id = MessageDigest.getInstance("MD5")
             .digest(masterUrl.toByteArray())
             .joinToString("") { "%02x".format(it) }
@@ -92,7 +98,17 @@ object SenshiProxy {
             }
             streams[id] = StreamEntry(id, masterUrl, masterContent, headers)
         }
+        Log.d(TAG, "proxy stream $id registered (${masterContent.length} chars, port $port)")
         return "http://127.0.0.1:$port/$id"
+    }
+
+    private fun shortUrl(url: String): String {
+        return try {
+            val uri = URI(url)
+            "${uri.host}${uri.path}"
+        } catch (e: Exception) {
+            url.take(80)
+        }
     }
 
     private fun handleRequest(conn: Socket) {
@@ -120,6 +136,7 @@ object SenshiProxy {
             }
             val entry = streams[segments[0]]
             if (entry == null) {
+                Log.w(TAG, "proxy request for unknown stream ${segments[0]}")
                 send404(conn)
                 return
             }
@@ -129,8 +146,12 @@ object SenshiProxy {
                     val mode = segments.getOrNull(2) ?: "sub"
                     val variant = segments.getOrNull(3)?.toIntOrNull() ?: 0
                     val rewritten = rewriteMaster(entry, mode, variant)
-                    if (rewritten == null) send404(conn)
-                    else sendBytes(conn, rewritten.toByteArray(Charsets.UTF_8), HLS_TYPE)
+                    if (rewritten == null) {
+                        Log.e(TAG, "proxy master rewrite failed mode=$mode variant=$variant")
+                        send404(conn)
+                    } else {
+                        sendBytes(conn, rewritten.toByteArray(Charsets.UTF_8), HLS_TYPE)
+                    }
                 }
                 "p" -> {
                     val target = decodeUrl(segments.drop(2).joinToString("/"))
@@ -164,7 +185,16 @@ object SenshiProxy {
         if (lang.startsWith("en")) return true
         if (name.contains("english")) return true
         val u = uri.lowercase()
-        return u.contains("_en") || u.contains("/en/") || u.contains("-en")
+        return u.contains("1_en") || u.contains("_en") || u.contains("/en/") || u.contains("-en")
+    }
+
+    private fun markDefault(line: String, yes: Boolean): String {
+        val value = if (yes) "YES" else "NO"
+        return if (line.contains("DEFAULT=")) {
+            line.replace(Regex("""DEFAULT=[^,]*"""), "DEFAULT=$value")
+        } else {
+            "$line,DEFAULT=$value"
+        }
     }
 
     private fun rewriteMaster(entry: StreamEntry, mode: String, variantIdx: Int): String? {
@@ -195,6 +225,11 @@ object SenshiProxy {
                         else keepAudio.addAll(audioIdx)
                     }
                 }
+                Log.d(
+                    TAG,
+                    "master audio renditions=${audioIdx.size} english=${english.size} " +
+                        "mode=$mode kept=${keepAudio.size}"
+                )
             }
 
             val variantBlocks = mutableListOf<Pair<Int, Int>>()
@@ -224,6 +259,7 @@ object SenshiProxy {
 
             val out = StringBuilder()
             out.append("#EXTM3U\n")
+            var firstAudioKept = true
             for (i in lines.indices) {
                 if (i in skipLines) continue
                 val line = lines[i]
@@ -231,10 +267,14 @@ object SenshiProxy {
                     line == "#EXTM3U" -> {}
 
                     line.startsWith("#EXT-X-MEDIA") -> {
-                        if (line.contains("TYPE=AUDIO") && i !in keepAudio) {
-                            continue
+                        if (line.contains("TYPE=AUDIO")) {
+                            if (i !in keepAudio) continue
+                            val rewritten = rewriteRenditionLine(line, base, entry)
+                            out.append(markDefault(rewritten, firstAudioKept)).append('\n')
+                            firstAudioKept = false
+                        } else {
+                            out.append(rewriteRenditionLine(line, base, entry)).append('\n')
                         }
-                        out.append(rewriteRenditionLine(line, base, entry)).append('\n')
                     }
 
                     line.startsWith("#EXT-X-SESSION-KEY") -> {
@@ -247,7 +287,7 @@ object SenshiProxy {
 
                     !line.startsWith("#") && i == chosen.second -> {
                         val abs = resolveUri(line, base) ?: return null
-                        out.append(proxyPath(entry, abs, playlistRoute(abs))).append('\n')
+                        out.append(proxyPath(entry, abs, "p")).append('\n')
                     }
 
                     else -> out.append(line).append('\n')
@@ -260,13 +300,10 @@ object SenshiProxy {
         }
     }
 
-    private fun playlistRoute(abs: String): String =
-        if (abs.substringBefore("?").endsWith(".m3u8", ignoreCase = true)) "p" else "s"
-
     private fun rewriteRenditionLine(line: String, base: URI, entry: StreamEntry): String {
         val m = uriAttr.find(line) ?: return line
         val abs = resolveUri(m.groupValues[1], base) ?: return line
-        return line.replaceRange(m.range, """URI="${proxyPath(entry, abs, playlistRoute(abs))}"""")
+        return line.replaceRange(m.range, """URI="${proxyPath(entry, abs, "p")}"""")
     }
 
     private fun rewriteAttr(line: String, base: URI, entry: StreamEntry, route: String): String {
@@ -277,15 +314,39 @@ object SenshiProxy {
 
     private fun servePlaylist(conn: Socket, entry: StreamEntry, target: String) {
         try {
-            val body = fetchText(target, entry) ?: run { send404(conn); return }
-            if (!body.startsWith("#EXTM3U")) {
-                sendBytes(conn, body.toByteArray(Charsets.UTF_8), "application/octet-stream")
+            entry.servedPlaylists[target]?.let {
+                sendBytes(conn, it.toByteArray(Charsets.UTF_8), HLS_TYPE)
+                return
+            }
+            val body = fetchText(target, entry)
+            if (body == null) {
+                Log.e(TAG, "playlist fetch failed: ${shortUrl(target)}")
+                send404(conn)
+                return
+            }
+
+            val playlist: String = if (SenshiCrypt.isEncrypted(body)) {
+                val plain = SenshiCrypt.decrypt(body)
+                if (plain == null) {
+                    Log.e(TAG, "playlist decrypt failed: ${shortUrl(target)}")
+                    send404(conn)
+                    return
+                }
+                Log.d(TAG, "playlist decrypted ok: ${shortUrl(target)} (${plain.length} chars)")
+                plain
+            } else {
+                body
+            }
+
+            if (!playlist.startsWith("#EXTM3U")) {
+                Log.w(TAG, "playlist not m3u8: ${shortUrl(target)} starts ${playlist.take(30)}")
+                sendBytes(conn, playlist.toByteArray(Charsets.UTF_8), "application/octet-stream")
                 return
             }
 
             val base = URI(target.substringBefore("?"))
             val out = StringBuilder()
-            for (raw in body.split("\n")) {
+            for (raw in playlist.split("\n")) {
                 val line = raw.trim()
                 if (line.isEmpty()) continue
                 when {
@@ -305,7 +366,9 @@ object SenshiProxy {
                     else -> out.append(line).append('\n')
                 }
             }
-            sendBytes(conn, out.toString().toByteArray(Charsets.UTF_8), HLS_TYPE)
+            val rewritten = out.toString()
+            entry.servedPlaylists[target] = rewritten
+            sendBytes(conn, rewritten.toByteArray(Charsets.UTF_8), HLS_TYPE)
         } catch (e: Exception) {
             Log.e(TAG, "playlist serve failed: ${e.message}")
             send404(conn)
@@ -320,10 +383,16 @@ object SenshiProxy {
                 builder.addHeader("Range", range)
             }
             client.newCall(builder.build()).execute().use { resp ->
+                if (!resp.isSuccessful && resp.code != 206) {
+                    Log.e(TAG, "segment ${resp.code}: ${shortUrl(target)}")
+                    sendEmpty(conn, resp.code)
+                    return
+                }
                 val body = resp.body ?: run { send404(conn); return }
                 val out: OutputStream = conn.getOutputStream()
                 val sb = StringBuilder()
-                sb.append("HTTP/1.1 ").append(resp.code).append(if (resp.code == 206) " Partial Content" else " OK").append("\r\n")
+                sb.append("HTTP/1.1 ").append(resp.code)
+                    .append(if (resp.code == 206) " Partial Content" else " OK").append("\r\n")
                 val ct = body.contentType()?.toString() ?: "video/mp2t"
                 sb.append("Content-Type: ").append(ct).append("\r\n")
                 val len = body.contentLength()
@@ -355,6 +424,7 @@ object SenshiProxy {
     private fun serveKey(conn: Socket, entry: StreamEntry, target: String) {
         val bytes = fetchBytes(target, entry)
         if (bytes == null) {
+            Log.e(TAG, "key fetch failed: ${shortUrl(target)}")
             send404(conn)
             return
         }
@@ -420,6 +490,15 @@ object SenshiProxy {
                 "Connection: close\r\n\r\n"
             out.write(head.toByteArray(Charsets.ISO_8859_1))
             out.write(bytes)
+            out.flush()
+        } catch (_: Exception) {}
+    }
+
+    private fun sendEmpty(conn: Socket, code: Int) {
+        try {
+            val out: OutputStream = conn.getOutputStream()
+            val head = "HTTP/1.1 $code Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            out.write(head.toByteArray(Charsets.ISO_8859_1))
             out.flush()
         } catch (_: Exception) {}
     }

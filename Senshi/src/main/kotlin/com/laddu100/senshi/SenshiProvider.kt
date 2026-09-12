@@ -63,6 +63,22 @@ class SenshiProvider : MainAPI() {
         "Referer" to "$mainUrl/browse"
     )
 
+    // mirrors the header set the site player sends on cross-origin XHRs to the
+    // stream cdn, the waf there rejects plain requests without them
+    private val cdnHeaders = mapOf(
+        "User-Agent" to ua,
+        "Accept" to "*/*",
+        "Accept-Language" to "en-US,en;q=0.9",
+        "Origin" to mainUrl,
+        "Referer" to "$mainUrl/",
+        "sec-ch-ua" to "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
+        "sec-ch-ua-mobile" to "?0",
+        "sec-ch-ua-platform" to "\"Windows\"",
+        "sec-fetch-dest" to "empty",
+        "sec-fetch-mode" to "cors",
+        "sec-fetch-site" to "cross-site"
+    )
+
     private val streamHeaders = mapOf(
         "User-Agent" to ua,
         "Accept" to "*/*",
@@ -77,6 +93,9 @@ class SenshiProvider : MainAPI() {
         "upcoming" to "Upcoming",
         "all" to "All Anime"
     )
+
+    private fun shortUrl(url: String): String =
+        url.substringBefore("?").take(90)
 
     private suspend fun getJson(url: String, timeout: Long = 20_000L): String? {
         return try {
@@ -198,6 +217,7 @@ class SenshiProvider : MainAPI() {
                 if (!hasSub && !hasDub) hasSub = true
             }
         }
+        Log.d(TAG, "load '$publicId' malId=$malId eps=${sorted.size} sub=$hasSub dub=$hasDub")
 
         val subEpisodes = if (hasSub) sorted.map { it.toEpisode(malId, "sub") } else emptyList()
         val dubEpisodes = if (hasDub && sorted.isNotEmpty()) buildDubEpisodes(malId, sorted, anime.dub_count ?: 0) else emptyList()
@@ -264,6 +284,7 @@ class SenshiProvider : MainAPI() {
         }
         val wantDub = epData.type == "dub"
         val modeLabel = if (wantDub) "Dub" else "Sub"
+        Log.d(TAG, "loadLinks: malId=${epData.malId} ep=${epData.ep} type=${epData.type}")
 
         val embeds = probeEmbeds(epData.malId, epData.ep) ?: run {
             Log.e(TAG, "loadLinks: no embeds for malId=${epData.malId} ep=${epData.ep}")
@@ -273,9 +294,11 @@ class SenshiProvider : MainAPI() {
             Log.e(TAG, "loadLinks: empty embed list for malId=${epData.malId} ep=${epData.ep}")
             return false
         }
+        Log.d(TAG, "loadLinks: embeds=${embeds.mapNotNull { it.status }}")
 
         val matching = embeds.filter { if (wantDub) it.isDub() else it.isSub() }
             .ifEmpty { embeds }
+        Log.d(TAG, "loadLinks: matched ${matching.size}/${embeds.size} for ${epData.type}")
 
         // sub and dub entries usually point at the same multi-audio stream, so
         // the source api is only hit once per unique id
@@ -284,6 +307,7 @@ class SenshiProvider : MainAPI() {
             Log.e(TAG, "loadLinks: embeds carry no source ids")
             return false
         }
+        Log.d(TAG, "loadLinks: sourceIds=$sourceIds")
 
         var found = false
         for (sourceId in sourceIds) {
@@ -291,6 +315,11 @@ class SenshiProvider : MainAPI() {
             val file = source.source ?: continue
             val master = file.src ?: continue
             val apiQuality = file.quality?.takeIf { it.isNotBlank() && it != "Unknown" }
+            Log.d(
+                TAG,
+                "source $sourceId: quality=${file.quality} audio=${file.audio} " +
+                    "tracks=${source.tracks.mapNotNull { it.label }} master=${shortUrl(master)}"
+            )
 
             for (track in source.subtitlesFor(wantDub)) {
                 val url = track.vtt_url?.takeIf { it.isNotBlank() } ?: track.url ?: continue
@@ -306,12 +335,13 @@ class SenshiProvider : MainAPI() {
                 found = true
             }
         }
+        Log.d(TAG, "loadLinks: done found=$found")
         return found
     }
 
-    // the master playlist holds one variant per resolution plus separate audio
-    // renditions; serving a locally rewritten copy lets each link force both the
-    // picked resolution and the english or original audio track
+    // the cdn hands out aes-gcm encrypted playlists prefixed with EM3U8v1:, they
+    // are decrypted locally and served through a rewriting proxy so every link
+    // can pin one resolution and one audio track
     private suspend fun emitStreamLinks(
         master: String,
         modeLabel: String,
@@ -319,21 +349,32 @@ class SenshiProvider : MainAPI() {
         apiQuality: String?,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val masterText = try {
-            val res = app.get(master, headers = streamHeaders, timeout = 20_000L)
+        val masterText: String? = try {
+            val res = cfGet(master, headers = cdnHeaders, timeout = 20_000L)
+            Log.d(TAG, "master fetch http=${res.code} len=${res.text.length} head=${res.text.take(24)}")
             if (res.code == 200) res.text else null
         } catch (e: Exception) {
-            Log.d(TAG, "master fetch failed: ${e.message}")
+            Log.e(TAG, "master fetch failed: ${e.message}")
             null
         }
 
-        if (masterText != null && masterText.startsWith("#EXTM3U")) {
-            val proxyBase = SenshiProxy.register(master, masterText, streamHeaders)
+        var playlist = masterText
+        if (playlist != null && SenshiCrypt.isEncrypted(playlist)) {
+            playlist = SenshiCrypt.decrypt(playlist)
+            if (playlist != null) {
+                Log.d(TAG, "master decrypted ok (${playlist.length} chars)")
+            }
+        }
+
+        if (playlist != null && playlist.startsWith("#EXTM3U")) {
+            val proxyBase = SenshiProxy.register(master, playlist, senshiHeaders(cdnHeaders, master))
             if (proxyBase != null) {
                 val mode = if (wantDub) "dub" else "sub"
-                val variants = parseVariantQualities(masterText)
+                val variants = parseVariantQualities(playlist)
+                Log.d(TAG, "variants=$variants")
                 if (variants.isEmpty()) {
                     val label = "Senshi $modeLabel${apiQuality?.let { " $it" } ?: ""}"
+                    Log.d(TAG, "emit '$label' via proxy")
                     callback.invoke(
                         newExtractorLink(source = name, name = label, url = "$proxyBase/m/$mode/0/master.m3u8", type = ExtractorLinkType.M3U8) {
                             this.quality = getQualityFromName(apiQuality)
@@ -342,6 +383,7 @@ class SenshiProvider : MainAPI() {
                 } else {
                     variants.forEach { q ->
                         val label = "Senshi $modeLabel ${q.first}"
+                        Log.d(TAG, "emit '$label' via proxy variant=${q.second}")
                         callback.invoke(
                             newExtractorLink(source = name, name = label, url = "$proxyBase/m/$mode/${q.second}/master.m3u8", type = ExtractorLinkType.M3U8) {
                                 this.quality = getQualityFromName(q.first)
@@ -351,8 +393,12 @@ class SenshiProvider : MainAPI() {
                 }
                 return true
             }
+            Log.e(TAG, "proxy register failed, falling back to raw url")
+        } else if (masterText != null) {
+            Log.e(TAG, "master is not a usable playlist (encrypted=${SenshiCrypt.isEncrypted(masterText)})")
         }
 
+        Log.w(TAG, "emitting raw cdn url as last resort")
         val label = "Senshi $modeLabel${apiQuality?.let { " $it" } ?: ""}"
         callback.invoke(
             newExtractorLink(source = name, name = label, url = master, type = ExtractorLinkType.M3U8) {
@@ -394,16 +440,17 @@ class SenshiProvider : MainAPI() {
             }
             text = try {
                 val res = app.get("$vidcloudApi$sourceId", headers = apiHeaders, timeout = 20_000L)
+                Log.d(TAG, "vidcloud $sourceId attempt=${attempt + 1} http=${res.code} len=${res.text.length}")
                 if (res.code == 200) res.text else null
             } catch (e: Exception) {
-                Log.d(TAG, "vidcloud source $sourceId request failed: ${e.message}")
+                Log.d(TAG, "vidcloud $sourceId request failed: ${e.message}")
                 null
             }
             if (text != null && !text.contains("too_many_requests")) break
             text = null
         }
         if (text == null) {
-            Log.e(TAG, "vidcloud source $sourceId unavailable")
+            Log.e(TAG, "vidcloud source $sourceId unavailable after retries")
             return null
         }
         return try {

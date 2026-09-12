@@ -9,7 +9,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -46,62 +45,50 @@ private val cfBlockerPhrases = listOf(
     "challenge-platform", "enable javascript", "turnstile"
 )
 
+private const val COOKIE_TTL_MS = 45 * 60 * 1000L
+
 private object SenshiCookieStore {
     private const val PREFS_NAME = "SenshiCFBypass"
-    private const val KEY_COOKIES = "cf_cookies"
-    private const val KEY_UA = "cf_user_agent"
-    private const val KEY_HOST = "cf_cookie_host"
-    private const val KEY_TIMESTAMP = "cf_timestamp"
-    private const val COOKIE_TTL_MS = 45 * 60 * 1000L
+
+    internal class Saved(val host: String, val cookies: String, val ua: String, val ts: Long)
 
     private var prefs: android.content.SharedPreferences? = null
-    private var cachedCookies: String? = null
-    private var cachedUA: String? = null
-    private var cachedHost: String? = null
-    private var cachedTimestamp: Long = 0L
+    private val saved = mutableMapOf<String, Saved>()
 
     fun init(context: Context) {
-        if (prefs == null) {
-            prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            cachedCookies = prefs?.getString(KEY_COOKIES, null)
-            cachedUA = prefs?.getString(KEY_UA, null)
-            cachedHost = prefs?.getString(KEY_HOST, null)
-            cachedTimestamp = prefs?.getLong(KEY_TIMESTAMP, 0L) ?: 0L
+        if (prefs != null) return
+        prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        prefs?.all?.forEach { (key, value) ->
+            if (value is String && value.contains("||")) {
+                val parts = value.split("||", limit = 3)
+                if (parts.size == 3 && now - parts[2].toLong() < COOKIE_TTL_MS) {
+                    saved[key] = Saved(key, parts[0], parts[1], parts[2].toLong())
+                }
+            }
         }
     }
 
-    fun getCookies(): String? {
-        if (cachedCookies.isNullOrBlank()) return null
-        if (System.currentTimeMillis() - cachedTimestamp > COOKIE_TTL_MS) {
-            clear()
+    @Synchronized
+    fun get(host: String): Saved? {
+        val entry = saved[host] ?: return null
+        if (System.currentTimeMillis() - entry.ts > COOKIE_TTL_MS) {
+            saved.remove(host)
+            prefs?.edit()?.remove(host)?.apply()
             return null
         }
-        return cachedCookies
+        return entry
+    }
+    @Synchronized
+    fun save(host: String, cookies: String, ua: String) {
+        saved[host] = Saved(host, cookies, ua, System.currentTimeMillis())
+        prefs?.edit()?.putString(host, "$cookies||$ua||${System.currentTimeMillis()}")?.apply()
     }
 
-    fun getUserAgent(): String? = cachedUA?.takeIf { it.isNotBlank() }
-
-    fun matchesHost(host: String): Boolean = cachedHost == host
-
-    fun save(cookies: String, userAgent: String, host: String) {
-        cachedCookies = cookies
-        cachedUA = userAgent
-        cachedHost = host
-        cachedTimestamp = System.currentTimeMillis()
-        prefs?.edit()?.apply {
-            putString(KEY_COOKIES, cookies)
-            putString(KEY_UA, userAgent)
-            putString(KEY_HOST, host)
-            putLong(KEY_TIMESTAMP, cachedTimestamp)
-        }?.apply()
-    }
-
-    fun clear() {
-        cachedCookies = null
-        cachedUA = null
-        cachedHost = null
-        cachedTimestamp = 0L
-        prefs?.edit()?.clear()?.apply()
+    @Synchronized
+    fun clear(host: String) {
+        saved.remove(host)
+        prefs?.edit()?.remove(host)?.apply()
     }
 }
 
@@ -109,6 +96,12 @@ private fun isCloudflareBlocked(response: NiceResponse): Boolean {
     if (response.code != 403 && response.code != 503) return false
     val body = response.text.lowercase()
     return cfBlockerPhrases.any { body.contains(it) }
+}
+
+private fun hostOf(url: String): String = try {
+    Uri.parse(url).host ?: url
+} catch (e: Exception) {
+    url
 }
 
 private val cfBypassMutex = Mutex()
@@ -294,7 +287,7 @@ class SenshiCFDialog(
         handler.removeCallbacks(cookiePollRunnable)
 
         val ua = webView?.settings?.userAgentString ?: ""
-        SenshiCookieStore.save(cookieStr, ua, targetHost)
+        SenshiCookieStore.save(hostOf(targetUrl), cookieStr, ua)
         updateStatus("Done! Cookies saved.")
 
         webView?.postDelayed({
@@ -356,20 +349,13 @@ private suspend fun showBypassDialogAndWait(url: String): Boolean = withContext(
     }
 }
 
-internal fun senshiHeaders(base: Map<String, String>): Map<String, String> {
+internal fun senshiHeaders(base: Map<String, String>, url: String): Map<String, String> {
     val h = base.toMutableMap()
-    if (!h.containsKey("Accept")) {
-        h["Accept"] = "application/json, text/plain, */*"
-    }
-    if (!h.containsKey("Accept-Language")) {
-        h["Accept-Language"] = "en-US,en;q=0.5"
-    }
-    SenshiCookieStore.getCookies()?.let { cookies ->
-        h["Cookie"] = cookies
-    }
-    if (!h.containsKey("User-Agent")) {
-        SenshiCookieStore.getUserAgent()?.let { ua ->
-            h["User-Agent"] = ua
+    val entry = SenshiCookieStore.get(hostOf(url))
+    if (entry != null) {
+        h["Cookie"] = entry.cookies
+        if (entry.ua.isNotBlank()) {
+            h["User-Agent"] = entry.ua
         }
     }
     return h
@@ -388,33 +374,29 @@ internal suspend fun cfGet(
     headers: Map<String, String> = emptyMap(),
     timeout: Long = 20_000L
 ): NiceResponse {
-    val host = try {
-        val uri = Uri.parse(url)
-        "${uri.scheme}://${uri.host}"
-    } catch (e: Exception) {
-        url
-    }
+    val host = hostOf(url)
 
-    var response = app.get(url, headers = senshiHeaders(headers), timeout = timeout)
+    var response = app.get(url, headers = senshiHeaders(headers, url), timeout = timeout)
 
     if (!isCloudflareBlocked(response)) return response
     Log.d("Senshi", "cloudflare block on $host, starting bypass")
 
     cfBypassMutex.withLock {
-        if (SenshiCookieStore.getCookies() != null && SenshiCookieStore.matchesHost(host)) {
-            response = app.get(url, headers = senshiHeaders(headers), timeout = timeout)
+        if (SenshiCookieStore.get(host) != null) {
+            response = app.get(url, headers = senshiHeaders(headers, url), timeout = timeout)
             if (!isCloudflareBlocked(response)) return response
+            SenshiCookieStore.clear(host)
         }
 
-        SenshiCookieStore.clear()
         if (!showBypassDialogAndWait(url)) {
             return@withLock
         }
 
         repeat(2) {
-            response = app.get(url, headers = senshiHeaders(headers), timeout = timeout)
+            response = app.get(url, headers = senshiHeaders(headers, url), timeout = timeout)
             if (!isCloudflareBlocked(response)) return response
         }
+        Log.e("Senshi", "still blocked on $host after bypass")
     }
 
     return response
@@ -426,35 +408,31 @@ internal suspend fun cfPost(
     headers: Map<String, String> = emptyMap(),
     timeout: Long = 20_000L
 ): NiceResponse {
-    val host = try {
-        val uri = Uri.parse(url)
-        "${uri.scheme}://${uri.host}"
-    } catch (e: Exception) {
-        url
-    }
+    val host = hostOf(url)
 
     fun requestBody() = body.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
 
-    var response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers), timeout = timeout)
+    var response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers, url), timeout = timeout)
 
     if (!isCloudflareBlocked(response)) return response
     Log.d("Senshi", "cloudflare block on post to $host, starting bypass")
 
     cfBypassMutex.withLock {
-        if (SenshiCookieStore.getCookies() != null && SenshiCookieStore.matchesHost(host)) {
-            response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers), timeout = timeout)
+        if (SenshiCookieStore.get(host) != null) {
+            response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers, url), timeout = timeout)
             if (!isCloudflareBlocked(response)) return response
+            SenshiCookieStore.clear(host)
         }
 
-        SenshiCookieStore.clear()
         if (!showBypassDialogAndWait(url)) {
             return@withLock
         }
 
         repeat(2) {
-            response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers), timeout = timeout)
+            response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers, url), timeout = timeout)
             if (!isCloudflareBlocked(response)) return response
         }
+        Log.e("Senshi", "still blocked on post to $host after bypass")
     }
 
     return response
