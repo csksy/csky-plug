@@ -1,0 +1,470 @@
+package com.laddu100.senshi
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.lagradost.api.Log
+import com.lagradost.cloudstream3.DubStatus
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.Score
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.ShowStatus
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.addDubStatus
+import com.lagradost.cloudstream3.addEpisodes
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newAnimeLoadResponse
+import com.lagradost.cloudstream3.newAnimeSearchResponse
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newSubtitleFile
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
+
+class SenshiProvider : MainAPI() {
+    override var mainUrl = "https://senshi.to"
+    override var name = "Senshi"
+    override var lang = "en"
+    override val hasMainPage = true
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
+
+    private val TAG = "Senshi"
+
+    private val vidcloudApi = "https://s.vidcloud.se/_v1/sources?id="
+
+    private val ua =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+    private val apiHeaders = mapOf(
+        "User-Agent" to ua,
+        "Accept" to "application/json, text/plain, */*",
+        "Referer" to "$mainUrl/"
+    )
+
+    private val postHeaders = mapOf(
+        "User-Agent" to ua,
+        "Accept" to "application/json, text/plain, */*",
+        "Content-Type" to "application/json",
+        "Origin" to mainUrl,
+        "Referer" to "$mainUrl/browse"
+    )
+
+    private val streamHeaders = mapOf(
+        "User-Agent" to ua,
+        "Accept" to "*/*",
+        "Origin" to mainUrl,
+        "Referer" to "$mainUrl/"
+    )
+
+    override val mainPage = mainPageOf(
+        "latest" to "Latest Episodes",
+        "recent" to "Recently Added",
+        "trending" to "Trending",
+        "upcoming" to "Upcoming",
+        "all" to "All Anime"
+    )
+
+    private suspend fun getJson(url: String, timeout: Long = 15_000L): String? {
+        return try {
+            val res = app.get(url, headers = apiHeaders, timeout = timeout)
+            if (res.code == 200) res.text else null
+        } catch (e: Exception) {
+            Log.d(TAG, "GET $url failed: ${e.message}")
+            null
+        }
+    }
+
+    private suspend fun postFilter(body: SenshiFilterBody, timeout: Long = 15_000L): SenshiFilterResponse? {
+        return try {
+            val payload = body.toJson()
+                .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            val res = app.post("$mainUrl/anime/filter", requestBody = payload, headers = postHeaders, timeout = timeout)
+            if (res.code == 200 || res.code == 201) parseJson<SenshiFilterResponse>(res.text) else null
+        } catch (e: Exception) {
+            Log.d(TAG, "filter request failed: ${e.message}")
+            null
+        }
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        return try {
+            when (request.data) {
+                "latest" -> {
+                    // the paginated variant of this endpoint ignores its page/limit
+                    // params, so the plain list is all there is
+                    val text = getJson("$mainUrl/episode-embeds/latest") ?: return emptyPage(request)
+                    val resp = parseJson<List<SenshiLatestEmbed>>(text)
+                    // batch dumps and single episodes of the same anime can both be listed,
+                    // keep one card per anime
+                    val seen = mutableSetOf<Int>()
+                    val home = resp.asSequence()
+                        .mapNotNull { it.anime }
+                        .filter { it.id != null && seen.add(it.id!!) }
+                        .mapNotNull { it.toSearchResponse() }
+                        .toList()
+                    newHomePageResponse(request.name, home, hasNext = false)
+                }
+
+                "recent" -> {
+                    val text = getJson("$mainUrl/anime/recently-added") ?: return emptyPage(request)
+                    val home = parseJson<List<SenshiAnime>>(text).mapNotNull { it.toSearchResponse() }
+                    newHomePageResponse(request.name, home, hasNext = false)
+                }
+
+                "trending" -> {
+                    val text = getJson("$mainUrl/anime/trending/day") ?: return emptyPage(request)
+                    val home = parseJson<List<SenshiAnime>>(text).mapNotNull { it.toSearchResponse() }
+                    newHomePageResponse(request.name, home, hasNext = false)
+                }
+
+                "upcoming" -> {
+                    val text = getJson("$mainUrl/anime/upcoming") ?: return emptyPage(request)
+                    val home = parseJson<List<SenshiAnime>>(text).mapNotNull { it.toSearchResponse() }
+                    newHomePageResponse(request.name, home, hasNext = false)
+                }
+
+                "all" -> {
+                    val resp = postFilter(SenshiFilterBody(page = page, limit = 40, sortBy = "recent"))
+                        ?: return emptyPage(request)
+                    val home = resp.data.mapNotNull { it.toSearchResponse() }
+                    newHomePageResponse(request.name, home, hasNext = page * 40 < (resp.total ?: 0))
+                }
+
+                else -> emptyPage(request)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getMainPage '${request.name}' failed: ${e.message}")
+            emptyPage(request)
+        }
+    }
+
+    private fun emptyPage(request: MainPageRequest): HomePageResponse =
+        newHomePageResponse(request.name, emptyList(), hasNext = false)
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        if (query.isBlank()) return emptyList()
+        val resp = postFilter(SenshiFilterBody(searchTerm = query, page = 1, limit = 30)) ?: return emptyList()
+        return resp.data.mapNotNull { it.toSearchResponse() }
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        val publicId = url.substringBefore("?").substringAfterLast("/")
+        if (publicId.isBlank()) {
+            Log.e(TAG, "load: no id in $url")
+            return null
+        }
+
+        val animeText = getJson("$mainUrl/anime/$publicId") ?: run {
+            Log.e(TAG, "load: anime request failed for $publicId")
+            return null
+        }
+        val anime = try {
+            parseJson<SenshiAnime>(animeText)
+        } catch (e: Exception) {
+            Log.e(TAG, "load: anime parse failed: ${e.message}")
+            return null
+        }
+        val malId = anime.id ?: return null
+
+        val episodesText = getJson("$mainUrl/episodes/$malId") ?: run {
+            Log.e(TAG, "load: episodes request failed for malId=$malId")
+            return null
+        }
+        val episodes = try {
+            parseJson<List<SenshiEpisode>>(episodesText).filter { it.ep_id != null }
+        } catch (e: Exception) {
+            Log.e(TAG, "load: episodes parse failed: ${e.message}")
+            return null
+        }
+        val sorted = episodes.sortedBy { it.ep_id }
+
+        var hasSub = (anime.sub_count ?: 0) > 0
+        var hasDub = (anime.dub_count ?: 0) > 0
+        if (!hasSub && !hasDub && sorted.isNotEmpty()) {
+            // counts can be stale on freshly uploaded entries, fall back to the
+            // first episode's embed list
+            hasSub = true
+            probeEmbeds(malId, sorted.first().ep_id!!)?.let { statuses ->
+                hasSub = statuses.any { it.isSub() }
+                hasDub = statuses.any { it.isDub() }
+                if (!hasSub && !hasDub) hasSub = true
+            }
+        }
+
+        val subEpisodes = if (hasSub) sorted.map { it.toEpisode(malId, "sub") } else emptyList()
+        val dubEpisodes = if (hasDub && sorted.isNotEmpty()) buildDubEpisodes(malId, sorted, anime.dub_count ?: 0) else emptyList()
+
+        val displayTitle = anime.title ?: anime.title_english ?: "Anime $malId"
+
+        return newAnimeLoadResponse(displayTitle, url, anime.tvType(hasSub && hasDub)) {
+            this.posterUrl = anime.posterUrl(mainUrl)
+            this.plot = anime.ani_description
+            this.year = anime.ani_year
+            this.tags = anime.genreList()
+            this.duration = anime.durationMinutes()
+            this.showStatus = anime.showStatus()
+            this.score = anime.score?.let { Score.from10(it.toString()) }
+            addMalId(malId)
+            anime.anilist_id?.let { addAniListId(it) }
+            if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
+            if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
+        }
+    }
+
+    // dub episodes normally run from episode 1 up to dub_count, but on ongoing
+    // shows the count can lag behind the episode list, so trailing episodes are
+    // checked for dub embeds before cutting the list short
+    private suspend fun buildDubEpisodes(
+        malId: Int,
+        episodes: List<SenshiEpisode>,
+        dubCount: Int
+    ): List<Episode> {
+        val base = if (dubCount in 1..episodes.size) episodes.take(dubCount) else episodes
+        val trailing = if (dubCount in 1..episodes.size) episodes.drop(dubCount) else emptyList()
+        val extra = if (trailing.isEmpty()) emptyList() else coroutineScope {
+            trailing.map { ep ->
+                async {
+                    val hasDub = probeEmbeds(malId, ep.ep_id!!)?.any { it.isDub() } ?: false
+                    if (hasDub) ep else null
+                }
+            }.awaitAll().filterNotNull()
+        }
+        return (base + extra).sortedBy { it.ep_id }.map { it.toEpisode(malId, "dub") }
+    }
+
+    private suspend fun probeEmbeds(malId: Int, epId: Int): List<SenshiEmbed>? {
+        val text = getJson("$mainUrl/episode-embeds/$malId/$epId") ?: return null
+        return try {
+            parseJson<List<SenshiEmbed>>(text)
+        } catch (e: Exception) {
+            Log.d(TAG, "probeEmbeds($malId, $epId) parse failed: ${e.message}")
+            null
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val epData = try {
+            parseJson<SenshiEpData>(data)
+        } catch (e: Exception) {
+            Log.e(TAG, "loadLinks: bad episode data: ${e.message}")
+            return false
+        }
+        val wantDub = epData.type == "dub"
+
+        val embeds = probeEmbeds(epData.malId, epData.ep) ?: run {
+            Log.e(TAG, "loadLinks: no embeds for malId=${epData.malId} ep=${epData.ep}")
+            return false
+        }
+        if (embeds.isEmpty()) {
+            Log.e(TAG, "loadLinks: empty embed list for malId=${epData.malId} ep=${epData.ep}")
+            return false
+        }
+
+        val matching = embeds.filter { if (wantDub) it.isDub() else it.isSub() }
+            .ifEmpty { embeds }
+
+        // sub and dub entries usually point at the same multi-audio stream, so
+        // the source api is only hit once per unique id
+        val sourceIds = matching.mapNotNull { it.remote_source_id }.distinct()
+        if (sourceIds.isEmpty()) {
+            Log.e(TAG, "loadLinks: embeds carry no source ids")
+            return false
+        }
+
+        var found = false
+        for (sourceId in sourceIds) {
+            val source = fetchVidcloud(sourceId) ?: continue
+            val file = source.source ?: continue
+            val master = file.src ?: continue
+            val audio = file.audio ?: ""
+
+            for (track in source.subtitlesFor(wantDub)) {
+                val url = track.vtt_url?.takeIf { it.isNotBlank() } ?: track.url ?: continue
+                if (url.isBlank()) continue
+                subtitleCallback.invoke(
+                    newSubtitleFile(track.label ?: "English", url) {
+                        this.headers = streamHeaders
+                    }
+                )
+            }
+
+            val qualityName = file.quality?.takeIf { it.isNotBlank() && it != "Unknown" }
+            val linkName = buildString {
+                if (audio == "both") append(if (wantDub) "DUB" else "SUB")
+                if (qualityName != null) {
+                    if (isNotEmpty()) append(" • ")
+                    append(qualityName)
+                }
+            }
+
+            callback.invoke(
+                newExtractorLink(
+                    source = name,
+                    name = if (linkName.isBlank()) name else linkName,
+                    url = master,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = "$mainUrl/"
+                    this.headers = streamHeaders
+                    this.quality = getQualityFromName(qualityName)
+                }
+            )
+            found = true
+        }
+        return found
+    }
+
+    private suspend fun fetchVidcloud(sourceId: Int): VidcloudSource? {
+        var text = try {
+            val res = app.get("$vidcloudApi$sourceId", headers = apiHeaders, timeout = 15_000L)
+            if (res.code != 200) {
+                Log.e(TAG, "vidcloud source $sourceId returned http ${res.code}")
+                return null
+            }
+            res.text
+        } catch (e: Exception) {
+            Log.e(TAG, "vidcloud source $sourceId request failed: ${e.message}")
+            return null
+        }
+        if (text.contains("too_many_requests")) {
+            // the api throttles bursts; one short retry covers quick episode hops
+            delay(3000L)
+            text = try {
+                val res = app.get("$vidcloudApi$sourceId", headers = apiHeaders, timeout = 15_000L)
+                if (res.code != 200) {
+                    Log.e(TAG, "vidcloud source $sourceId retry returned http ${res.code}")
+                    return null
+                }
+                res.text
+            } catch (e: Exception) {
+                Log.e(TAG, "vidcloud source $sourceId retry failed: ${e.message}")
+                return null
+            }
+        }
+        return try {
+            parseJson<List<VidcloudSource>>(text).firstOrNull()
+        } catch (e: Exception) {
+            Log.e(TAG, "vidcloud source $sourceId parse failed: ${text.take(80)}")
+            null
+        }
+    }
+
+    private fun SenshiAnime.toSearchResponse(): SearchResponse? {
+        val id = this.public_id ?: return null
+        val title = this.title ?: this.title_english ?: return null
+        return newAnimeSearchResponse(title, "$mainUrl/anime/$id", tvType()) {
+            this.posterUrl = posterUrl(mainUrl)
+            this.year = ani_year
+            addDubStatus(
+                dubExist = (dub_count ?: 0) > 0,
+                subExist = (sub_count ?: 0) > 0 || (dub_count ?: 0) == 0
+            )
+        }
+    }
+
+    private fun SenshiEpisode.toEpisode(malId: Int, type: String): Episode {
+        val num = ep_id ?: 1
+        val baseTitle = ep_title?.takeIf { it.isNotBlank() } ?: "Episode $num"
+        val title = when {
+            ep_filler == true -> "$baseTitle (Filler)"
+            ep_recap == true -> "$baseTitle (Recap)"
+            else -> baseTitle
+        }
+        val payload = SenshiEpData(malId = malId, ep = num, type = type).toJson()
+        return newEpisode(payload) {
+            this.episode = num
+            this.name = title
+            this.posterUrl = ep_thumbnail
+        }
+    }
+
+    // movie types hide the sub/dub switcher in the app, so dual-audio movies are
+    // typed as regular anime to keep both tracks reachable
+    private fun SenshiAnime.tvType(dualAudio: Boolean = false): TvType = when (type?.uppercase()) {
+        "MOVIE" -> if (dualAudio) TvType.Anime else TvType.AnimeMovie
+        "OVA", "ONA", "SPECIAL", "MUSIC" -> TvType.OVA
+        else -> TvType.Anime
+    }
+
+    private fun SenshiAnime.posterUrl(baseUrl: String): String? {
+        val pic = anime_picture ?: return null
+        return if (pic.startsWith("http")) pic else "$baseUrl$pic"
+    }
+
+    private fun SenshiAnime.genreList(): List<String>? {
+        val g = genres ?: return null
+        return g.split(",").map { it.trim() }.filter { it.isNotBlank() }.ifEmpty { null }
+    }
+
+    private fun SenshiAnime.durationMinutes(): Int? =
+        duration?.substringBefore(" ")?.toIntOrNull()
+
+    private fun SenshiAnime.showStatus(): ShowStatus? = when (ani_status?.lowercase()) {
+        "currently airing" -> ShowStatus.Ongoing
+        "finished airing" -> ShowStatus.Completed
+        else -> null
+    }
+
+    private fun SenshiEmbed.isDub(): Boolean = status?.lowercase() == "dub"
+
+    private fun SenshiEmbed.isSub(): Boolean {
+        val st = status?.lowercase() ?: return false
+        return st == "sub" || st == "hardsub"
+    }
+
+    private fun VidcloudTrack.isDubTrack(): Boolean {
+        val label = (label ?: html ?: "").lowercase()
+        return label.contains("dub") || (url ?: "").contains("ai_dub")
+    }
+
+    private fun VidcloudTrack.trackLabel(): String? {
+        (label ?: html)?.let { if (it.isNotBlank() && it.lowercase() != "chapter") return it }
+        return null
+    }
+
+    // dub mode keeps the dub captions (they match the english audio), sub mode
+    // keeps the regular translation tracks; each falls back to the other set
+    // when the stream only carries one kind
+    private fun VidcloudSource.subtitlesFor(wantDub: Boolean): List<VidcloudTrack> {
+        val usable = tracks.filter { it.trackLabel() != null }
+        val dub = usable.filter { it.isDubTrack() }
+        val sub = usable.filter { !it.isDubTrack() }
+        return if (wantDub) dub.ifEmpty { sub } else sub.ifEmpty { dub }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class SenshiFilterBody(
+        val searchTerm: String? = null,
+        val page: Int = 1,
+        val limit: Int = 30,
+        val sortBy: String? = null
+    )
+
+    data class SenshiEpData(
+        val malId: Int,
+        val ep: Int,
+        val type: String
+    )
+}
