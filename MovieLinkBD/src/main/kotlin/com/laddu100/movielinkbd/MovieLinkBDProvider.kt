@@ -23,6 +23,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -247,11 +248,14 @@ class MovieLinkBDProvider : MainAPI() {
                 async {
                     val file = KiteCloud.resolve(entry.url) ?: return@async false
                     val sizeLabel = if (file.size.isBlank()) "" else " · ${file.size}"
-                    val quality = if (file.quality != 0) file.quality else KiteCloud.qualityFrom(entry.label)
+                    val quality = if (file.quality != Qualities.Unknown.value) file.quality else KiteCloud.qualityFrom(entry.label)
+                    // the download endpoint the drive host hands out ignores range
+                    // requests, so playback and resume go through the local proxy
+                    // which serves ranges off its own copy of the stream
+                    val playUrl = MovieLinkProxy.register(file.url, headers) ?: file.url
                     callback.invoke(
-                        newExtractorLink(name, "${entry.label}$sizeLabel", file.url, type = ExtractorLinkType.VIDEO) {
+                        newExtractorLink(name, "${entry.label}$sizeLabel", playUrl, type = ExtractorLinkType.VIDEO) {
                             this.quality = quality
-                            this.headers = headers
                         }
                     )
                     true
