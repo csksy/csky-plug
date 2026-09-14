@@ -1,5 +1,6 @@
 package com.just4anime.plugin
 
+import android.content.Context
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
@@ -32,7 +33,13 @@ import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.ConcurrentHashMap
 
 @CloudstreamPlugin
-class Just4AnimePlugin : Plugin()
+class Just4AnimePlugin : Plugin() {
+    override fun load(context: Context) {
+        // Registers the provider into CloudStream's extension list.
+        // Without this the .cs3 "loads" but never shows up as a provider.
+        registerMainAPI(Just4Anime())
+    }
+}
 
 /**
  * CloudStream provider for https://just4anime.online/

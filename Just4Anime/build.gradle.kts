@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 android {
     buildFeatures {
@@ -7,11 +7,11 @@ android {
 }
 
 cloudstream {
-    description = "just4anime.online - Anime with Sub / Dub / Hardsub separation. All 12 site servers probed per episode (MegaPlay, Senshi, AllAnime, AniDB, MegaVid, AniNeko x4, ZokoAnime, AnimeGG, AnimixPlay), real TMDB episode titles, filler tags, multi-language soft subtitles, Sub + Dub episode tabs. Dead servers auto-recover - nothing is skipped."
+    description = "anime from just4anime with sub and dub"
     authors = listOf("csksy")
 
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")
     language = "en"
-    iconUrl = "https://just4anime.online/favicon.ico"
+    iconUrl = "https://www.google.com/s2/favicons?domain=just4anime.online&sz=64"
 }
