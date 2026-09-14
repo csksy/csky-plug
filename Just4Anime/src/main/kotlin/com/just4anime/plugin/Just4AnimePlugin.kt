@@ -341,22 +341,15 @@ class Just4Anime : MainAPI() {
 
         if (data.sources.isEmpty()) return false
 
-        // Trust the response over the request when labeling - some providers
-        // (e.g. AnimeGG) ignore the type param and always return sub streams.
+        // Response-level hardsub detection (hardsubbed video carries no sub tracks).
         val respType = (data.type ?: probe.type).lowercase()
-        val label = when {
-            respType.contains("hsub") || respType.contains("hard") -> "Hardsub"
-            respType == "dub" || data.isDub == true -> "Dub"
-            else -> "Sub"
-        }
-        // Never leak the wrong audio into a tab.
-        if (category == "dub" && label != "Dub") return false
-        if (category != "dub" && label == "Dub") return false
+        val isHardsub = respType.contains("hsub") || respType.contains("hard")
+        val responseIsDub = data.isDub ?: (respType == "dub")
 
         var found = false
 
         // Soft subtitle tracks (proxied by the site, fetchable as-is).
-        if (label != "Hardsub") {
+        if (!isHardsub) {
             val allSubs = data.subtitles + data.sources.flatMap { it.subtitles ?: emptyList() }
             for (sub in allSubs) {
                 val subUrl = sub.url ?: continue
@@ -375,6 +368,26 @@ class Just4Anime : MainAPI() {
         for (stream in data.sources) {
             val streamUrl = stream.url ?: continue
             if (streamUrl.isBlank() || !seenUrls.add(streamUrl)) continue
+
+            // Per-stream audio detection: ryuk (AnimeGG) ignores the type
+            // param and mixes [SUBBED] + [DUBBED] streams in one response,
+            // so each stream is classified individually and filtered to the
+            // requested tab - no dub ever leaks into the sub tab or vice versa.
+            val qualityLower = stream.quality?.lowercase().orEmpty()
+            val streamIsDub = when {
+                stream.isDub == true -> true
+                stream.isDub == false -> false
+                qualityLower.contains("dub") -> true  // "[DUBBED]"
+                qualityLower.contains("sub") -> false // "[SUBBED]" - ryuk's dub response lies about isDub
+                else -> responseIsDub
+            }
+            if ((category == "dub") != streamIsDub) continue
+
+            val label = when {
+                streamIsDub -> "Dub"
+                isHardsub -> "Hardsub"
+                else -> "Sub"
+            }
 
             val linkType = if (stream.isM3U8 == true) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             val qualityInt = parseQuality(stream.quality)
