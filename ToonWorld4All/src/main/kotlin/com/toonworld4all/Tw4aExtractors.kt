@@ -35,7 +35,7 @@ object Tw4aExtractors {
     //  shared helpers
     // ------------------------------------------------------------------ //
 
-    private fun emit(
+    private suspend fun emit(
         callback: (ExtractorLink) -> Unit,
         source: String,
         name: String,
@@ -48,7 +48,7 @@ object Tw4aExtractors {
         callback.invoke(
             newExtractorLink(source, name, url, ExtractorLinkType.VIDEO) {
                 this.quality = if (quality > 0) quality else Qualities.Unknown.value
-                this.referer = referer
+                this.referer = referer ?: ""
                 if (headers != null) this.headers = headers
             }
         )
@@ -404,7 +404,7 @@ object Tw4aExtractors {
     //  direct links
     // ------------------------------------------------------------------ //
 
-    fun emitDirect(
+    suspend fun emitDirect(
         url: String,
         quality: Int,
         label: String,

@@ -270,7 +270,7 @@ class ToonWorld4All : MainAPI() {
             }
             // dedupe by season+episode keeping first
             val seen = mutableSetOf<Pair<Int, Int>>()
-            val finalEps = episodes.filter { seen.add(it.season ?: 1 to (it.episode ?: 0)) }
+            val finalEps = episodes.filter { seen.add((it.season ?: 1) to (it.episode ?: 0)) }
 
             return newTvSeriesLoadResponse(
                 title, url,
@@ -308,7 +308,7 @@ class ToonWorld4All : MainAPI() {
 
         // watch-online streams (rare, but supported when present)
         archive.streams.forEach { stream ->
-            stream.play?.takeIf { it.startsWith("http") }?.let { playUrl ->
+            stream.optString("play").takeIf { it.startsWith("http") }?.let { playUrl ->
                 callback(
                     newExtractorLink(
                         "ToonWorld4All Watch",
