@@ -13,6 +13,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
+// AniSuge provider — anisuge.tv
+// Sources flow (2026-09): episodes -> ajax/episode/list (vrf) ->
+// per-episode sources from mapper.nekostream.site (mapper.js) with the
+// legacy ajax/server/list path kept as fallback. See AniSugeResolver.kt.
 class AniSugeProvider : MainAPI() {
     override var mainUrl = "https://anisuge.tv"
     override var name = "AniSuge"
