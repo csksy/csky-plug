@@ -4,6 +4,7 @@ import android.net.Uri
 import com.google.gson.Gson
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -42,13 +43,15 @@ object Just4AnimeApi {
     @Volatile
     private var availabilityCache = ConcurrentHashMap<String, CachedServers>()
 
-    private suspend inline fun <reified T> fetch(url: String, timeout: Long = 40): T? =
+    private suspend inline fun <reified T> fetch(url: String, timeout: Long = 30): T? =
         withContext(Dispatchers.IO) {
             try {
                 val response = app.get(url, headers = baseHeaders, timeout = timeout)
                 val body = response.text
                 if (body.isBlank()) return@withContext null
                 gson.fromJson(body, T::class.java)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "GET failed: $url -> ${e.message}")
                 null
@@ -87,7 +90,9 @@ object Just4AnimeApi {
         }
         val url = "$API_URL/api/v1/meta/availability/${Uri.encode(anilistId)}/servers"
         val servers = try {
-            fetch<J4AAvailabilityResponse>(url, timeout = 60)?.data?.servers ?: emptyList()
+            fetch<J4AAvailabilityResponse>(url, timeout = 30)?.data?.servers ?: emptyList()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "availability failed: ${e.message}")
             emptyList()
@@ -120,6 +125,6 @@ object Just4AnimeApi {
                 append("&providerAnimeId=").append(Uri.encode(providerAnimeId))
             }
         }
-        return fetch<J4ASourcesResponse>(url, timeout = 45)?.data
+        return fetch<J4ASourcesResponse>(url, timeout = 30)?.data
     }
 }

@@ -27,6 +27,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -35,8 +36,6 @@ import java.util.concurrent.ConcurrentHashMap
 @CloudstreamPlugin
 class Just4AnimePlugin : Plugin() {
     override fun load(context: Context) {
-        // Registers the provider into CloudStream's extension list.
-        // Without this the .cs3 "loads" but never shows up as a provider.
         registerMainAPI(Just4Anime())
     }
 }
@@ -44,20 +43,22 @@ class Just4AnimePlugin : Plugin() {
 /**
  * CloudStream provider for https://just4anime.online/
  *
- * Architecture mirrors the site itself:
- *  - catalog/search  -> just4anime.online/api (AniList-backed, advanced-search)
+ *  - catalog/search  -> just4anime.online/api/advanced-search (AniList-backed)
  *  - episode titles  -> just4anime.online/api/episodes/{anilistId} (real TMDB titles)
  *  - server list     -> api.just4anime.online/api/v1/meta/availability/{id}/servers
- *  - streams         -> api.just4anime.online/api/v1/meta/sources/{id}?provider=&num=&type=&providerAnimeId=
+ *  - streams         -> api.just4anime.online/api/v1/meta/sources/{id}?provider=&num=&type=
  *
- * EVERY provider the site exposes is probed for EVERY episode. Providers the
- * availability endpoint misses are blind-probed without providerAnimeId (the
- * backend resolves it itself), so no source is ever skipped - dead servers
- * simply contribute nothing until they recover.
+ * ALL 16 providers the API exposes are probed for every episode:
+ * jin, sen, aoi, dio, meg, mai, sai, rin, kai, zeke, ryuk, echo,
+ * aina, kiwi, ash, koto. Providers found in availability use their reported
+ * types + providerAnimeId; all others are blind-probed (the backend resolves
+ * the provider's own anime id itself).
  *
- * Sub / Dub / Hardsub separation:
- *  - episode lists are split into Subbed (sub + hardsub links) and Dubbed tabs
- *  - every link is labeled "just4anime <Provider> <Sub|Dub|Hardsub>"
+ * NOTE ON EPISODE DATA: CloudStream runs episode data through fixUrl(),
+ * turning "21|2|dub" into "https://just4anime.online/21|2|dub". Every id is
+ * therefore sanitized with substringAfterLast('/') before use - a bare
+ * AniList id in the sources path answers in <1s, a mangled url makes the
+ * backend hang ~50s per request (verified against the live API).
  */
 class Just4Anime : MainAPI() {
 
@@ -75,29 +76,41 @@ class Just4Anime : MainAPI() {
         "START_DATE_DESC" to "New Releases"
     )
 
+    /** Provider metadata: pretty label + types to blind-probe when availability
+     *  does not list the provider (types from the API's own provider catalog). */
+    private data class ProviderInfo(val pretty: String, val blindTypes: List<String>)
+
     companion object {
         private const val TAG = "just4anime"
 
-        /**
-         * Every provider the site UI exposes, in the site's own priority order.
-         * Keys are provider codes, values are the pretty names used in link
-         * labels. Availability-discovered providers not in this map still work
-         * (fallback label = displayName/code).
-         */
+        /** All 16 providers the site API exposes, in the site's priority order. */
         private val PROVIDERS = linkedMapOf(
-            "jin" to "Jin (MegaPlay)",
-            "sen" to "Sen (Senshi)",
-            "aoi" to "Aoi (AllAnime)",
-            "dio" to "Dio (AniDB)",
-            "meg" to "Meg (MegaVid)",
-            "mai" to "Mai (AniNeko Otaku)",
-            "sai" to "Sai (AniNeko StreamHG)",
-            "rin" to "Rin (ZokoAnime)",
-            "kai" to "Kai (AniNeko HD-1)",
-            "zeke" to "Zeke (AniNeko HD-2)",
-            "ryuk" to "Ryuk (AnimeGG)",
-            "echo" to "Echo (AnimixPlay)"
+            "jin" to ProviderInfo("Jin (MegaPlay)", listOf("sub", "dub")),
+            "sen" to ProviderInfo("Sen (Senshi)", listOf("sub", "dub")),
+            "aoi" to ProviderInfo("Aoi (AllAnime)", listOf("sub", "dub")),
+            "dio" to ProviderInfo("Dio (AniDB)", listOf("sub", "dub")),
+            "meg" to ProviderInfo("Meg (MegaVid)", listOf("hsub", "dub")),
+            "mai" to ProviderInfo("Mai (AniNeko Otaku)", listOf("sub", "dub")),
+            "sai" to ProviderInfo("Sai (AniNeko StreamHG)", listOf("sub", "dub")),
+            "rin" to ProviderInfo("Rin (ZokoAnime)", listOf("sub", "dub")),
+            "kai" to ProviderInfo("Kai (AniNeko HD-1)", listOf("sub", "dub")),
+            "zeke" to ProviderInfo("Zeke (AniNeko HD-2)", listOf("sub", "dub")),
+            "ryuk" to ProviderInfo("Ryuk (AnimeGG)", listOf("sub", "dub")),
+            "echo" to ProviderInfo("Echo (AnimixPlay)", listOf("sub", "dub")),
+            "aina" to ProviderInfo("Aina (AnimePahe)", listOf("sub")),
+            "kiwi" to ProviderInfo("Kiwi (AnimePahe Kwik)", listOf("sub")),
+            "ash" to ProviderInfo("Ash (AllAnime Player)", listOf("sub", "dub")),
+            "koto" to ProviderInfo("Koto (Anikoto)", listOf("sub", "dub"))
         )
+
+        /**
+         * CloudStream's fixUrl() prepends mainUrl to episode data that does not
+         * start with http, and the mangled form is what reaches loadLinks
+         * (verified via user logcat). Extract the trailing path segment - the
+         * bare AniList id - from either form.
+         */
+        fun sanitizeId(raw: String): String =
+            raw.trim().substringBefore('?').trimEnd('/').substringAfterLast('/').trim()
     }
 
     // ------------------------------------------------------------------ pages
@@ -145,11 +158,7 @@ class Just4Anime : MainAPI() {
     // ------------------------------------------------------------------ load
 
     override suspend fun load(url: String): LoadResponse? {
-        val anilistId = url.trim()
-            .removePrefix(mainUrl)
-            .trim('/')
-            .substringBefore('?')
-            .trim()
+        val anilistId = sanitizeId(url)
         if (anilistId.isBlank()) return null
 
         val meta = Just4AnimeApi.episodes(anilistId) ?: return null
@@ -194,9 +203,7 @@ class Just4Anime : MainAPI() {
             }
         }
 
-        val title = meta.title
-            ?: meta.titleRomaji
-            ?: "Anime"
+        val title = meta.title ?: meta.titleRomaji ?: "Anime"
 
         val poster = meta.images?.firstOrNull { it.coverType.equals("Poster", true) }?.url
             ?: meta.images?.firstOrNull { !it.url.isNullOrBlank() }?.url
@@ -207,10 +214,10 @@ class Just4Anime : MainAPI() {
         val subEpisodes = buildEpisodes("sub")
         val dubEpisodes = buildEpisodes("dub")
 
-        // Dub tab is always offered - availability discovery is time-boxed and
-        // regularly misses providers (sen/dio/echo/ryuk/aoi), so gating the dub
-        // list on it would hide real dub sources. Episodes without dub simply
-        // resolve no links, exactly like the website's own server dropdown.
+        // Both tabs are always offered: availability discovery is time-boxed
+        // server-side and regularly misses providers, so gating the dub list on
+        // it would hide real dub sources (same behaviour as the site's own
+        // server dropdown - an episode simply has no links when unavailable).
         return newAnimeLoadResponse(title, anilistId, tvType) {
             this.posterUrl = poster
             this.backgroundPosterUrl = banner
@@ -238,54 +245,42 @@ class Just4Anime : MainAPI() {
         val providerAnimeId: String?
     )
 
+    private fun normalizeType(raw: String): String {
+        val t = raw.trim().lowercase()
+        return when {
+            t == "h-sub" || t == "hardsub" || t == "hsub" -> "hsub"
+            else -> t
+        }
+    }
+
     /**
-     * Build the full probe list for one episode. Known servers contribute
-     * their availability-reported types; every other site provider is probed
-     * blind (sub + hsub for the sub tab, dub for the dub tab).
+     * Full probe list for one episode. Providers listed by availability use
+     * their reported types (authoritative per anime); every other provider is
+     * blind-probed using the catalog types. Filtered to the requested tab:
+     * dub tab -> dub only, sub tab -> sub + hsub.
      */
     private fun buildProbes(category: String, servers: Map<String, J4AServer>): List<Probe> {
+        val wantedTypes: (String) -> Boolean = if (category == "dub") {
+            { t -> t == "dub" }
+        } else {
+            { t -> t == "sub" || t == "hsub" }
+        }
+
         val probes = mutableListOf<Probe>()
-        for ((code, pretty) in PROVIDERS) {
+        for ((code, info) in PROVIDERS) {
             val srv = servers[code]
-            if (srv != null) {
-                val wanted = srv.types
-                    .map { raw ->
-                        val t = raw.trim().lowercase()
-                        if (t == "h-sub" || t == "hardsub") "hsub" else t
-                    }
-                    .filter { t ->
-                        if (category == "dub") t == "dub"
-                        else t == "sub" || t == "hsub"
-                    }
-                    // keep "sub" first so the Sub label wins URL dedup against hsub twins
-                    .sortedBy { it != "sub" }
-                for (t in wanted) {
-                    probes.add(
-                        Probe(
-                            code = code,
-                            pretty = pretty,
-                            type = t,
-                            providerAnimeId = srv.animeId?.takeIf { it.isNotBlank() }
-                        )
-                    )
-                }
-            } else {
-                if (category == "dub") {
-                    probes.add(Probe(code, pretty, "dub", null))
-                } else {
-                    probes.add(Probe(code, pretty, "sub", null))
-                    probes.add(Probe(code, pretty, "hsub", null))
-                }
+            val types = if (srv != null) srv.types.map(::normalizeType) else info.blindTypes
+            val paid = srv?.animeId?.takeIf { it.isNotBlank() }
+            // "sub" first so the Sub label wins URL dedup against hsub twins
+            for (t in types.filter(wantedTypes).sortedBy { it != "sub" }) {
+                probes.add(Probe(code, info.pretty, t, paid))
             }
         }
         // providers discovered by availability but unknown to the static map
         for (srv in servers.values) {
             if (srv.code.isBlank() || PROVIDERS.containsKey(srv.code)) continue
             val pretty = srv.displayName?.takeIf { it.isNotBlank() } ?: srv.code
-            val wanted = srv.types
-                .map { raw -> val t = raw.trim().lowercase(); if (t == "h-sub") "hsub" else t }
-                .filter { t -> if (category == "dub") t == "dub" else (t == "sub" || t == "hsub") }
-            for (t in wanted) {
+            for (t in srv.types.map(::normalizeType).filter(wantedTypes)) {
                 probes.add(Probe(srv.code, pretty, t, srv.animeId?.takeIf { it.isNotBlank() }))
             }
         }
@@ -300,7 +295,8 @@ class Just4Anime : MainAPI() {
     ): Boolean {
         val parts = data.split("|")
         if (parts.size != 3) return false
-        val anilistId = parts[0].trim()
+        // parts[0] may arrive as "https://just4anime.online/21" after fixUrl()
+        val anilistId = sanitizeId(parts[0])
         val num = parts[1].trim().toIntOrNull() ?: return false
         val category = parts[2].trim().lowercase()
         if (anilistId.isBlank() || (category != "sub" && category != "dub")) return false
@@ -336,6 +332,8 @@ class Just4Anime : MainAPI() {
     ): Boolean {
         val data = try {
             Just4AnimeApi.sources(anilistId, probe.code, num, probe.type, probe.providerAnimeId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.d(TAG, "${probe.code}/${probe.type} sources error: ${e.message}")
             null
@@ -366,6 +364,8 @@ class Just4Anime : MainAPI() {
                 val lang = sub.language ?: sub.lang ?: "Subtitles"
                 try {
                     subtitleCallback(SubtitleFile(lang, subUrl))
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.d(TAG, "subtitle emit failed: ${e.message}")
                 }
@@ -407,6 +407,8 @@ class Just4Anime : MainAPI() {
                     }
                 )
                 found = true
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.d(TAG, "link emit failed: ${e.message}")
             }
