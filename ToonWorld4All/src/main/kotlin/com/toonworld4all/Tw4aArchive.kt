@@ -61,7 +61,8 @@ object Tw4aArchive {
     /** Fetch an episode/movie page and pull the __PROPS__ JSON out of it. */
     suspend fun fetchArchive(url: String): ArchiveData? {
         return try {
-            val html = app.get(url, headers = headers, timeout = 30L).text
+            val html = Tw4aWebView.getWithCf(url, headers, timeoutSec = 30L)
+                ?: return null
             val root = parseProps(html) ?: return null
 
             // episode/movie: { data: { data: { metadata, encodes, streams } } }
@@ -97,14 +98,31 @@ object Tw4aArchive {
         val url = if (redirectPath.startsWith("http")) redirectPath else BASE + redirectPath
         repeat(3) { attempt ->
             try {
-                val response = app.get(
-                    url, headers = headers, allowRedirects = false, timeout = 30L
+                // raw call first so the 302 Location header stays readable
+                var response = app.get(
+                    url, headers = Tw4aWebView.cfHeaders(url, headers),
+                    allowRedirects = false, timeout = 30L
                 )
+                var html = response.text
+
+                // Cloudflare challenge -> solve once in the healthy WebView,
+                // then refetch with the clearance cookies
+                if (Tw4aWebView.isChallengeHtml(html)) {
+                    if (Tw4aWebView.solveCloudflare(url) == null) {
+                        kotlinx.coroutines.delay(500L * (attempt + 1))
+                        return@repeat
+                    }
+                    response = app.get(
+                        url, headers = Tw4aWebView.cfHeaders(url, headers),
+                        allowRedirects = false, timeout = 30L
+                    )
+                    html = response.text
+                }
+
                 // direct 302 to the shortener
                 val location = response.headers["location"]
                 if (location != null && location.startsWith("http")) return location
 
-                val html = response.text
                 val props = parseProps(html)
                 val dest = props?.optString("destination").orEmpty()
                 if (dest.startsWith("http")) return dest
