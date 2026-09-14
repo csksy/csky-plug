@@ -1,0 +1,13 @@
+--- a/.github/workflows/main.yml
++++ b/.github/workflows/main.yml
+@@ -23,7 +23,10 @@
+       - name: Setup Android SDK
+-        uses: android-actions/setup-android@v4
++        # setup-android@v4 fails on current runner images: it installs the
++        # legacy 'tools' package which Google removed from the SDK index.
++        # ubuntu-latest already ships the Android SDK with ANDROID_HOME set.
++        run: |
++          yes | sdkmanager --licenses > /dev/null || true
++          sdkmanager --version
+ 
+       - name: Build Plugins
