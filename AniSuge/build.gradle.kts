@@ -13,3 +13,4 @@ cloudstream {
     )
     iconUrl = "https://anisuge.tv/assets/images/favicon.png"
 }
+
