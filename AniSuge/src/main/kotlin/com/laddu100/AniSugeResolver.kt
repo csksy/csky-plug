@@ -10,24 +10,37 @@ import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * MegaPlay (megaplay.buzz and clones) sources API changed:
- *  - the client script lib/newclient.min.js rewrites /stream/getSources -> /stream/getSourcesNew
- *  - legacy getSources now answers {"tracks":[...]} with sources:null
- *  - getSourcesNew answers {"tracks":[...],"t":1,"server":4,"enc":"<base64url>"}
- *  - "enc" is AES-CBC(base64url) of {"file":"https://.../master.m3u8"}
- *  - key material lives in newclient.min.js (16-char seeds), pinned fallbacks kept below
- *  - ?s=bcdn / ?s=tcdn on the embed selects the CDN and must be forwarded
+ * MegaPlay (megaplay.buzz and clones) — fully rewritten 2026-09-15.
  *
- * Verified live 2026-09-14 against megaplay.buzz.
+ * VERIFIED LIVE against megaplay.buzz:
+ *  - /stream/getSourcesNew?id=<dataId>&type=<sub|dub> answers
+ *    {"tracks":[..],"t":1,"intro":{..},"outro":{..},"server":4,"enc":"<base64url>"}
+ *  - "enc" = AES-CBC(key seed "i?LMTAx0Q6,:}50U" zero-padded to 32B, IV "W0;27ToaUpl_P%'c")
+ *    of {"file":"https://fetch.nexabloom.top/anime/<id1>/<id2>/master.m3u8"}
+ *  - the ?s= query param selects the CDN and MUST NOT be forwarded:
+ *      default/bcdn -> fetch.nexabloom.top (variant playlists hold ABSOLUTE segment
+ *                      urls on clean Cloudflare CDNs: qx-01.quavex.top,
+ *                      tx-01.tyrionx.top, cdn-XXX.streamzone1.site ... plain MPEG-TS,
+ *                      no byte prefix, only need Referer)
+ *      tcdn         -> megap.shiora.site (segments are absolute tiktokcdn.com urls
+ *                      with a 252-byte PNG header prepended -> UNPLAYABLE in
+ *                      ExoPlayer + tiktokcdn is ISP-blocked in India)
+ *  - ONLY the master.m3u8 request requires an HMAC token (openresty 403 otherwise):
+ *        payload = "<unix-expires>|<id1>/<id2>"   (ids lowercased from the path)
+ *        token   = b64url(payload) + "." + b64url(HMAC-SHA256("MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s", payload))
+ *        url     = url + (has query ? "&" : "?") + "token=" + token
+ *    The real web player signs with a 90s expiry, but the server only checks
+ *    expires > now, so we sign a long-lived (7 day) token. Variant playlists and
+ *    segments are served WITHOUT any token (Referer only).
  */
 object MegaPlayCipher {
     private const val TAG = "MegaPlayCipher"
@@ -99,6 +112,11 @@ object MegaPlayResolver {
     fun audioTypeFromUrl(url: String): String? =
         Regex("""/(dub|sub)(?:[/?#]|$)""").find(url)?.groupValues?.get(1)
 
+    /**
+     * Resolves a megaplay embed page to the playable master m3u8 (default CDN).
+     * The ?s= param is deliberately NOT forwarded — s=tcdn selects a CDN whose
+     * segments are tiktokcdn urls with a 252-byte junk prefix (unplayable).
+     */
     suspend fun resolveStream(embedUrl: String, referer: String?): MegaPlayStream? {
         val host = Regex("""https?://([^/]+)""").find(embedUrl)?.groupValues?.get(1) ?: return null
         val pageHeaders = mapOf(
@@ -122,7 +140,6 @@ object MegaPlayResolver {
             ?: Regex("""type\s*:\s*['"](dub|sub)['"]""").find(pageHtml)?.groupValues?.get(1)
             ?: "sub"
 
-        val sParam = Regex("""[?&]s=([a-z0-9_-]+)""").find(embedUrl)?.groupValues?.get(1)
         val altHost = Regex("""data-domain=["']([^"']+)["']""").find(pageHtml)?.groupValues?.get(1)
         val hosts = listOfNotNull(host, altHost?.takeIf { it != host }).distinct()
 
@@ -136,8 +153,8 @@ object MegaPlayResolver {
                 "Referer" to embedUrl
             )
             for (endpoint in listOf("getSourcesNew", "getSources")) {
-                var url = "$base/stream/$endpoint?id=$streamId&type=$audioType"
-                if (sParam != null) url += "&s=$sParam"
+                // NOTE: no &s= param — always the default (nexabloom) CDN.
+                val url = "$base/stream/$endpoint?id=$streamId&type=$audioType"
                 val root = fetchJson(url, ajaxHeaders) ?: continue
                 val streamUrl = extractStream(root, base)
                 if (streamUrl != null) {
@@ -191,6 +208,66 @@ object MegaPlayResolver {
         }
     }
 
+    // --- HMAC url token (openresty on the CDN requires it for master.m3u8) ---
+    private const val TOKEN_KEY = "MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s"
+    private const val TOKEN_LIFETIME_SECONDS = 7L * 24L * 60L * 60L // 7 days (server only checks expires > now)
+    private val hexIdsRegex = Regex("""/([a-f0-9]{32})/([a-f0-9]{32})/""", RegexOption.IGNORE_CASE)
+
+    private fun b64url(bytes: ByteArray): String =
+        Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+    /** Signs a megaplay CDN url with a long-lived HMAC token (verified live). */
+    fun signUrl(url: String, lifetimeSeconds: Long = TOKEN_LIFETIME_SECONDS): String {
+        val m = hexIdsRegex.find(url) ?: return url
+        val expires = System.currentTimeMillis() / 1000L + lifetimeSeconds
+        val payload = "$expires|${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}"
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(TOKEN_KEY.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        val signature = mac.doFinal(payload.toByteArray(Charsets.UTF_8))
+        val token = "${b64url(payload.toByteArray(Charsets.UTF_8))}.${b64url(signature)}"
+        val sep = if (url.contains('?')) "&" else "?"
+        return "$url${sep}token=$token"
+    }
+
+    private data class VariantEntry(val url: String, val quality: Int?)
+
+    /**
+     * Splits the (signed) master playlist into its video variants.
+     * Skips trick-play (i-frame) entries naturally: their URI is an inline
+     * attribute of #EXT-X-I-FRAME-STREAM-INF, never the line after
+     * #EXT-X-STREAM-INF.
+     */
+    private fun parseVariants(masterUrl: String, masterText: String): List<VariantEntry> {
+        val base = masterUrl.substringBefore('?').let { it.substringBeforeLast('/') + "/" }
+        val out = mutableListOf<VariantEntry>()
+        val lines = masterText.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i].trim()
+            if (line.startsWith("#EXT-X-STREAM-INF:")) {
+                val res = Regex("""RESOLUTION=(\d+)x(\d+)""").find(line)
+                val quality = res?.groupValues?.get(2)?.toIntOrNull()
+                var j = i + 1
+                while (j < lines.size && (lines[j].isBlank() || lines[j].startsWith("#"))) j++
+                if (j < lines.size) {
+                    val uri = lines[j].trim()
+                    if (uri.isNotEmpty()) {
+                        val absolute = if (uri.startsWith("http")) uri else base + uri
+                        out.add(VariantEntry(absolute, quality))
+                    }
+                    i = j
+                }
+            }
+            i++
+        }
+        return out
+    }
+
+    /**
+     * Emits quality-labelled, HMAC-signed links for every variant of the master
+     * playlist (plus the signed master itself as a fallback). Variant playlists
+     * and segments only need the Referer header.
+     */
     suspend fun emitLinks(
         source: String,
         label: String,
@@ -204,24 +281,45 @@ object MegaPlayResolver {
             "User-Agent" to USER_AGENT,
             "Referer" to referer
         )
-        var found = false
-        val generated = try {
-            M3u8Helper.generateM3u8(source, m3u8, referer, headers = playHeaders)
+
+        val signedMaster = signUrl(m3u8)
+        val masterText = try {
+            app.get(signedMaster, headers = playHeaders, timeout = 15_000L).text
         } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] m3u8 expansion failed: ${e.message}")
-            emptyList()
+            Log.d(TAG, "[MegaPlay] signed master fetch failed: ${e.message}")
+            null
         }
-        if (generated.isNotEmpty()) {
-            generated.forEach(callback)
-            found = true
+
+        var found = false
+        val variants = masterText?.let { parseVariants(m3u8, it) } ?: emptyList()
+        if (variants.isNotEmpty()) {
+            for (v in variants) {
+                val qualitySuffix = v.quality?.let { "${it}p" } ?: ""
+                callback.invoke(
+                    newExtractorLink(
+                        source,
+                        if (qualitySuffix.isEmpty()) label else "$label $qualitySuffix",
+                        signUrl(v.url),
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = referer
+                        v.quality?.let { quality = it }
+                        this.headers = playHeaders
+                    }
+                )
+                found = true
+            }
         } else {
+            // master could not be fetched/parsed — hand out the signed url as-is
             callback.invoke(
-                newExtractorLink(source, label, m3u8, type = ExtractorLinkType.M3U8) {
+                newExtractorLink(source, label, signedMaster, type = ExtractorLinkType.M3U8) {
+                    this.referer = referer
                     this.headers = playHeaders
                 }
             )
             found = true
         }
+
         for ((subLabel, subUrl) in subtitles) {
             subtitleCallback.invoke(
                 newSubtitleFile(subLabel, subUrl) {
