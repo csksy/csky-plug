@@ -1,4 +1,4 @@
-version = 5
+version = 6
 
 android {
     buildFeatures {
@@ -12,10 +12,10 @@ dependencies {
 
 cloudstream {
     description = "Anime World India - Hindi, Tamil, Telugu Anime & Cartoons with multi-audio"
-    authors = listOf("csksy")
+    authors = listOf("raghav")
 
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "Cartoon")
-    language = "en"
+    language = "hi"
     iconUrl = "https://watchanimeworld.top/wp-content/uploads/AW_Smiley.png"
 }
