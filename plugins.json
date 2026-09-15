@@ -1,0 +1,1316 @@
+[
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniChan.cs3",
+        "status": 1,
+        "version": 11,
+        "name": "AniChan",
+        "internalName": "AniChan",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Watch Anime in HD with Sub, Dub and Hardsub",
+        "fileSize": 42298,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=anichan.net&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-4b11a91dffabbf264c48707674782f004bf2b73954e20591a3f2b022edc7aed7"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Anidap.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "Anidap",
+        "internalName": "Anidap",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Anime with Sub, Dub & Hardsub from Anidap",
+        "fileSize": 71187,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=anidap.lol&sz=64",
+        "apiVersion": 1,
+        "fileHash": "sha256-9389830fc3c51826ee4718f64744fcebd994a377d457aff2c796bb723d766a84"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniKage.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "AniKage",
+        "internalName": "AniKage",
+        "authors": [
+            "csksy"
+        ],
+        "description": "AniKage - Anime & Movies from anikage.cc (sub/dub selection for anime AND movies, real episode titles, all servers, multi-language subtitles). Sources: MegaPlay(Koto)/VidTube/VibeNeko/StreamHG/Earnvids + Kiwi/Uwu/Megg/Dib/Wave via prox with one-time verification",
+        "fileSize": 86701,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://anikage.cc/favicon-96x96.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-3ce6449e3b2fe7a4229ec1b798c92ce25e75dcf566a5cd07e6fe68ef8144d900"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniKotoAnime.cs3",
+        "status": 1,
+        "version": 16,
+        "name": "AniKotoAnime",
+        "internalName": "AniKotoAnime",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "AniKoto Anime - Watch Anime Sub & Dub in HD",
+        "fileSize": 46326,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://anikototv.to/AnikotoTheme/assets/images/favicon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-f049815ee4b743f562c23fb62789ef420e6b5549d014d5323ff78adce7f13779"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniKuro.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "AniKuro",
+        "internalName": "AniKuro",
+        "authors": [
+            "csksy"
+        ],
+        "description": "AniKuro - Anime & Movies from anikuro.ru (sub/dub selection for anime AND movies, real episode titles, 12 servers, multi-language subtitles). v4: fixed no-links (URL double-prefix) + DUB badges via aliased AniList query",
+        "fileSize": 65991,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://anikuro.ru/static/favicon/favicon-96x96.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-f52e444a13b7dcce8bc72e1427945d399cdbb324220985a067cc53e3bb8c1690"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AnimeComments.cs3",
+        "status": 3,
+        "version": 3,
+        "name": "AnimeComments",
+        "internalName": "AnimeComments",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Comment on any anime episode while it plays. A comment button with a proper chat bubble icon floats over the player - tap it to read and post comments for the exact episode you are watching. Threads are shared across all users, works over every provider including RaghavAnime.",
+        "fileSize": 29759,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Others"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-3e1cdf4c9ddba884e1017e8d8e51835e0ddd4e4bb59bf9076a0fd05dbaa5ede7"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AnimeInWeb.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "AnimeInWeb",
+        "internalName": "AnimeInWeb",
+        "authors": [
+            "csksy"
+        ],
+        "description": "AnimeInWeb - animeinweb.com sub indo",
+        "fileSize": 53384,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "id",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA",
+            "TvSeries"
+        ],
+        "iconUrl": "https://animeinweb.com/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-678ad4cf6a04efdeb3ccd1334dff07e400cca7f3220f04f7335513bfa92cad7b"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AnimeKai.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AnimeKai",
+        "internalName": "AnimeKai",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Anime with Sub and Dub - Ani-HD, HD and HD-1 servers with multiple CDNs per server, real episode titles and multi-language subtitles",
+        "fileSize": 45241,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=animekai.ro&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-08265d14c4775b2473a2419033cd0c31c9997f262aa10a6d419215d3deaecb0d"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AnimeParty.cs3",
+        "status": 3,
+        "version": 3,
+        "name": "AnimeParty",
+        "internalName": "AnimeParty",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Watch parties in sync with live chat for up to 5 people, on top of any provider's stream. A groups-icon button floats over the player - tap for the party menu, tap again in a room for chat. Public room list, host migration, resync and episode hints. Connects to the repo's shared cs-social-hub server automatically.",
+        "fileSize": 44974,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Others"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-d78ee1c73896c5877fc11a62f6c46f23e582d86dd3d53374f38ed722e525fcd8"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AnimeWorldIndia.cs3",
+        "status": 1,
+        "version": 7,
+        "name": "AnimeWorldIndia",
+        "internalName": "AnimeWorldIndia",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Anime World India - Hindi, Tamil, Telugu Anime & Cartoons with multi-audio",
+        "fileSize": 55961,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "hi",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "Cartoon"
+        ],
+        "iconUrl": "https://watchanimeworld.top/wp-content/uploads/AW_Smiley.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-a29aa88ff4419609130ac71258a22e99e2faa80efafb7c32e6ebf2e8ba31dcc7"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AnimeX.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "AnimeX",
+        "internalName": "AnimeX",
+        "authors": [
+            "csksy"
+        ],
+        "description": "AnimeX - Anime with Sub & Dub, all providers incl hardsub",
+        "fileSize": 93918,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://animex.one/assets/logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-42e5314782f43fed23a5dbdabb294ddcd3b87d066661deb2ca846658a4968ef7"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Animo.cs3",
+        "status": 1,
+        "version": 18,
+        "name": "Animo",
+        "internalName": "Animo",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Anime(sub,dub)",
+        "fileSize": 44157,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://4animo.xyz/logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-c5fb75fe2877fed72b4c73b35a2371f8a71a71e5ce97c412ede48dccf4e28a5c"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AnimoTvSlash.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "AnimoTvSlash",
+        "internalName": "AnimoTvSlash",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Watch Anime Online Free in HD (Sub & Dub)",
+        "fileSize": 65606,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://animotvslash.org/wp-content/uploads/2025/10/Cropped_Image__2_-removebg-preview-1.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-0d82bdedbbdc7aa2578931ab65775b5a65e4ebdb54aed22a855f53c940aedb9d"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniPM.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "AniPM",
+        "internalName": "AniPM",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Anime with Sub & Dub from ani.pm",
+        "fileSize": 63350,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=ani.pm&sz=64",
+        "apiVersion": 1,
+        "fileHash": "sha256-0cd8f7be9ecfbe48dbc07b39cd428eb5bf6b83bde1166de78383aa8ea8eb0fad"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniShows.cs3",
+        "status": 1,
+        "version": 8,
+        "name": "AniShows",
+        "internalName": "AniShows",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Anime & TV/Movie streaming",
+        "fileSize": 544843,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA",
+            "TvSeries",
+            "Movie"
+        ],
+        "iconUrl": "https://anishows.org/icon.svg",
+        "apiVersion": 1,
+        "fileHash": "sha256-0cd2f9cf823fd928ca4f661b1aeb002dac2cc9ec0a6394ea6ad5ec5e0bf9ec6d"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniSnatch.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "AniSnatch",
+        "internalName": "AniSnatch",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Anime with Sub and Dub - 16 sources, real episode titles, multi-language subtitles, Hindi dub, multi-audio",
+        "fileSize": 50586,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=anisnatch.to&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-cc58367fc4beab4bc031c052fdb918c5e037600faead545c7588506458b837bc"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Anistream.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "Anistream",
+        "internalName": "Anistream",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Anistream - Anime with Sub & Dub, 10 servers (Neko, Kiwi, Mimi, Yuki, Minky, Zen, Hawk, Beep, Sora, Wave), real episode titles, softsub/hardsub tags, multi-language subtitles. v2: Cloudflare bypass + DNS-over-HTTPS fallback + cookie session + real error messages",
+        "fileSize": 102454,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://anistream.one/favicon.svg",
+        "apiVersion": 1,
+        "fileHash": "sha256-dfcb6cc01cba93b4f6409a164eb2b07a644a3700c30f37ee0b4cb23ad014a023"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniSuge.cs3",
+        "status": 1,
+        "version": 5,
+        "name": "AniSuge",
+        "internalName": "AniSuge",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Anime from AniSuge with Sub and Dub support",
+        "fileSize": 61283,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://anisuge.tv/assets/images/favicon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-22438c0dd3fe41cc508db7c311f864a8ceab5fab4748b5cb8b1d07e1c4f71db3"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/AniWaves.cs3",
+        "status": 1,
+        "version": 7,
+        "name": "AniWaves",
+        "internalName": "AniWaves",
+        "authors": [
+            "raghav"
+        ],
+        "description": "720p sub and dub anime",
+        "fileSize": 38494,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://aniwaves.ru/assets/images/aniwave.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-50748db6cbc9f5ef295d1475b6da1d5df355d7b15d0bbc37f129849ddca3a635"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Bingr.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Bingr",
+        "internalName": "Bingr",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Bingr \u2014 Stream Movies, Shows & Anime with multi-audio and subtitles",
+        "fileSize": 80470,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime",
+            "AnimeMovie"
+        ],
+        "iconUrl": "https://bingr.one/favicon.svg",
+        "apiVersion": 1,
+        "fileHash": "sha256-215b12b816d9260deceec9bb6f1e2711cd04fefc4867dcb21e664b4416fb67a3"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/BollyFlix.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "BollyFlix",
+        "internalName": "BollyFlix",
+        "authors": [
+            "csksy"
+        ],
+        "description": "BollyFlix - Download Bollywood, Hollywood, Dual Audio, Multi Audio Movies & Web Series in 480p, 720p, 1080p",
+        "fileSize": 43564,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "hi",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://bollyflix.free/wp-content/uploads/2020/02/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-390d5635abe744b3ca1a8a5d61720acf63415dbc9ca290c85bb5d877d9066311"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/CinemaLux.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "CinemaLux",
+        "internalName": "CinemaLux",
+        "authors": [
+            "csksy"
+        ],
+        "description": "CinemaLux - Download 4K Movies and TV Shows in 1080p, 720p with Multi Audio",
+        "fileSize": 34393,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "hi",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://cinemalux.click/wp-content/uploads/2025/07/cropped-cinemalux.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-00a9487c7e547a10cac6da0b66cb20958995866b3e6d19fd15b2788bc6bbb767"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/CineQuiz.cs3",
+        "status": 3,
+        "version": 2,
+        "name": "CineQuiz",
+        "internalName": "CineQuiz",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Movie, anime and entertainment trivia. Play solo offline or open a room for up to 5 friends with live scores. Multiplayer connects to the repo's shared cs-social-hub server automatically.",
+        "fileSize": 42335,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Others"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-08fc0f8b869cc41daa381964d1f2c3af3bc3ff1a3b150c50693dc760adae3707"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/CineStream.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "CineStream",
+        "internalName": "CineStream",
+        "authors": [
+            "csksy"
+        ],
+        "description": "CineStream \u2014 Movies & TV Series with multi-audio and subtitles",
+        "fileSize": 64863,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://thecinestream.pages.dev/images/favicon.jpeg",
+        "apiVersion": 1,
+        "fileHash": "sha256-13d35ab50eae5713f64288cb495e747048673999ba75686485b5e2136c61f4c5"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/CloudMoviez.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "CloudMoviez",
+        "internalName": "CloudMoviez",
+        "authors": [
+            "raghav"
+        ],
+        "description": "CloudMoviez - HD Movies & TV Shows with multi audio downloads from GDFlix Instant, GDFlix Cloud, DotFlix and PixelDrain",
+        "fileSize": 72090,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://new.cloudmoviez.shop/wp-content/uploads/2026/08/cropped-IMG_20250126_140606-150x150.jpg",
+        "apiVersion": 1,
+        "fileHash": "sha256-1df2639b29879f26a5968925d4bee9d2745581f037554b41da8cccf40422f418"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/CskyPlay.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "CskyPlay",
+        "internalName": "CskyPlay",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Multi site movies and tv aggregator with VegaMovies HDHub4u 4KHDHub MovieBox NetNaija TheMoviesFlix Multimovies and Movies4u sources on a TMDB catalog with per site toggles and firebase domain override",
+        "fileSize": 206773,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=themoviedb.org&sz=64",
+        "apiVersion": 1,
+        "fileHash": "sha256-f321730c15109ab148611e28867662ff584a9003edee1279e3a31ba6516b822e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Enma.cs3",
+        "status": 1,
+        "version": 10,
+        "name": "Enma",
+        "internalName": "Enma",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Enma - Watch Anime Sub & Dub in HD",
+        "fileSize": 65178,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.enma.lol/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-5a3d918b1b49176cbc4e8b76d80ad510816eb1fb40246cc3d60f2f3166041598"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/GoTaku.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "GoTaku",
+        "internalName": "GoTaku",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Hardsub and dub from Gotaku",
+        "fileSize": 50973,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://gotaku.to/images/icons/logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-db436c8ce5fc8288445ef416048b4f0b62623c7e5650c8e2623e260da797d091"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/HDGharTV.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "HDGharTV",
+        "internalName": "HDGharTV",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Movies & Series with Multi-Audio (Hindi, English, Tamil, Telugu, etc.)",
+        "fileSize": 34130,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "hi",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://hdghartv.cc/favicon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-7fd6d49ac393e08ec23430095003d4e0db7de62986e82f99cbcf936a38e2f2b6"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Just4Anime.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "Just4Anime",
+        "internalName": "Just4Anime",
+        "authors": [
+            "csksy"
+        ],
+        "description": "anime from just4anime with sub and dub",
+        "fileSize": 51453,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=just4anime.online&sz=64",
+        "apiVersion": 1,
+        "fileHash": "sha256-f88937827096aeb6480e1d57844b9ee456d9f757e0c2a7d5c1d0c24dd6ef5d06"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Kdesa.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "Kdesa",
+        "internalName": "Kdesa",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "KDesa - Movies, TV Shows & Anime from kdesa.stream. Multi-source: TQQ (AniKoto), Anidap, FSOnline, CornClick, Cuevana3, 7Movies, 1Embed, Nova, VixSrc (Italian). Multi-audio + subtitles.",
+        "fileSize": 159005,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "iconUrl": "https://kdesa.stream/android-chrome-192x192.png?v=6",
+        "apiVersion": 1,
+        "fileHash": "sha256-1ae7c1c7760aadb31be0379fe883afd615864dbd968bbd4c1922dd2dce964f7e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/KuroAnime.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "KuroAnime",
+        "internalName": "KuroAnime",
+        "authors": [
+            "csksy"
+        ],
+        "description": "KuroAnime - Anime with Sub & Dub, 8 sources (Kuroanime, AllAnime, MegaPlay, Pahe, AniDB, Kyren, Miruro, Reanime), real episode titles, softsub/hardsub tags, multi-language subtitles, movie sub/dub separation",
+        "fileSize": 107280,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://kuroanime.lol/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-f5dfaf20941bae201f9a042b261f9d87ae9ab06a6cbb87cd74e57e7065a29c79"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Kyren.cs3",
+        "status": 1,
+        "version": 5,
+        "name": "Kyren",
+        "internalName": "Kyren",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Kyren - Anime streaming",
+        "fileSize": 38319,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://kyren.moe/icon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-94c664bdbcbdb55506f5930f04ac1842f48a4be964b31ef6d8712a35605bd489"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/LIVETVProvider.cs3",
+        "status": 1,
+        "version": 21,
+        "name": "LIVETVProvider",
+        "internalName": "LIVETVProvider",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Watch LIVE TV channels & sports via LIVE TV",
+        "fileSize": 86665,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://png.pngtree.com/png-vector/20191026/ourmid/pngtree-live-icon-design-template-vector-isolated-illustration-png-image_1874482.jpg",
+        "apiVersion": 1,
+        "fileHash": "sha256-b71e2228e1974bf47a02e65a1ba64d7b5b8058c544a92cbfe53c33958fe37d88"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Miruro.cs3",
+        "status": 1,
+        "version": 14,
+        "name": "Miruro",
+        "internalName": "Miruro",
+        "authors": [
+            "csksy"
+        ],
+        "description": "ANIME(SUB,DUB)-MULTI SOURCE",
+        "fileSize": 98506,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://repository-images.githubusercontent.com/567000493/281ea6b4-7159-4ac7-b5f1-34abf335c033",
+        "apiVersion": 1,
+        "fileHash": "sha256-18fc0d6fbf1cdf4be1987f46ee6f87da0b8af5a890d06c97c15b966576416949"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/MKissa.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "MKissa",
+        "internalName": "MKissa",
+        "authors": [
+            "csksy"
+        ],
+        "description": "MKissa - anime with sub and dub tracks, real episode titles and multi server playback from the site's own CDN, Ok, StreamSB, Mp4Upload and Filemoon",
+        "fileSize": 56735,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "Movie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=mkissa.to&sz=64",
+        "apiVersion": 1,
+        "fileHash": "sha256-71ce6782f6717c121e0014ce050b0c0c01dced17d7ffa30b44d0fe6c1b9e61cd"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/MkvBase.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "MkvBase",
+        "internalName": "MkvBase",
+        "authors": [
+            "csksy"
+        ],
+        "description": "MKVBase - Movie & Series Link Search",
+        "fileSize": 81161,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://zenkai.to/assets/images/logo/favicon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-0abbfdc312f1afb303ca42497b3b40cf7324c04cc277f254a3feb1200b490146"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/MovieLinkBD.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "MovieLinkBD",
+        "internalName": "MovieLinkBD",
+        "authors": [
+            "csksy"
+        ],
+        "description": "MovieLinkBD - Movies, Web Series, Anime & K-Drama in 480p, 720p, 1080p (Bengali, Hindi, English, Dual Audio)",
+        "fileSize": 41588,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=movielinkbd.net&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-6c9ab98ed05923775deb2be510a0259ed3de269a9ae4cf9f1d14d1567d351b67"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Multimovies.cs3",
+        "status": 1,
+        "version": 6,
+        "name": "Multimovies",
+        "internalName": "Multimovies",
+        "authors": [
+            "raghav,phisher,csksy"
+        ],
+        "description": "Multimovies - Movies, TV Shows & Anime. All sources: Cineverse, GD Mirror, Vidout, Nxsha (multi-server) and more",
+        "fileSize": 114588,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "iconUrl": "https://multimovies.casa/wp-content/uploads/2024/01/cropped-CompressJPEG.online_512x512_image.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-b2be2cf91a00a3362e5d75d5c2082247505a71e583e14e6ed38682d527f0f1dc"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/NetNaija.cs3",
+        "status": 1,
+        "version": 14,
+        "name": "NetNaija",
+        "internalName": "NetNaija",
+        "authors": [
+            "raghav"
+        ],
+        "description": "NetNaija - Watch Movies, TV Series, Anime, bollywood, Korean & Hollywood. HD streaming with multi-language.",
+        "fileSize": 84052,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://netnaija.film/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-782d22b08e6449188a83d8c8a7cdf2571cd9fb37f4d07bb323402258e2dc1672"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/NewKMMovies.cs3",
+        "status": 1,
+        "version": 5,
+        "name": "NewKMMovies",
+        "internalName": "NewKMMovies",
+        "authors": [
+            "csksy"
+        ],
+        "description": "KMMovies - Download Movies & TV Series in Multi Audio",
+        "fileSize": 69893,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "hi",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=kmmovies.online&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-391c95bf8f00cee857694035df219a9a26ab943c443a9ff42f6a4c0543374594"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/NineAnime.cs3",
+        "status": 1,
+        "version": 5,
+        "name": "NineAnime",
+        "internalName": "NineAnime",
+        "authors": [
+            "raghav"
+        ],
+        "description": "anime from 9anime clone with sub and dub",
+        "fileSize": 38675,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://9anime.org.lv/wp-content/uploads/2024/08/9animecomee-logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-93d906d21339b4ed4850cd4b4f9b07a9ca820aee83de92e67e8e8a000a60aafd"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/OneFlex.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "OneFlex",
+        "internalName": "OneFlex",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Movies and TV from 1flex.org with 8 servers: Viduki, Vidy, VidFast, VidLink, VidRock, Vidzee, Multi Language and Premium Embeds",
+        "fileSize": 35619,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.1flex.org/favicons/nobg.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-31c532484944a1f0dd62aab41519eceb1adc0dfe1cc3dc3d3f01030b4609c2e9"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/OnlyTesting.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "OnlyTesting",
+        "internalName": "OnlyTesting",
+        "authors": [
+            "raghav"
+        ],
+        "description": "OnlyTesting - Aggregated Anime Plugin (SUB/DUB)",
+        "fileSize": 643833,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.pngall.com/wp-content/uploads/13/Anime-Logo-PNG-Images.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-ade05da1fe7b36a4871c32db16ec892f84314482062ca9af04019b385a96e7bb"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/RadioStorm.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "RadioStorm",
+        "internalName": "RadioStorm",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Thousands of live radio stations worldwide by genre, country and language. Plays in the built in player with background audio.",
+        "fileSize": 15955,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Others"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-c9328a828119ee158b6af950941eba74f1643bfd768e086a71fb0ab19c9d6368"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/RaghavAnime.cs3",
+        "status": 1,
+        "version": 68,
+        "name": "RaghavAnime",
+        "internalName": "RaghavAnime",
+        "authors": [
+            "raghav"
+        ],
+        "description": "ONE STOP SOLUTION FOR ANIME(SUB,DUB) - Raghav Aggregated Anime Pluginn )",
+        "fileSize": 666392,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.pngall.com/wp-content/uploads/13/Anime-Logo-PNG-Images.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-daf6a64014fda0ef5676dad2cef98c84c89b59a7a21c64a32d5215aacc75d54d"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/RaghavAnimeKitsu.cs3",
+        "status": 1,
+        "version": 20,
+        "name": "RaghavAnimeKitsu",
+        "internalName": "RaghavAnimeKitsu",
+        "authors": [
+            "raghav"
+        ],
+        "description": "ONE STOP SOLUTION FOR ANIME(SUB,DUB) - Kitsu Catalog",
+        "fileSize": 678417,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.pngall.com/wp-content/uploads/13/Anime-Logo-PNG-Images.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-59d2a30fb58a252ab89a06ed89f8a2b8e026234cad5b27a3690a745e041a3bda"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/ReAnime.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "ReAnime",
+        "internalName": "ReAnime",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Re:ANIME - Anime with Sub & Dub",
+        "fileSize": 66152,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://reanime.to/favicon-32x32.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-19355c356d6aa76d641ee46baecea83f89c32d6b1ee0185e3c43022d4a60ca22"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/RetroVault.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "RetroVault",
+        "internalName": "RetroVault",
+        "authors": [
+            "KSHITIJ8473"
+        ],
+        "description": "Retro game arcade: EmulatorJS powered NES, SNES, Game Boy, GBA, Genesis, N64, PlayStation and arcade emulation with bundled open source homebrew, plus HTML5 arcade games.",
+        "fileSize": 4965632,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Others"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-2fe925d3fe26625ec367ea61926f4a986327ffde1a7c78b979304b1237d205da"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Senshi.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "Senshi",
+        "internalName": "Senshi",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Anime with sub & dub, multi-language subtitles",
+        "fileSize": 82361,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://senshi.to/assets/Senshi_Logo-D4bDbCzd.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-e192899990fea13db252048271ae18035892f55c5847eeb9a23ad62763f51148"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/StreamedPk.cs3",
+        "status": 1,
+        "version": 10,
+        "name": "StreamedPk",
+        "internalName": "StreamedPk",
+        "authors": [
+            "RAGHAV"
+        ],
+        "description": "ALL LIVE SPORTS WITH MULTIPLE SERVER",
+        "fileSize": 45266,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://streamed.pk/favicon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-6b38c3ccffe83724fc283c43a54fb1bea7e95e3854583c5d462e121a8ba9a0e1"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/StreamingUnity.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "StreamingUnity",
+        "internalName": "StreamingUnity",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Movies & TV Shows from StreamingUnity",
+        "fileSize": 29877,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=streamingunity.vip&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-85aae52eb5bb766387bb969f4eb5697d00ca4401e4fa3e4943e85fbc0bf5784b"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/SubDL.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "SubDL",
+        "internalName": "SubDL",
+        "authors": [
+            "raghav"
+        ],
+        "description": "SubDL - Aggregated Anime Plugin (SUB/DUB)",
+        "fileSize": 532959,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://www.pngall.com/wp-content/uploads/13/Anime-Logo-PNG-Images.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-3e9cea3a0c3e95d35430031abe125db1403b3cf8f3e19d8963d2ff2a37e9c3e4"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/TheMoviesBoss.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "TheMoviesBoss",
+        "internalName": "TheMoviesBoss",
+        "authors": [
+            "csksy"
+        ],
+        "description": "TheMoviesBoss - download and watch hindi hollywood bollywood movies & web series",
+        "fileSize": 103639,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "hi",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://ww1.themoviesboss.blog/wp-content/uploads/2025/04/favicon2.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-eaf7e4e2bd9db054ef1d2753bbbc8b654faf3c2841e4328597ce58343b075199"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/TheMoviesFlix.cs3",
+        "status": 1,
+        "version": 18,
+        "name": "TheMoviesFlix",
+        "internalName": "TheMoviesFlix",
+        "authors": [
+            "csksy"
+        ],
+        "description": "( don't use cs beta ) Download and stream movies & TV series HINDI,ENGLISH - TheMoviesFlix Provider",
+        "fileSize": 66123,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSj_C9WX4AwepepLyw_cF-EIJeRpqgI4wDiquYSoP9xDFFAKFtTVM-P_zo&s=10",
+        "apiVersion": 1,
+        "fileHash": "sha256-6d7e85ed190484eef9ddabda3e667a857f624e2d744771273c3c40dd6e5e10a7"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/TimStreams.cs3",
+        "status": 1,
+        "version": 7,
+        "name": "TimStreams",
+        "internalName": "TimStreams",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Live Sports Events and some Live TV Channels from TimStreams",
+        "fileSize": 41070,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSEcz-sR5DKHHDqsTKkQ08izA6E8HqZQnbWiTqJL3XjO-eLoixqbHx47INk&s=10",
+        "apiVersion": 1,
+        "fileHash": "sha256-16296964d76497757ae21059160782e9ffdc97df81bea9b8ce8382c4adf30150"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/ToonWorld4All.cs3",
+        "status": 1,
+        "version": 8,
+        "name": "ToonWorld4All",
+        "internalName": "ToonWorld4All",
+        "authors": [
+            "csksy"
+        ],
+        "description": "cartoons anime and movies from toonworld4all with hubcloud pixeldrain and optional gdflix filepress mega downloads",
+        "fileSize": 133593,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Cartoon",
+            "Anime",
+            "Movie",
+            "TvSeries",
+            "AnimeMovie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=toonworld4all.me&sz=64",
+        "apiVersion": 1,
+        "fileHash": "sha256-ea42a23635b74f689605f5ff8d38ba80a655852c694682fda7bc69f969037c68"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/TwoDHive.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "TwoDHive",
+        "internalName": "TwoDHive",
+        "authors": [
+            "raghav"
+        ],
+        "description": "Anime and movies from 2Dhive with Sub and Dub support",
+        "fileSize": 43081,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://wallpapers.com/images/hd/anime-symbols-full-metal-alchemist-homunculi-black-and-red-59twpz44gslsiv1o.jpg",
+        "apiVersion": 1,
+        "fileHash": "sha256-84a101ac91bdca95c8fed31b5b8d94cbfd525ec79cb16a10907dba3bedea6455"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Videasy.cs3",
+        "status": 1,
+        "version": 7,
+        "name": "Videasy",
+        "internalName": "Videasy",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Movies, TV Shows & Anime - Multi Quality & Audio",
+        "fileSize": 50671,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=videasy.to&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-6fb707944f528e5f9e1602d9a5539cd94eeaf43cbea4dddc739bbc11334cf113"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/YupFlix.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "YupFlix",
+        "internalName": "YupFlix",
+        "authors": [
+            "csksy"
+        ],
+        "description": "YupFlix - Movies & Series in HD",
+        "fileSize": 31053,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "hi",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://watch.yupflix.org/favicon.svg",
+        "apiVersion": 1,
+        "fileHash": "sha256-a762cd2d6d6a86470ac4559949cc52f6459cc8b2629eaafbab1e681925a85f75"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/csksy/csky-plug/builds/Zenkai.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "Zenkai",
+        "internalName": "Zenkai",
+        "authors": [
+            "csksy"
+        ],
+        "description": "Zenkai - Anime Sub & Dub in HD",
+        "fileSize": 27899,
+        "repositoryUrl": "https://github.com/csksy/csky-plug",
+        "language": "en",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "iconUrl": "https://zenkai.to/assets/images/logo/favicon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-e2276ead07ea68d13b01b227e728e206ee9466c36e7fb3bfe96f39f61ac8d057"
+    }
+]
