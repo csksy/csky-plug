@@ -16,12 +16,11 @@ import kotlinx.coroutines.Deferred
 import android.util.Base64
 import com.lagradost.api.Log
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-// megaplay encrypts the stream url in the enc field of getSources responses.
-// the key material lives in lib/newclient.min.js as two quoted 16-char strings;
-// when that file moves or changes shape we fall back to the values known to work.
+// megaplay encrypts the enc stream url, the AES seeds live in lib/newclient.min.js and move over time
 object MegaPlayCipher {
     private const val TAG = "MegaPlayCipher"
     private const val FALLBACK_KEY_SEED = "i?LMTAx0Q6,:}50U"
@@ -42,7 +41,8 @@ object MegaPlayCipher {
             keyPairRegex.find(js)?.groupValues?.let { g ->
                 Pair(g[1], g[2]).also { cachedSeeds = it }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "key seed fetch failed: ${e.message}")
             null
         }
         return listOfNotNull(dynamic, fallback())
@@ -81,6 +81,13 @@ object MegaPlayCipher {
 }
 
 class TwoDHiveProvider : MainAPI() {
+    private val TAG = "TwoDHive"
+
+    // the megaplay cdn (openresty) only serves master.m3u8 with a valid HMAC
+    // url token; variants and segments need nothing beyond the referer
+    private val cdnTokenKey = "MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s"
+    private val cdnHexIdsRegex = Regex("""/([a-f0-9]{32})/([a-f0-9]{32})/""", RegexOption.IGNORE_CASE)
+
     override var mainUrl = "https://2dhive.com"
     override var name = "2Dhive"
     override var lang = "en"
@@ -128,7 +135,7 @@ class TwoDHiveProvider : MainAPI() {
                 var parent = a.parent()
                 repeat(5) {
                     if (parent != null && posterUrl == null) {
-                        val pImg = parent!!.selectFirst("img")
+                        val pImg = parent.selectFirst("img")
                         if (pImg != null) {
                             val src = pImg.attr("src").takeIf { it.isNotBlank() }
                             if (src != null && (src.contains("anilist") || src.contains("myanimelist") || src.contains("tmdb"))) {
@@ -222,7 +229,9 @@ class TwoDHiveProvider : MainAPI() {
                 val apiResp = quickGet("$mainUrl/api/anime/summary?malId=$malId")
                 val apiJson = mapper.readTree(apiResp)
                 plot = apiJson.get("anime")?.get("synopsis")?.asText() ?: ""
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "synopsis fetch failed: ${e.message}")
+            }
         }
 
         val genres = mutableListOf<String>()
@@ -236,7 +245,9 @@ class TwoDHiveProvider : MainAPI() {
                     genresNode.forEach { g -> genres.add(g.asText()) }
                 }
                 year = apiJson.get("anime")?.get("year")?.asInt()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "metadata fetch failed: ${e.message}")
+            }
         }
         if (year == null) {
             soup.select("div, span, p, small").forEach { el ->
@@ -272,7 +283,9 @@ class TwoDHiveProvider : MainAPI() {
                             }
                         }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.w(TAG, "episode props parse failed: ${e.message}")
+                }
             }
         }
 
@@ -298,8 +311,7 @@ class TwoDHiveProvider : MainAPI() {
                 this.posterUrl = ep.posterUrl
             }
         }
-        // the dub tab is only worth showing when megaplay actually carries a
-        // dub track for this title, otherwise it just ends in "no links"
+        // only show the dub tab when megaplay actually carries a dub track
         val hasDub = malId != null && probeDub(malId)
         val dubEpisodes = if (hasDub) {
             episodes.map { ep ->
@@ -329,7 +341,8 @@ class TwoDHiveProvider : MainAPI() {
                 timeout = 15_000L
             ).text
             html.contains("data-id=") || html.contains("data-realid=")
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "dub probe failed: ${e.message}")
             false
         }
     }
@@ -348,8 +361,7 @@ class TwoDHiveProvider : MainAPI() {
         val html = quickGet(epUrl)
         val soup = Jsoup.parse(html)
 
-        // the player island carries the mal id and episode number; the component
-        // was renamed from MultiServerPlayer to EpisodePlayer, match both
+        // the island component was renamed from MultiServerPlayer to EpisodePlayer, match both
         val island = soup.select("astro-island").firstOrNull {
             val cu = it.attr("component-url")
             cu.contains("EpisodePlayer", ignoreCase = true) || cu.contains("MultiServerPlayer", ignoreCase = true)
@@ -372,7 +384,8 @@ class TwoDHiveProvider : MainAPI() {
         results.add(async {
             try {
                 resolveMegaPlay(malId, epNum, type, epUrl, subtitleCallback, callback)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "megaplay resolve failed: ${e.message}")
                 false
             }
         })
@@ -380,7 +393,8 @@ class TwoDHiveProvider : MainAPI() {
         results.add(async {
             try {
                 resolveBabaStream(malId, epNum, type, epUrl, callback)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "babastream resolve failed: ${e.message}")
                 false
             }
         })
@@ -409,8 +423,7 @@ class TwoDHiveProvider : MainAPI() {
             "Referer" to playerUrl,
         )
 
-        // getSourcesNew answers with a plain file url on the current megap cdn;
-        // legacy getSources still returns the encrypted payload pinned to the dead imgnex host
+        // legacy getSources still returns encrypted payloads pinned to the dead imgnex host
         val sourcesJson = fetchJson(
             "https://megaplay.buzz/stream/getSourcesNew?id=$playerId&type=$type", ajaxHeaders
         ) ?: fetchJson(
@@ -436,17 +449,84 @@ class TwoDHiveProvider : MainAPI() {
         }
 
         val label = if (type == "dub") "MegaPlay Dub" else "MegaPlay Sub"
-        // the megap cdn rejects requests without a megaplay referer
-        callback(
-            newExtractorLink(label, label, m3u8Url, type = ExtractorLinkType.M3U8) {
-                this.headers = mapOf(
-                    "User-Agent" to userAgent,
-                    "Referer" to "https://megaplay.buzz/"
-                )
-                this.referer = "https://megaplay.buzz/"
-            }
+        val playHeaders = mapOf(
+            "User-Agent" to userAgent,
+            "Referer" to "https://megaplay.buzz/"
         )
+
+        val signedMaster = signCdnUrl(m3u8Url)
+        val masterText = try {
+            app.get(signedMaster, headers = playHeaders, timeout = 15_000L).text
+        } catch (e: Exception) {
+            Log.w(TAG, "master playlist fetch failed: ${e.message}")
+            null
+        }
+
+        val variants = masterText?.let { parseVariants(m3u8Url, it) } ?: emptyList()
+        if (variants.isNotEmpty()) {
+            for (variant in variants) {
+                val name = variant.quality?.let { "$label ${it}p" } ?: label
+                callback(
+                    newExtractorLink(name, name, signCdnUrl(variant.url), type = ExtractorLinkType.M3U8) {
+                        this.headers = playHeaders
+                        this.referer = "https://megaplay.buzz/"
+                        variant.quality?.let { this.quality = it }
+                    }
+                )
+            }
+        } else {
+            callback(
+                newExtractorLink(label, label, signedMaster, type = ExtractorLinkType.M3U8) {
+                    this.headers = playHeaders
+                    this.referer = "https://megaplay.buzz/"
+                }
+            )
+        }
         return true
+    }
+
+    private fun b64url(bytes: ByteArray): String =
+        Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+    // payload "<unix-expires>|<id1>/<id2>" signed with the cdn key, the server
+    // only checks that expires is in the future so a long lifetime is safe
+    private fun signCdnUrl(url: String): String {
+        val match = cdnHexIdsRegex.find(url) ?: return url
+        val expires = System.currentTimeMillis() / 1000L + 7L * 24 * 60 * 60
+        val payload = "$expires|${match.groupValues[1].lowercase()}/${match.groupValues[2].lowercase()}"
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(cdnTokenKey.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        val signature = mac.doFinal(payload.toByteArray(Charsets.UTF_8))
+        val token = "${b64url(payload.toByteArray(Charsets.UTF_8))}.${b64url(signature)}"
+        val sep = if (url.contains('?')) "&" else "?"
+        return "$url${sep}token=$token"
+    }
+
+    private data class VariantEntry(val url: String, val quality: Int?)
+
+    // trick-play i-frame entries are inline attributes and get skipped naturally
+    private fun parseVariants(masterUrl: String, masterText: String): List<VariantEntry> {
+        val base = masterUrl.substringBefore('?').let { it.substringBeforeLast('/') + "/" }
+        val out = mutableListOf<VariantEntry>()
+        val lines = masterText.lines()
+        var i = 0
+        while (i < lines.size) {
+            if (lines[i].trim().startsWith("#EXT-X-STREAM-INF:")) {
+                val quality = Regex("""RESOLUTION=(\d+)x(\d+)""").find(lines[i])?.groupValues?.get(2)?.toIntOrNull()
+                var j = i + 1
+                while (j < lines.size && (lines[j].isBlank() || lines[j].startsWith("#"))) j++
+                if (j < lines.size) {
+                    val uri = lines[j].trim()
+                    if (uri.isNotEmpty()) {
+                        val absolute = if (uri.startsWith("http")) uri else base + uri
+                        out.add(VariantEntry(absolute, quality))
+                    }
+                    i = j
+                }
+            }
+            i++
+        }
+        return out
     }
 
     private fun migrateLegacyUrl(url: String, cdnOrigin: String?): String {
@@ -492,12 +572,33 @@ class TwoDHiveProvider : MainAPI() {
     ): Boolean {
         val embedUrl = "https://babastream.top/embed/$malId/$epNum/$type"
         return try {
+            // the embed gates the player behind a cap.js proof-of-work widget;
+            // its checkbox lives in a shadow root so it needs a direct click,
+            // then the player loads and requests the playlist itself
+            val solver = """
+                (function () {
+                    if (window.__capSolver) return;
+                    window.__capSolver = 1;
+                    var tries = 0;
+                    var timer = setInterval(function () {
+                        if (tries++ > 120) { clearInterval(timer); return; }
+                        var widget = document.querySelector('cap-widget');
+                        var trigger = widget && widget.shadowRoot
+                            && widget.shadowRoot.querySelector('.captcha-trigger');
+                        if (trigger && !trigger.hasAttribute('disabled')) trigger.click();
+                        var play = document.querySelector(
+                            '.vjs-big-play-button, .jw-icon-display, .vds-play-button, .shaka-play-button, video');
+                        if (play) {
+                            try { play.click(); if (play.play) play.play(); } catch (e) {}
+                        }
+                    }, 1000);
+                })();
+            """.trimIndent()
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
                 additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
-                script = """document.querySelector('button,[role="button"],.vjs-big-play-button,.jw-icon-display,.vds-play-button,[onclick]')?.click();""",
-                // the babastream cloudflare managed challenge plus the moon player
-                // handshake routinely take over a minute to clear
+                script = solver,
+                // the cloudflare check plus the pow solve take a while
                 useOkhttp = false, timeout = 90_000L
             )
             val resolved = app.get(embedUrl, referer = epUrl, interceptor = resolver).url
