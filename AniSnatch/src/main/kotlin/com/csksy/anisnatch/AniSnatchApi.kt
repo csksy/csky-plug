@@ -1,5 +1,6 @@
 package com.csksy.anisnatch
 
+import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -11,6 +12,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 internal object AniSnatchApi {
