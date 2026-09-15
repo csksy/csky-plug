@@ -35,6 +35,44 @@ internal object AniSnatchApi {
             .build()
     }
 
+    // link validation needs to fail fast so dead hosts don't stall the source list
+    private val probeClient: OkHttpClient by lazy {
+        app.baseClient.newBuilder()
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
+    // quick fetch for the playback validator
+    fun fetchText(url: String, headers: Map<String, String>): String? {
+        return try {
+            val req = Request.Builder().url(url)
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                if (resp.code !in 200..399) null else resp.body?.string()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ranged 1KB GET, -1 when unreachable
+    fun probeRange(url: String, headers: Map<String, String>): Int {
+        return try {
+            val h = LinkedHashMap(headers)
+            h["Range"] = "bytes=0-1023"
+            val req = Request.Builder().url(url)
+                .apply { h.forEach { (k, v) -> header(k, v) } }
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                resp.code
+            }
+        } catch (e: Exception) {
+            -1
+        }
+    }
+
     private var config: AniSnatchCrypto.SiteConfig? = null
     private var cipher: AniSnatchCrypto.ShiftCipher? = null
     private var configExpireAt: Long = 0

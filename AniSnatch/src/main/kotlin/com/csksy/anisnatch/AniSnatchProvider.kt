@@ -5,7 +5,6 @@ import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +13,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 class AniSnatch : MainAPI() {
 
@@ -23,6 +23,9 @@ class AniSnatch : MainAPI() {
     override var lang = "en"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
+
+    // validating every link takes a while when half the servers are down
+    override val loadLinksTimeoutMs: Long? = 3 * 60_000L
 
     private val referer = "https://anisnatch.to/"
 
@@ -192,27 +195,91 @@ class AniSnatch : MainAPI() {
         else base.substringBeforeLast("/") + "/" + ref
     }
 
+    // a chunk of the site's backends hand out playlists whose segments live on
+    // an ad cdn with expiring signatures - they die mid stream, so never emit them
+    private fun isGarbageHost(url: String): Boolean {
+        val host = try {
+            java.net.URI(url).host ?: return true
+        } catch (e: Exception) {
+            return true
+        }
+        return host.endsWith("tiktokcdn.com") || host.endsWith("tiktokv.us")
+    }
+
+    private class Variant(val quality: Int?, val url: String)
+
+    private fun parseMaster(body: String, masterUrl: String): List<Variant> {
+        val lines = body.lines()
+        val out = ArrayList<Variant>()
+        var pendingHeight: Int? = null
+        for (raw in lines) {
+            val line = raw.trim()
+            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                val res = Regex("RESOLUTION=(\\d+)x(\\d+)").find(line)
+                pendingHeight = res?.groupValues?.get(2)?.toIntOrNull()
+            } else if (line.isNotEmpty() && !line.startsWith("#") && pendingHeight != null) {
+                out.add(Variant(pendingHeight, resolveUrl(masterUrl, line)))
+                pendingHeight = null
+            } else if (line.isNotEmpty() && !line.startsWith("#")) {
+                // media playlist without stream-inf entries
+                out.add(Variant(null, resolveUrl(masterUrl, line)))
+            }
+        }
+        return out
+    }
+
+    private fun firstSegment(body: String, playlistUrl: String): String? {
+        for (raw in body.lines()) {
+            val line = raw.trim()
+            if (line.isNotEmpty() && !line.startsWith("#")) {
+                return resolveUrl(playlistUrl, line)
+            }
+        }
+        return null
+    }
+
+    // only links whose media actually serves get emitted, dead playlists are dropped
+    private fun validateHls(
+        masterUrl: String,
+        playHeaders: Map<String, String>
+    ): List<Variant>? {
+        val master = AniSnatchApi.fetchText(masterUrl, playHeaders) ?: return null
+        if (!master.contains("#EXTM3U")) return null
+
+        val variants = parseMaster(master, masterUrl)
+        val probeTarget = variants.maxByOrNull { it.quality ?: 0 }?.url ?: masterUrl
+        val playlist = AniSnatchApi.fetchText(probeTarget, playHeaders) ?: return null
+        if (!playlist.contains("#EXTM3U")) return null
+
+        val seg = firstSegment(playlist, probeTarget) ?: return null
+        if (isGarbageHost(seg)) return null
+        if (AniSnatchApi.probeRange(seg, playHeaders) !in 200..399) return null
+
+        return if (variants.isEmpty()) listOf(Variant(null, masterUrl)) else variants
+    }
+
     private suspend fun emitHls(
         label: String,
         masterUrl: String,
         playHeaders: Map<String, String>,
         callback: (ExtractorLink) -> Unit
-    ) {
-        val generated = try {
-            M3u8Helper.generateM3u8(label, masterUrl, referer, headers = playHeaders)
-        } catch (e: Exception) {
-            Log.d("AniSnatch", "hls expand failed: ${e.message}")
-            emptyList()
-        }
-        if (generated.isNotEmpty()) {
-            generated.forEach(callback)
-        } else {
+    ): Boolean {
+        val variants = validateHls(masterUrl, playHeaders) ?: return false
+        for (v in variants) {
+            val quality = v.quality ?: Qualities.Unknown.value
             callback.invoke(
-                newExtractorLink("AniSnatch", label, masterUrl, type = ExtractorLinkType.M3U8) {
+                newExtractorLink(
+                    "AniSnatch",
+                    if (v.quality != null) "$label ${v.quality}p" else label,
+                    v.url,
+                    type = ExtractorLinkType.M3U8
+                ) {
                     this.headers = playHeaders
+                    this.quality = quality
                 }
             )
         }
+        return true
     }
 
     private fun buildDashMpd(rawJson: String): Pair<String, Int>? {
@@ -293,30 +360,46 @@ class AniSnatch : MainAPI() {
         }
     }
 
+    private val deadUntil = ConcurrentHashMap<String, Long>()
+
     private suspend fun emitServer(
         entry: AniSnatchApi.ServerEntry,
         category: String,
         isDubTab: Boolean,
-        data: EpisodeData,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val page = AniSnatchApi.videoPage(entry.source) ?: return false
-        if (page.sources.isEmpty() && page.dashRaw == null) return false
+        val mark = deadUntil[entry.source]
+        if (mark != null && System.currentTimeMillis() < mark) return false
+
+        val page = AniSnatchApi.videoPage(entry.source)
+        if (page == null || (page.sources.isEmpty() && page.dashRaw == null)) {
+            deadUntil[entry.source] = System.currentTimeMillis() + 3 * 60_000L
+            return false
+        }
 
         val playHeaders = mapOf(
             "User-Agent" to AniSnatchApi.USER_AGENT,
             "Referer" to referer
         )
+        // subtitle tracks are per episode, hand them over even when the video is dead
+        emitSubtitles(page.subtitles, playHeaders, subtitleCallback)
+
         val label = labelFor(entry, category)
         var found = false
+        var validated = false
 
         if (page.dashRaw != null) {
             val built = buildDashMpd(page.dashRaw)
             if (built != null) {
                 val (mpdUri, audioCount) = built
                 val multiAudio = audioCount > 1
-                if (!isDubTab || multiAudio) {
+                val firstVideo = Regex("\"url\"\\s*:\\s*\"([^\"]*)\"")
+                    .find(page.dashRaw)?.groupValues?.get(1)
+                val dashAlive = firstVideo == null ||
+                    (AniSnatchApi.probeRange(firstVideo, playHeaders) in 200..399)
+                validated = validated || dashAlive
+                if (dashAlive && (!isDubTab || multiAudio)) {
                     val name = if (multiAudio) "$label (Multi Audio)" else label
                     callback.invoke(
                         newExtractorLink("AniSnatch", name, mpdUri, type = ExtractorLinkType.DASH) {
@@ -331,27 +414,34 @@ class AniSnatch : MainAPI() {
         for (src in page.sources) {
             when {
                 src.type.equals("mp4", true) -> {
-                    callback.invoke(
-                        newExtractorLink(
-                            "AniSnatch",
-                            listOfNotNull(label, src.label).joinToString(" "),
-                            src.url,
-                            type = ExtractorLinkType.VIDEO
-                        ) {
-                            this.headers = playHeaders
-                            this.quality = mp4Quality(src.label) ?: Qualities.Unknown.value
-                        }
-                    )
-                    found = true
+                    if (AniSnatchApi.probeRange(src.url, playHeaders) in 200..399) {
+                        validated = true
+                        callback.invoke(
+                            newExtractorLink(
+                                "AniSnatch",
+                                listOfNotNull(label, src.label).joinToString(" "),
+                                src.url,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.headers = playHeaders
+                                this.quality = mp4Quality(src.label) ?: Qualities.Unknown.value
+                            }
+                        )
+                        found = true
+                    }
                 }
                 else -> {
-                    emitHls(label, src.url, playHeaders, callback)
-                    found = true
+                    if (emitHls(label, src.url, playHeaders, callback)) {
+                        found = true
+                        validated = true
+                    }
                 }
             }
         }
 
-        emitSubtitles(page.subtitles, playHeaders, subtitleCallback)
+        if (!validated) {
+            deadUntil[entry.source] = System.currentTimeMillis() + 3 * 60_000L
+        }
         return found
     }
 
@@ -393,7 +483,7 @@ class AniSnatch : MainAPI() {
                 batch.map { (entry, category) ->
                     async(Dispatchers.IO) {
                         try {
-                            if (emitServer(entry, category, ep.dub, ep, subtitleCallback, callback)) {
+                            if (emitServer(entry, category, ep.dub, subtitleCallback, callback)) {
                                 found = true
                             }
                         } catch (e: Exception) {
