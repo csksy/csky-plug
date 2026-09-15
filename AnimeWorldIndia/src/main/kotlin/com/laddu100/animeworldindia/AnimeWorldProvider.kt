@@ -319,6 +319,12 @@ class AnimeWorldProvider : MainAPI() {
             ) {
                 this.quality = Qualities.Unknown.value
                 this.referer = "$playerBase/"
+                // the player host rejects requests without an Accept header and the
+                // segment cdn requires the player referer, so send both on every request
+                this.headers = mapOf(
+                    "Accept" to "*/*",
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
             }
             callback.invoke(link)
             true
