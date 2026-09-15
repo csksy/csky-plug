@@ -5,39 +5,18 @@ import com.fasterxml.jackson.annotation.JsonProperty
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class SearchEnvelope(
-    @JsonProperty("results") val results: List<SearchItem>? = null,
-    @JsonProperty("total") val total: Int? = null,
-    @JsonProperty("limit") val limit: Int? = null
+    @JsonProperty("results") val results: List<SearchItem>? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class SearchItem(
     @JsonProperty("anime_id") val animeId: String? = null,
-    @JsonProperty("anilist_id") val anilistId: Int? = null,
     @JsonProperty("title") val title: Title? = null,
     @JsonProperty("cover_image") val coverImage: CoverImage? = null,
-    @JsonProperty("banner_image") val bannerImage: String? = null,
-    @JsonProperty("format") val format: String? = null,
-    @JsonProperty("status") val status: String? = null,
-    @JsonProperty("genres") val genres: List<String>? = null,
-    @JsonProperty("season") val season: String? = null,
     @JsonProperty("season_year") val seasonYear: Int? = null,
-    @JsonProperty("episodes") val episodes: Int? = null,
-    @JsonProperty("duration") val duration: String? = null,
     @JsonProperty("subbed") val subbed: Int? = null,
     @JsonProperty("dubbed") val dubbed: Int? = null,
-    @JsonProperty("average_score") val averageScore: Int? = null,
-    @JsonProperty("popularity") val popularity: Int? = null,
-    @JsonProperty("rating") val rating: String? = null,
-    @JsonProperty("description") val description: String? = null,
-    @JsonProperty("episode") val episode: LatestEpisode? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class LatestEpisode(
-    @JsonProperty("episode_number") val episodeNumber: Int? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("aired") val aired: String? = null
+    @JsonProperty("average_score") val averageScore: Int? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -56,8 +35,7 @@ data class Title(
 data class CoverImage(
     @JsonProperty("extra_large") val extraLarge: String? = null,
     @JsonProperty("large") val large: String? = null,
-    @JsonProperty("medium") val medium: String? = null,
-    @JsonProperty("color") val color: String? = null
+    @JsonProperty("medium") val medium: String? = null
 ) {
     fun best(): String? = extraLarge ?: large ?: medium
 }
@@ -71,7 +49,6 @@ data class HomeEnvelope(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AnimeDetail(
-    @JsonProperty("anime_id") val animeId: String? = null,
     @JsonProperty("anilist_id") val anilistId: Int? = null,
     @JsonProperty("mal_id") val malId: Int? = null,
     @JsonProperty("themoviedb_id") val themoviedbId: Int? = null,
@@ -84,25 +61,14 @@ data class AnimeDetail(
     @JsonProperty("status") val status: String? = null,
     @JsonProperty("genres") val genres: List<String>? = null,
     @JsonProperty("tags") val tags: List<Tag>? = null,
-    @JsonProperty("season") val season: String? = null,
     @JsonProperty("season_year") val seasonYear: Int? = null,
-    @JsonProperty("episodes") val episodes: Int? = null,
-    @JsonProperty("episodes_total") val episodesTotal: Int? = null,
     @JsonProperty("duration") val duration: Int? = null,
-    @JsonProperty("subbed") val subbed: Int? = null,
-    @JsonProperty("dubbed") val dubbed: Int? = null,
-    @JsonProperty("average_score") val averageScore: Int? = null,
-    @JsonProperty("studios") val studios: List<Studio>? = null,
-    @JsonProperty("start_date") val startDate: AirDate? = null,
-    @JsonProperty("is_adult") val isAdult: Boolean? = null
-) {
-    fun durationMinutes(): Int? = duration
-}
+    @JsonProperty("average_score") val averageScore: Int? = null
+)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class ExternalSeasons(
-    @JsonProperty("tmdb") val tmdb: Int? = null,
-    @JsonProperty("tvdb") val tvdb: Int? = null
+    @JsonProperty("tmdb") val tmdb: Int? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -111,40 +77,19 @@ data class Tag(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class Studio(
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("is_main") val isMain: Boolean? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class AirDate(
-    @JsonProperty("year") val year: Int? = null,
-    @JsonProperty("month") val month: Int? = null,
-    @JsonProperty("day") val day: Int? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
 data class EpisodesEnvelope(
-    @JsonProperty("data") val data: List<EpisodeEntry>? = null,
-    @JsonProperty("total") val total: Int? = null,
-    @JsonProperty("source") val source: String? = null
+    @JsonProperty("data") val data: List<EpisodeEntry>? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class EpisodeEntry(
-    @JsonProperty("episodeId") val episodeId: String? = null,
     @JsonProperty("episode_number") val episodeNumber: Int? = null,
     @JsonProperty("title") val title: String? = null,
-    @JsonProperty("title_japanese") val titleJapanese: String? = null,
     @JsonProperty("description") val description: String? = null,
     @JsonProperty("thumbnail") val thumbnail: String? = null,
     @JsonProperty("aired") val aired: String? = null,
-    @JsonProperty("duration") val duration: Int? = null,
     @JsonProperty("subbed") val subbed: Boolean? = null,
-    @JsonProperty("dubbed") val dubbed: Boolean? = null,
-    @JsonProperty("is_filler") val isFiller: Boolean? = null,
-    @JsonProperty("is_recap") val isRecap: Boolean? = null,
-    @JsonProperty("playable") val playable: Boolean? = null
+    @JsonProperty("dubbed") val dubbed: Boolean? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -157,6 +102,5 @@ data class FlixResponse(
 data class FlixServer(
     @JsonProperty("serverName") val serverName: String? = null,
     @JsonProperty("dataLink") val dataLink: String? = null,
-    @JsonProperty("dataType") val dataType: String? = null,
-    @JsonProperty("softsub") val softsub: Boolean? = null
+    @JsonProperty("dataType") val dataType: String? = null
 )

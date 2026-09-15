@@ -2,14 +2,20 @@ package com.laddu100.reanime
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.net.URLEncoder
 
 object ReAnimeApi {
 
     const val MAIN_URL = "https://reanime.to"
-    const val FLIX_EMBED_BASE = "https://flixcloud.cc"
+    const val FLIX_BASE = "https://flixcloud.cc"
+    const val DEC_SERVICE = "https://enc-dec.app/api"
+
+    const val DESKTOP_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 
     private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
@@ -25,10 +31,13 @@ object ReAnimeApi {
     private val homeMutex = Mutex()
     private val homeCursors = mutableMapOf<String, String?>()
 
+    private const val TAG = "ReAnime"
+
     private inline fun <reified T> parse(text: String): T? =
         try {
             mapper.readValue(text, T::class.java)
         } catch (e: Exception) {
+            Log.d(TAG, "parse failed: ${e.message}")
             null
         }
 
@@ -39,6 +48,7 @@ object ReAnimeApi {
         val resp = app.get(url, headers = headers)
         if (resp.isSuccessful) resp.text else null
     } catch (e: Exception) {
+        Log.d(TAG, "GET $url failed: ${e.message}")
         null
     }
 
@@ -108,5 +118,5 @@ object ReAnimeApi {
         return res.servers ?: emptyList()
     }
 
-    fun urlEncode(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
+    fun urlEncode(s: String): String = URLEncoder.encode(s, "UTF-8")
 }

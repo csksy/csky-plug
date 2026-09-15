@@ -1,4 +1,4 @@
-version = 1
+version = 4
 
 android {
     buildFeatures {
@@ -7,7 +7,6 @@ android {
 }
 
 cloudstream {
-    language = "en"
     description = "Re:ANIME - Anime with Sub & Dub"
     authors = listOf("csksy")
 
@@ -17,5 +16,6 @@ cloudstream {
         "AnimeMovie",
         "OVA"
     )
+    language = "en"
     iconUrl = "https://reanime.to/favicon-32x32.png"
 }

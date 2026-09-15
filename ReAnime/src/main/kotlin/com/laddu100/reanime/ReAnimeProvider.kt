@@ -1,5 +1,6 @@
 package com.laddu100.reanime
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageResponse
@@ -29,9 +30,12 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import okhttp3.Interceptor
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ReAnimeProvider : MainAPI() {
 
@@ -110,11 +114,6 @@ class ReAnimeProvider : MainAPI() {
         val anime = ReAnimeApi.animeDetail(slug) ?: return null
         val eps = ReAnimeApi.episodes(slug)
         val title = anime.title?.display() ?: return null
-        val type = when (anime.format) {
-            "MOVIE" -> TvType.AnimeMovie
-            "OVA", "ONA", "SPECIAL" -> TvType.OVA
-            else -> TvType.Anime
-        }
         val showStatus = when (anime.status) {
             "RELEASING" -> ShowStatus.Ongoing
             "FINISHED" -> ShowStatus.Completed
@@ -135,6 +134,15 @@ class ReAnimeProvider : MainAPI() {
             }
         }
 
+        // the app hides the sub/dub switcher on movie types, so dual audio movies
+        // are typed as regular anime to keep both reachable
+        val type = when {
+            anime.format == "MOVIE" && dubEps.isNotEmpty() -> TvType.Anime
+            anime.format == "MOVIE" -> TvType.AnimeMovie
+            anime.format == "OVA" || anime.format == "ONA" || anime.format == "SPECIAL" -> TvType.OVA
+            else -> TvType.Anime
+        }
+
         return newAnimeLoadResponse(title, "$mainUrl/anime/$slug", type) {
             this.engName = anime.title?.english
             this.japName = anime.title?.romaji ?: anime.title?.native
@@ -144,7 +152,7 @@ class ReAnimeProvider : MainAPI() {
             this.showStatus = showStatus
             this.plot = anime.description?.let(::stripHtml)
             this.tags = anime.genres ?: anime.tags?.mapNotNull { it.name } ?: emptyList()
-            this.duration = anime.durationMinutes()
+            this.duration = anime.duration
             this.score = anime.averageScore?.let { Score.from100(it.toDouble()) }
             addAniListId(anime.anilistId ?: 0)
             addMalId(anime.malId ?: 0)
@@ -176,7 +184,7 @@ class ReAnimeProvider : MainAPI() {
         }
     }
 
-    private fun parseAirDate(raw: String?): java.util.Date? {
+    private fun parseAirDate(raw: String?): Date? {
         if (raw.isNullOrBlank()) return null
         return try {
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
@@ -201,6 +209,7 @@ class ReAnimeProvider : MainAPI() {
         val ref = try {
             parseJson<EpisodeRef>(data)
         } catch (e: Exception) {
+            Log.e("ReAnime", "bad episode data: ${e.message}")
             null
         } ?: return false
         if (ref.ep <= 0) return false
@@ -208,62 +217,59 @@ class ReAnimeProvider : MainAPI() {
         val servers = ReAnimeApi.flixServers(ref.anilistId, ref.tmdbId, ref.season, ref.ep)
         if (servers.isEmpty()) return false
 
-        val embeds = servers.mapNotNull { s ->
+        val wanted = if (ref.lang == "dub") "dub" else "sub"
+        var matching = servers.filter { it.dataType?.equals(wanted, ignoreCase = true) == true }
+        if (matching.isEmpty()) matching = servers
+
+        val embeds = matching.mapNotNull { s ->
             val link = s.dataLink?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
-            val server = s.serverName ?: "HD"
-            link to server
-        }.distinctBy { it.first.substringBefore("?") + it.second }
+            val server = s.serverName?.takeIf { it.isNotBlank() } ?: "HD-1"
+            val lang = s.dataType?.lowercase() ?: wanted
+            Triple(link, server, lang)
+        }.distinctBy { it.first + "|" + it.second }
 
         val seenSubs = HashSet<String>()
         val seenUrls = HashSet<String>()
-        val any = java.util.concurrent.atomic.AtomicBoolean(false)
+        val any = AtomicBoolean(false)
 
         coroutineScope {
-            embeds.map { (embedUrl, serverName) ->
+            embeds.map { (embedUrl, serverName, lang) ->
                 async {
-                    val res = FlixResolver.resolve(embedUrl, "$mainUrl/") ?: return@async
-                    val proxyMaster = FlixProxy.registerMaster(res.m3u8, res.masterContent, res.pkKey)
-                        ?: return@async
-                    val hasEnglishAudio = res.masterContent.contains("""LANGUAGE="en""") ||
-                        res.masterContent.contains("NAME=\"English\"")
-                    val hasOtherAudio = Regex("""TYPE=AUDIO[^\n]*LANGUAGE="(?!en)[^"]*"""")
-                        .containsMatchIn(res.masterContent) ||
-                        (res.masterContent.contains("TYPE=AUDIO") && !hasEnglishAudio)
+                    val preferEnglish = lang == "dub"
+                    val res = FlixResolver.resolve(embedUrl, preferEnglish) ?: return@async
 
-                    val wantDub = ref.lang == "dub"
-                    val lang = when {
-                        wantDub && hasEnglishAudio -> "dub"
-                        !wantDub && (hasOtherAudio || !hasEnglishAudio) -> "sub"
-                        wantDub && !hasEnglishAudio -> "sub"
-                        else -> "dub"
-                    }
-
-                    val suffix = if (serverName.isNotBlank() && !serverName.equals("HD-1", true)) " ($serverName)" else ""
+                    val suffix = if (serverName.equals("HD-1", true)) "" else " ($serverName)"
                     val label = if (lang == "dub") "Re:ANIME - Dub$suffix" else "Re:ANIME - Sub$suffix"
-                    val url = "$proxyMaster?lang=$lang"
-                    if (seenUrls.add(url)) {
+
+                    // the player streams straight from the CDN; the interceptor
+                    // handles playlists, keys and headers on the fly
+                    if (seenUrls.add(res.url)) {
                         any.set(true)
-                        val height = Regex("""RESOLUTION=\d+x(\d+)""")
-                            .findAll(res.masterContent)
-                            .mapNotNull { it.groupValues[1].toIntOrNull() }
-                            .maxOrNull()
                         callback.invoke(
-                            newExtractorLink(label, label, url, type = ExtractorLinkType.M3U8) {
-                                height?.let { this.quality = it }
-                                this.headers = mapOf("Referer" to "${ReAnimeApi.FLIX_EMBED_BASE}/")
+                            newExtractorLink(name, label, res.url, type = ExtractorLinkType.M3U8) {
+                                res.quality?.let { this.quality = it }
+                                this.headers = mapOf(
+                                    "Referer" to "${ReAnimeApi.FLIX_BASE}/",
+                                    "User-Agent" to ReAnimeApi.DESKTOP_UA
+                                )
                             }
                         )
                     }
                     for (sub in res.subtitles) {
                         if (!seenSubs.add(sub.url)) continue
                         val ext = sub.format?.uppercase()
-                        val name = if (ext != null) "${sub.language ?: "Subtitle"} ($ext)" else (sub.language ?: "Subtitle")
-                        subtitleCallback(newSubtitleFile(name, sub.url) {})
+                        val subName = if (ext != null) "${sub.language ?: "Subtitle"} ($ext)" else (sub.language ?: "Subtitle")
+                        subtitleCallback(newSubtitleFile(subName, sub.url) {})
                     }
                 }
             }
-        }.forEach { it.join() }
+        }
 
         return any.get()
     }
+
+    // must stay unconditional: the player only attaches interceptors it can
+    // resolve back to a provider by link source name, and every piece of
+    // state this needs is looked up lazily per request
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor = FlixStreamInterceptor()
 }
