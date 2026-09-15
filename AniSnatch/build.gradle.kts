@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 android {
     buildFeatures {
@@ -11,11 +11,11 @@ dependencies {
 }
 
 cloudstream {
-    description = "Anime with Sub and Dub - Multiple sources including Hindi audio"
+    description = "Anime with Sub and Dub - 16 sources, real episode titles, multi-language subtitles, Hindi dub, multi-audio"
     authors = listOf("csksy")
 
     status = 1
-    tvTypes = listOf("Anime", "AnimeMovie")
+    tvTypes = listOf("Anime", "AnimeMovie", "OVA")
     language = "en"
     iconUrl = "https://www.google.com/s2/favicons?domain=anisnatch.to&sz=%size%"
 }
