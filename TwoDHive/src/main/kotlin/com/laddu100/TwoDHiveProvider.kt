@@ -566,333 +566,124 @@ class TwoDHiveProvider : MainAPI() {
         return MegaPlayCipher.resolveEncStreamUrl(enc, "https://megaplay.buzz")
     }
 
-    // the embed hides its stream behind an aes-gcm wrapped client api plus a
-    // cap proof of work. this script scrapes the page config and runs the same
-    // exchange the site player would, entirely inside the webview so the
-    // cloudflare cookies stay valid, then requests the playlist so the url
-    // resolver can catch it
+    // the embed refuses to run its player unless it is framed: loaded top
+    // level it redirects to an ad within a second and anything running in
+    // the page dies with it. the script waits for the real page, wipes it
+    // before that redirect script ever parses, then writes a tiny same-origin
+    // page that drives the site's own api the same way the player would:
+    // resolve, cap pow through the official widget when asked, resolve again,
+    // and finally request the stream so the resolver can catch the url
     private val babaSolverScript = """
 (function () {
-    if (window.__babaWatch) return;
-    window.__babaWatch = 1;
+    if (window.__babaShell) return;
+    window.__babaShell = 1;
 
-    var MAX_ATTEMPTS = 4;
-    var RETRY_DELAY = 2500;
-    var NONCE_LIMIT = 20000000;
-
-    var WORKER_CODE = [
-        "function toHex(buffer) {",
-        "    var bytes = new Uint8Array(buffer);",
-        "    var out = '';",
-        "    for (var i = 0; i < bytes.length; i++) out += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);",
-        "    return out;",
-        "}",
-        "async function solve(salt, target) {",
-        "    var encoder = new TextEncoder();",
-        "    var batch = 500;",
-        "    var base = 0;",
-        "    while (base < " + NONCE_LIMIT + ") {",
-        "        var pending = [];",
-        "        for (var i = 0; i < batch; i++) {",
-        "            pending.push(crypto.subtle.digest('SHA-256', encoder.encode(salt + (base + i))));",
-        "        }",
-        "        var digests = await Promise.all(pending);",
-        "        for (var j = 0; j < batch; j++) {",
-        "            if (toHex(digests[j]).indexOf(target) === 0) return base + j;",
-        "        }",
-        "        base += batch;",
-        "    }",
-        "    return null;",
-        "}",
-        "self.onmessage = async function (event) {",
-        "    for (var i = 0; i < event.data.length; i++) {",
-        "        var job = event.data[i];",
-        "        var nonce = await solve(job.salt, job.target);",
-        "        self.postMessage({ id: job.id, nonce: nonce });",
-        "    }",
-        "};"
-    ].join("\n");
-
-    function parseConfig(html) {
-        var pattern = /\b(?:var|let|const)\s+\w+\s*=\s*(\{[^;]+\})\s*;/g;
-        var match;
-        while ((match = pattern.exec(html)) !== null) {
-            try {
-                var config = JSON.parse(match[1]);
-                if (typeof config.sid === "string" && typeof config.pk === "string") return config;
-            } catch (e) {}
-        }
-        return null;
+    var tries = 0;
+    function poll() {
+        var t = "";
+        try { t = document.title || ""; } catch (e) {}
+        if (t === "video.mp4") { rebuild(); return; }
+        if (t === "Just a moment...") return;
+        if (tries++ < 300) setTimeout(poll, 10);
     }
 
-    function parseCryptoOptions(html) {
-        var name = (html.match(/importKey\([^,]+,[^,]+,\s*\{\s*name\s*:\s*["'](AES-[A-Z]+)["']/) || [])[1];
-        var ivLength = parseInt((html.match(/getRandomValues\(new Uint8Array\((\d+)\)\)/) || [])[1], 10);
-        var tagBits = parseInt((html.match(/tagLength\s*:\s*(\d+)/) || [])[1], 10) || 128;
-        if (!name || !ivLength || ivLength < 1) return null;
-        return { name: name, ivLength: ivLength, tagBits: tagBits };
-    }
-
-    function parseRoutes(html) {
-        var routes = [];
-        var pattern = /fetch\(\s*["']([^"']+)["']/g;
-        var match;
-        while ((match = pattern.exec(html)) !== null) routes.push(match[1]);
-        function pick(test) {
-            for (var i = 0; i < routes.length; i++) if (test(routes[i])) return routes[i];
-            return null;
-        }
-        return {
-            resolve: pick(function (r) { return /resolve/i.test(r); }),
-            verify: pick(function (r) { return /verify/i.test(r); })
-        };
-    }
-
-    function toBytes(base64) {
-        var binary = atob(base64);
-        var bytes = new Uint8Array(binary.length);
-        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return bytes;
-    }
-
-    function toBase64(bytes) {
-        var binary = "";
-        for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        return btoa(binary);
-    }
-
-    function toHex(buffer) {
-        var bytes = new Uint8Array(buffer);
-        var out = "";
-        for (var i = 0; i < bytes.length; i++) out += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
-        return out;
-    }
-
-    // older cap deployments derive every salt and target from the session
-    // token, this mirrors that derivation byte for byte
-    function seededHex(value, length) {
-        var state = 2166136261;
-        for (var i = 0; i < value.length; i++) {
-            state ^= value.charCodeAt(i);
-            state += (state << 1) + (state << 4) + (state << 7) + (state << 8) + (state << 24);
-        }
-        state = state >>> 0;
-        var output = "";
-        while (output.length < length) {
-            state ^= state << 13;
-            state ^= state >>> 17;
-            state ^= state << 5;
-            state = state >>> 0;
-            output += state.toString(16).padStart(8, "0");
-        }
-        return output.slice(0, length);
-    }
-
-    // main thread fallback used when the page forbids worker scripts
-    async function findNonceInline(salt, target) {
-        var encoder = new TextEncoder();
-        var batch = 400;
-        var base = 0;
-        while (base < NONCE_LIMIT) {
-            var pending = [];
-            for (var i = 0; i < batch; i++) {
-                pending.push(crypto.subtle.digest("SHA-256", encoder.encode(salt + (base + i))));
-            }
-            var digests = await Promise.all(pending);
-            for (var j = 0; j < batch; j++) {
-                if (toHex(digests[j]).indexOf(target) === 0) return base + j;
-            }
-            base += batch;
-        }
-        return null;
-    }
-
-    // the cap default is dozens of lightweight proofs, throw them at a pool
-    // of digest workers like the site widget does
-    function solveProofs(proofs) {
-        var jobs = proofs.map(function (proof, id) {
-            return { id: id, salt: proof.salt, target: proof.target };
-        });
-        return new Promise(function (resolve) {
-            // null marks an unsolved job, using holes would break the
-            // completeness checks below because indexOf skips them
-            var results = jobs.map(function () { return null; });
-            var failed = false;
-            var settled = false;
-
-            function finish() {
-                if (settled) return;
-                settled = true;
-                workers.forEach(function (worker) { try { worker.terminate(); } catch (e) {} });
-                if (failed || results.indexOf(null) !== -1) {
-                    resolve(null);
-                } else {
-                    resolve(results);
-                }
-            }
-
-            function remainingJobs() {
-                return jobs.filter(function (job) { return results[job.id] === null; });
-            }
-
-            async function drainInline() {
-                var pending = remainingJobs();
-                for (var i = 0; i < pending.length; i++) {
-                    results[pending[i].id] = await findNonceInline(pending[i].salt, pending[i].target);
-                }
-                finish();
-            }
-
-            var workers = [];
-            try {
-                var workerUrl = URL.createObjectURL(new Blob([WORKER_CODE], { type: "application/javascript" }));
-                var count = Math.min(navigator.hardwareConcurrency || 2, 6, jobs.length);
-                for (var w = 0; w < count; w++) {
-                    var worker = new Worker(workerUrl);
-                    worker.onmessage = function (event) {
-                        var data = event.data;
-                        if (data && data.id !== undefined && results[data.id] === null) {
-                            if (data.nonce === null) { failed = true; }
-                            results[data.id] = data.nonce === null ? -1 : data.nonce;
-                            if (results.indexOf(null) === -1) finish();
-                        }
-                    };
-                    worker.onerror = function () {
-                        // a dead worker drops its queue, pick the rest up inline
-                        workers.forEach(function (other) { try { other.terminate(); } catch (e) {} });
-                        drainInline();
-                    };
-                    workers.push(worker);
-                }
-                for (var j = 0; j < jobs.length; j++) {
-                    workers[j % workers.length].postMessage([jobs[j]]);
-                }
-            } catch (e) {
-                drainInline();
-            }
-        });
-    }
-
-    async function solveChallenges(challenges) {
-        var proofs = challenges.map(function (challenge) {
-            if (!challenge || challenge.protocol !== "sha256-pow") return null;
-            return { salt: challenge.payload.salt, target: challenge.payload.target };
-        });
-        if (proofs.indexOf(null) !== -1) throw new Error("unsupported challenge protocol");
-        var nonces = await solveProofs(proofs);
-        if (!nonces) throw new Error("proof of work failed");
-        return nonces.map(function (nonce) { return { nonce: nonce }; });
-    }
-
-    async function solveSeededChallenge(token, challenge) {
-        if (!token || !challenge || !challenge.c) throw new Error("invalid challenge");
-        var proofs = [];
-        for (var i = 1; i <= challenge.c; i++) {
-            proofs.push({ salt: seededHex(token + i, challenge.s), target: seededHex(token + i + "d", challenge.d) });
-        }
-        var nonces = await solveProofs(proofs);
-        if (!nonces) throw new Error("proof of work failed");
-        return nonces;
-    }
-
-    async function openSession(html) {
-        var config = parseConfig(html);
-        var options = parseCryptoOptions(html);
-        var routes = parseRoutes(html);
-        if (!config || !options || !routes.resolve) throw new Error("client api not found in page");
-
-        var key = await crypto.subtle.importKey(
-            "raw", toBytes(config.pk), { name: options.name }, false, ["encrypt", "decrypt"]
+    function rebuild() {
+        document.open();
+        document.write(
+            '<!doctype html><html><head><meta charset="utf-8"><title>baba</title>' +
+            '<script src="https://cdn.jsdelivr.net/npm/cap-widget@0.1.57"><\/script>' +
+            '</head><body><script>(' + driver.toString() + ')();<\/script></body></html>'
         );
-
-        async function request(route, body) {
-            var iv = crypto.getRandomValues(new Uint8Array(options.ivLength));
-            var sealed = await crypto.subtle.encrypt(
-                { name: options.name, iv: iv, tagLength: options.tagBits },
-                key,
-                new TextEncoder().encode(JSON.stringify(body))
-            );
-            var payload = new Uint8Array(iv.length + sealed.byteLength);
-            payload.set(iv, 0);
-            payload.set(new Uint8Array(sealed), iv.length);
-            var response = await fetch(route, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ s: config.sid, d: toBase64(payload) })
-            });
-            var json = await response.json();
-            if (!json || !json.d) throw new Error("empty api response");
-            var raw = toBytes(json.d);
-            var plain = await crypto.subtle.decrypt(
-                { name: options.name, iv: raw.slice(0, options.ivLength), tagLength: options.tagBits },
-                key,
-                raw.slice(options.ivLength)
-            );
-            return JSON.parse(new TextDecoder().decode(plain));
-        }
-
-        return { config: config, routes: routes, request: request };
+        document.close();
     }
 
-    async function loadPageHtml() {
-        try {
-            var response = await fetch(location.href, { credentials: "same-origin" });
-            if (response.ok) {
-                var text = await response.text();
-                if (text.indexOf("sid") !== -1) return text;
+    function driver() {
+        function b64d(s) {
+            var b = atob(s), u = new Uint8Array(b.length);
+            for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
+            return u;
+        }
+        function b64e(u) {
+            var s = "";
+            for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+            return btoa(s);
+        }
+        var keyPromise = null;
+        function key() {
+            if (!keyPromise) {
+                keyPromise = crypto.subtle.importKey(
+                    "raw", b64d(CFG.pk), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]
+                );
             }
-        } catch (e) {}
-        return document.documentElement.outerHTML;
-    }
-
-    async function run() {
-        var session = await openSession(await loadPageHtml());
-
-        var resolved = await session.request(session.routes.resolve, { ts: Date.now() });
-        if (resolved && resolved.t === "error" && /verify/i.test(resolved.m || "")) {
-            if (!session.config.cap || !session.routes.verify) throw new Error("cap routes missing");
-            var capBase = session.config.cap;
-            if (capBase.charAt(capBase.length - 1) !== "/") capBase += "/";
-            var challenge = await (await fetch(capBase + "challenge", { method: "POST" })).json();
-            var solutions = Array.isArray(challenge.challenges)
-                ? await solveChallenges(challenge.challenges)
-                : await solveSeededChallenge(challenge.token, challenge.challenge);
-            var redeem = await (await fetch(capBase + "redeem", {
+            return keyPromise;
+        }
+        async function seal(str) {
+            var iv = crypto.getRandomValues(new Uint8Array(12));
+            var ct = await crypto.subtle.encrypt(
+                { name: "AES-GCM", iv: iv }, await key(), new TextEncoder().encode(str)
+            );
+            var out = new Uint8Array(iv.length + ct.byteLength);
+            out.set(iv, 0);
+            out.set(new Uint8Array(ct), iv.length);
+            return b64e(out);
+        }
+        async function open(b64) {
+            var d = b64d(b64), iv = d.slice(0, 12), ct = d.slice(12);
+            var pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, await key(), ct);
+            return new TextDecoder().decode(pt);
+        }
+        async function call(route, payload) {
+            var body = { s: CFG.sid, d: await seal(JSON.stringify(payload)) };
+            var r = await fetch(route, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ token: challenge.token, solutions: solutions })
-            })).json();
-            if (!redeem || !redeem.success || !redeem.token) throw new Error("cap redeem failed");
-            var verified = await session.request(session.routes.verify, {
-                ts: Date.now(), token: redeem.token, mode: "invisible"
+                body: JSON.stringify(body)
             });
-            if (!verified || verified.t !== "ok") throw new Error("cap verify failed");
-            resolved = await session.request(session.routes.resolve, { ts: Date.now() });
+            if (!r.ok) throw new Error("http " + r.status + " on " + route);
+            return JSON.parse(await open((await r.json()).d));
         }
 
-        if (!resolved || !resolved.u) throw new Error((resolved && resolved.m) || "no stream url");
-        if (/\.(m3u8|mp4)(\?|$)/i.test(resolved.u)) {
-            // the host app watches for media requests leaving the webview
-            fetch(resolved.u, { mode: "no-cors" }).catch(function () {});
-        } else {
-            location.href = resolved.u;
+        var attempts = 0;
+        async function run() {
+            var html = await (await fetch(location.href, { credentials: "same-origin" })).text();
+            var m = html.match(/var CFG = (\{[^;]+\});/);
+            if (!m) throw new Error("page config missing");
+            window.CFG = JSON.parse(m[1]);
+
+            var r = await call("/api/resolve", { ts: Date.now() });
+
+            if (r.t === "error" && r.m === "verify") {
+                if (!window.Cap) throw new Error("cap widget missing");
+                var solved = await new window.Cap({ apiEndpoint: CFG.cap }).solve();
+                var v = await call("/api/cap-verify", {
+                    ts: Date.now(), token: solved.token, mode: "invisible"
+                });
+                if (v.t !== "ok") throw new Error("cap rejected");
+                r = await call("/api/resolve", { ts: Date.now() });
+            }
+
+            if (!r.u) throw new Error(r.m || "no stream url");
+            var url = new URL(r.u, location.origin).href;
+            if (/\.(m3u8|mp4)([?#]|$)/i.test(url)) {
+                // the host app watches for media requests leaving the webview
+                fetch(url, { mode: "no-cors" }).catch(function () {});
+            } else {
+                // some titles hand back a third-party embed page instead, let
+                // that player load and ask for its own media
+                location.href = url;
+            }
         }
+
+        (function attempt() {
+            attempts += 1;
+            if (attempts > 3) return;
+            run().catch(function () {
+                setTimeout(attempt, 5000);
+            });
+        })();
     }
 
-    var attempts = 0;
-    function attempt() {
-        attempts += 1;
-        if (attempts > MAX_ATTEMPTS) return;
-        run().catch(function () {
-            setTimeout(attempt, RETRY_DELAY);
-        });
-    }
-
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", attempt);
-    } else {
-        attempt();
-    }
+    poll();
 })();
 """.trimIndent()
 
@@ -903,9 +694,9 @@ class TwoDHiveProvider : MainAPI() {
         val embedUrl = "https://babastream.top/embed/$malId/$epNum/$type"
         return try {
             val resolver = WebViewResolver(
-                interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
+                interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:[?#]|$)"""),
                 script = babaSolverScript,
-                // the pow solve alone can take half a minute on slow hardware
+                // the cap pow solve alone can take half a minute on slow hardware
                 useOkhttp = false, timeout = 120_000L
             )
             val resolved = app.get(embedUrl, referer = epUrl, interceptor = resolver).url
