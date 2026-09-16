@@ -4,35 +4,23 @@ import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 
 /**
- * Walks the toonworld4all shortener chain inside a real, healthy Android
- * WebView (Tw4aWebView).
+ * Walks a toonworld4all shortener link inside a real, healthy Android
+ * WebView (Tw4aWebView) and returns the file-host URL it ends on.
  *
- * VERIFIED LIVE CHAIN (2026-09, no guesswork):
+ * The three chains the archive hands out:
  *
- *   archive.toonworld4all.me/redirect/{hash}
- *     -> fresh exe.io/{id} link (created per request via the exe.io API -
- *        the site's own tokens are visible in the archive's routes.js)
- *     -> 302 -> exeygo.com/{id}
- *        page 1  : 6s countdown, then <button data-ref="continue"> enables
- *        POST    : /{id} (form #before-captcha, fields _csrfToken, f_n=sle,
- *                  CakePHP _Token[fields]/_Token[unlocked])
- *        page 2  : Cloudflare Turnstile widget (iframe from
- *                  challenges.cloudflare.com); <button data-ref="captcha">
- *                  enables ONLY after the Turnstile solves -> needs
- *                  THIRD-PARTY COOKIES (Tw4aWebView enables them)
- *        POST    : /{id} (form #link-view + cf-turnstile-response)
- *                  -> 302 -> hubcloud.ist / gdflix / filepress page
+ *   gplinks.co/{id} - cloudflare interstitial, then a form whose ajax POST
+ *     answers the destination as json (the injected script handles it)
  *
- * The link.domain + link.hidden values shown on the archive chooser page
- * are RANDOM JUNK (Fh() in their bundle; requesting hubcloud.ist/video/{hidden}
- * returns "404 ! File Not Found" with a 200 status - tested live). The ONLY
- * real field is "destination".
+ *   exe.io/{id} -> 302 -> exeygo.com/{id} - page 1 is a 6s countdown with a
+ *     continue button, page 2 is an invisible turnstile that unlocks the
+ *     submit; the token is checked server-side, so the walk has to clear it
  *
- * POSTing the link-view form without a solved turnstile token is rejected
- * (tested live: 302 back to page 1), so the WebView walk is the only way.
+ *   cuty.io/{id} -> cuttty.com/{id} - the same adlinkfly stages as exe.io
  *
- * The exe.io public API cannot reverse a short link either (tested: /api?api=
- * ..&url= with an existing link just echoes it), so there is no shortcut.
+ * Shortener links are single-use sessions minted per redirect fetch, and the
+ * destination (the hubcloud/gdflix page) is stable for the file, which is
+ * why resolved urls are cached and failures only briefly.
  */
 object Tw4aShortener {
 

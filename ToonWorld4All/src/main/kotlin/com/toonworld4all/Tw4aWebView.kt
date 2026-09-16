@@ -21,8 +21,14 @@ import java.util.concurrent.ConcurrentHashMap
  * Healthy background WebView used for everything the plain OkHttp client
  * cannot do:
  *
- *  1. WALKING THE exe.io -> exeygo.com SHORTENER CHAIN
- *     (Tw4aShortener.solveShortener)
+ *  1. WALKING THE SHORTENER CHAINS
+ *     - gplinks.co: a plain cloudflare interstitial (the same kind the
+ *       AnimeWorldIndia bypass clears every day) followed by a form that
+ *       answers an ajax POST with the destination as json
+ *     - exe.io -> exeygo.com and cuty.io -> cuttty.com: adlinkfly pages
+ *       whose second stage is an invisible turnstile; those walls are the
+ *       reason v3 loaded no sources on real devices, so gplinks is always
+ *       tried first
  *  2. SOLVING CLOUDFLARE MANAGED CHALLENGES on toonworld4all.me /
  *     archive.toonworld4all.me (solveCloudflare + getWithCf)
  *
@@ -30,24 +36,13 @@ import java.util.concurrent.ConcurrentHashMap
  *  - WebViewResolver NEVER calls
  *      CookieManager.setAcceptCookie(true) /
  *      CookieManager.setAcceptThirdPartyCookies(webView, true)
- *    Cloudflare Turnstile runs inside a challenges.cloudflare.com IFRAME on
- *    exeygo.com and REQUIRES third-party cookies - with them disabled the
- *    challenge loops on ".../failure_retry/..." forever, which is exactly
- *    what the user logcat showed (web-view timeout after 65s, no sources).
- *  - WebViewResolver does not block popup windows, so exeygo's popunder ads
- *    (window.open / target=_blank to 4ace.online, demand.supply, ...) can
- *    hijack the main frame mid-challenge and invalidate the Turnstile.
+ *    The gplinks interstitial and the adlinkfly turnstile iframe both run
+ *    inside challenges.cloudflare.com frames and need third-party cookies
+ *  - WebViewResolver does not block popup windows, so the shortener pages'
+ *    popunder ads (window.open / target=_blank to 4ace.online, demand.supply,
+ *    ...) can hijack the main frame mid-challenge
  *  - WebViewResolver injects its script on every sub-resource request; we
- *    inject once per page load instead.
- *
- * The exact same settings are the ones used by the AnimeWorldIndia CF bypass
- * that already ships in this repository (setAcceptCookie(true) +
- * setAcceptThirdPartyCookies(true)), so the pattern is known-good on real
- * devices.
- *
- * All WebViews are created on the main thread and there is NEVER more than
- * one alive at a time (mutex) - parallel Turnstile challenges on one device
- * sabotage each other.
+ *    inject once per page load instead
  */
 object Tw4aWebView {
 
@@ -72,9 +67,10 @@ object Tw4aWebView {
      * destroyed the v1/v2 walks.
      */
     private val ALLOWED_NAV_HOSTS = listOf(
-        "exe.io", "exeygo.com",           // the verified chain
-        "cuty.io", "gplinks.com",         // alternate shorteners the archive can hand out
-        "challenges.cloudflare.com",      // turnstile widget
+        "exe.io", "exeygo.com",           // adlinkfly chain
+        "cuty.io", "cuttty.com",          // cuty hands its pages out from cuttty.com
+        "gplinks.co", "gplinks.com",     // gplinks serves from the .co tld
+        "challenges.cloudflare.com",      // turnstile + interstitial
         "cloudflareinsights.com",         // beacon (harmless)
         "toonworld4all.me",               // home site
     )
@@ -252,17 +248,50 @@ object Tw4aWebView {
     //  1. shortener walk
     // ------------------------------------------------------------------ //
 
-    /**
-     * SURGICAL clicker - injected once per page load.
-     * ONLY the exact submit buttons of the verified shortener stages are
-     * ever pressed (never generic links - those are popunder ads):
-     *  - exeygo p1: button[data-ref="continue"]  (enables after 6s countdown)
-     *  - exeygo p2: button[data-ref="captcha"]   (enables after Turnstile)
-     *  - cuty.io:   button#submit-button
-     *  - gplinks:   a.gate-btn-skip / button#VerifyBtn
-     */
+    // Injected once per page load. The gplinks branch mirrors the flow the
+    // FastForward and adsbypasser bypass databases document for gplinks.co:
+    // behind the interstitial the page holds a form whose action answers an
+    // ajax POST with {url: ...} json, but the server rejects posts inside
+    // the first ~10 seconds. Everything else gets the adlinkfly clicker,
+    // which only ever presses the exact submit buttons of the verified
+    // stages (generic links are popunder ads):
+    //  - exeygo p1: button[data-ref="continue"]  (enables after 6s countdown)
+    //  - exeygo p2: button[data-ref="captcha"]   (enables after turnstile)
+    //  - cuty.io:   button#submit-button
     private val CLICKER = """
         (function () {
+            var h = (location.hostname || "").toLowerCase();
+            if (h.indexOf("gplinks.") !== -1) {
+                if (window.__tw4aGpl) return;
+                window.__tw4aGpl = 1;
+                var waited = 0, posting = false;
+                var t = setInterval(function () {
+                    waited += 5;
+                    if (waited < 10) return;
+                    try {
+                        var form = document.querySelector("form[action]");
+                        if (form && !posting) {
+                            posting = true;
+                            fetch(form.action, {
+                                method: "POST",
+                                credentials: "same-origin",
+                                headers: { "X-Requested-With": "XMLHttpRequest" },
+                                body: new URLSearchParams(new FormData(form))
+                            }).then(function (r) { return r.json(); })
+                              .then(function (res) {
+                                  if (res && res.url) location.href = res.url;
+                                  else posting = false;
+                              })
+                              .catch(function () { posting = false; });
+                            return;
+                        }
+                        var b = document.querySelector(".get-link, #get-link, .skip-ad, #skip-ad");
+                        if (b && !b.disabled) b.click();
+                    } catch (e) { }
+                    if (waited > 120) clearInterval(t);
+                }, 5000);
+                return;
+            }
             if (window.__tw4aClicker) return;
             window.__tw4aClicker = 1;
             var clicks = 0;
@@ -290,11 +319,12 @@ object Tw4aWebView {
     """.trimIndent()
 
     /**
-     * Walk the shortener chain (exe.io -> exeygo.com p1 -> p2 -> file host)
+     * Walk a shortener chain (gplinks / exe.io -> exeygo.com / cuty.io)
      * in a real, healthy WebView and return the file-host URL.
      *
-     * The WebView follows redirects on its own; the clicker presses the
-     * stage buttons; doUpdateVisitedHistory reports the landing URL.
+     * The WebView follows redirects and clears the cloudflare interstitial
+     * on its own; the injected script presses the stage buttons or posts the
+     * gplinks form; doUpdateVisitedHistory reports the landing URL.
      * Returns null on timeout.
      */
     suspend fun solveShortener(

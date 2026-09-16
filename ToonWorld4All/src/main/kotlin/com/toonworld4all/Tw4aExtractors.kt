@@ -184,7 +184,7 @@ object Tw4aExtractors {
 
                 link.contains("pixeldrain") || text.contains("PixelServer") -> {
                     // the visible href is a decoy - the real one is rewritten from
-                    // `var pxl = "..."` by an inline script (verified live)
+                    // `var pxl = "..."` by an inline script
                     val pxl = Regex("""var\s+pxl\s*=\s*["']([^"']+)["']""")
                         .find(doc.toString())?.groupValues?.get(1) ?: link
                     val final = if (pxl.contains("download", true)) pxl

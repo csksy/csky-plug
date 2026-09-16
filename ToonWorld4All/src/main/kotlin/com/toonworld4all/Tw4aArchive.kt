@@ -13,7 +13,7 @@ import org.json.JSONObject
  * JSON inside `window.__PROPS__ = { ... };` right before </script>, so no
  * DOM scraping is needed - just a regex + JSON parse.
  *
- * Episode/movie page props shape (verified live):
+ * Episode/movie page props shape:
  * {
  *   "data": { "data": {
  *       "updated_at": "...",
@@ -28,13 +28,17 @@ import org.json.JSONObject
  *   "userSelectedSystem": "24hour"
  * }
  *
- * Redirect chooser props shape (verified live):
- * { "userSystem":"24hour", "destination":"https://exe.io/xxxx", 
- *   "link":{ "domain":"https://hubcloud.ist/video/", "hidden":"<RANDOM JUNK>" }, "total":3 }
+ * Redirect endpoints come in two shapes. Fresh sessions get the 24hour
+ * chooser page whose props hold the exe.io destination. After switching the
+ * session to the manual system (POST /api/user/preference/system?id=manual)
+ * every fetch answers a 302 straight to the shortener, and the destination
+ * rotates through the site's three shorteners in a fixed cycle per file:
+ * cuty.io -> gplinks.co -> exe.io (the order differs per encoder but always
+ * contains all three).
  *
- * NOTE: link.domain + link.hidden is deliberately randomized display data
- * (the Fh() helper in their bundle generates a random string of the same
- * length) - the ONLY real field is "destination".
+ * link.domain + link.hidden on the chooser page are random junk - requesting
+ * gdflix.dev/file/{hidden} lands on a dead-file shell and hubcloud answers
+ * "File Not Found", so the destination is the only real field.
  */
 object Tw4aArchive {
 
@@ -90,8 +94,8 @@ object Tw4aArchive {
      * Resolve a /redirect/{hash} path to the shortener destination URL.
      *
      * The chooser page may either respond 200 with props, or 302 straight to
-     * the shortener (happens after the first hit, when the user-system cookie
-     * is set), so both shapes are handled. Retries a couple of times because
+     * the shortener (always the case once the session is on the manual
+     * system), so both shapes are handled. Retries a couple of times because
      * the server occasionally rate-limits with an error body.
      */
     suspend fun resolveRedirectDestination(redirectPath: String): String? {
@@ -137,6 +141,49 @@ object Tw4aArchive {
             }
         }
         return null
+    }
+
+    /**
+     * Collect every shortener destination a redirect hands out. The manual
+     * system rotates through gplinks/exe/cuty in a fixed cycle, so a few
+     * fetches hold all of them. gplinks comes first: its only wall is the
+     * plain cloudflare interstitial, while exe.io and cuty.io sit behind an
+     * invisible turnstile that WebView walks do not survive.
+     */
+    suspend fun resolveDestinations(redirectPath: String): List<String> {
+        ensureManualSystem()
+
+        val found = LinkedHashSet<String>()
+        repeat(3) {
+            val dest = resolveRedirectDestination(redirectPath) ?: return@repeat
+            if (dest.startsWith("http")) found.add(dest)
+            kotlinx.coroutines.delay(250)
+        }
+        return found.sortedByDescending { it.contains("gplinks") }
+    }
+
+    /**
+     * The default 24hour system only ever hands out exe.io links. Switching
+     * the session to manual makes the redirect rotate through all three
+     * shorteners, which is what makes the gplinks path reachable at all.
+     * Idempotent, and harmless when the cookie has not been minted yet -
+     * the next redirect fetch sets it and the switch sticks from then on.
+     */
+    @Volatile
+    private var manualSystemSet = false
+
+    private suspend fun ensureManualSystem() {
+        if (manualSystemSet) return
+        try {
+            app.post(
+                "$BASE/api/user/preference/system?id=manual",
+                headers = Tw4aWebView.cfHeaders(BASE, headers),
+                timeout = 15L
+            )
+            manualSystemSet = true
+        } catch (e: Exception) {
+            Log.d("TW4A", "system preference save failed: ${e.message}")
+        }
     }
 
     private fun parseProps(html: String): JSONObject? {
