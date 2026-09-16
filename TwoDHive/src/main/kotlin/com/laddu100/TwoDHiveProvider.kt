@@ -566,40 +566,347 @@ class TwoDHiveProvider : MainAPI() {
         return MegaPlayCipher.resolveEncStreamUrl(enc, "https://megaplay.buzz")
     }
 
+    // the embed hides its stream behind an aes-gcm wrapped client api plus a
+    // cap proof of work. this script scrapes the page config and runs the same
+    // exchange the site player would, entirely inside the webview so the
+    // cloudflare cookies stay valid, then requests the playlist so the url
+    // resolver can catch it
+    private val babaSolverScript = """
+(function () {
+    if (window.__babaWatch) return;
+    window.__babaWatch = 1;
+
+    var MAX_ATTEMPTS = 4;
+    var RETRY_DELAY = 2500;
+    var NONCE_LIMIT = 20000000;
+
+    var WORKER_CODE = [
+        "function toHex(buffer) {",
+        "    var bytes = new Uint8Array(buffer);",
+        "    var out = '';",
+        "    for (var i = 0; i < bytes.length; i++) out += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);",
+        "    return out;",
+        "}",
+        "async function solve(salt, target) {",
+        "    var encoder = new TextEncoder();",
+        "    var batch = 500;",
+        "    var base = 0;",
+        "    while (base < " + NONCE_LIMIT + ") {",
+        "        var pending = [];",
+        "        for (var i = 0; i < batch; i++) {",
+        "            pending.push(crypto.subtle.digest('SHA-256', encoder.encode(salt + (base + i))));",
+        "        }",
+        "        var digests = await Promise.all(pending);",
+        "        for (var j = 0; j < batch; j++) {",
+        "            if (toHex(digests[j]).indexOf(target) === 0) return base + j;",
+        "        }",
+        "        base += batch;",
+        "    }",
+        "    return null;",
+        "}",
+        "self.onmessage = async function (event) {",
+        "    for (var i = 0; i < event.data.length; i++) {",
+        "        var job = event.data[i];",
+        "        var nonce = await solve(job.salt, job.target);",
+        "        self.postMessage({ id: job.id, nonce: nonce });",
+        "    }",
+        "};"
+    ].join("\n");
+
+    function parseConfig(html) {
+        var pattern = /\b(?:var|let|const)\s+\w+\s*=\s*(\{[^;]+\})\s*;/g;
+        var match;
+        while ((match = pattern.exec(html)) !== null) {
+            try {
+                var config = JSON.parse(match[1]);
+                if (typeof config.sid === "string" && typeof config.pk === "string") return config;
+            } catch (e) {}
+        }
+        return null;
+    }
+
+    function parseCryptoOptions(html) {
+        var name = (html.match(/importKey\([^,]+,[^,]+,\s*\{\s*name\s*:\s*["'](AES-[A-Z]+)["']/) || [])[1];
+        var ivLength = parseInt((html.match(/getRandomValues\(new Uint8Array\((\d+)\)\)/) || [])[1], 10);
+        var tagBits = parseInt((html.match(/tagLength\s*:\s*(\d+)/) || [])[1], 10) || 128;
+        if (!name || !ivLength || ivLength < 1) return null;
+        return { name: name, ivLength: ivLength, tagBits: tagBits };
+    }
+
+    function parseRoutes(html) {
+        var routes = [];
+        var pattern = /fetch\(\s*["']([^"']+)["']/g;
+        var match;
+        while ((match = pattern.exec(html)) !== null) routes.push(match[1]);
+        function pick(test) {
+            for (var i = 0; i < routes.length; i++) if (test(routes[i])) return routes[i];
+            return null;
+        }
+        return {
+            resolve: pick(function (r) { return /resolve/i.test(r); }),
+            verify: pick(function (r) { return /verify/i.test(r); })
+        };
+    }
+
+    function toBytes(base64) {
+        var binary = atob(base64);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+    }
+
+    function toBase64(bytes) {
+        var binary = "";
+        for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        return btoa(binary);
+    }
+
+    function toHex(buffer) {
+        var bytes = new Uint8Array(buffer);
+        var out = "";
+        for (var i = 0; i < bytes.length; i++) out += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
+        return out;
+    }
+
+    // older cap deployments derive every salt and target from the session
+    // token, this mirrors that derivation byte for byte
+    function seededHex(value, length) {
+        var state = 2166136261;
+        for (var i = 0; i < value.length; i++) {
+            state ^= value.charCodeAt(i);
+            state += (state << 1) + (state << 4) + (state << 7) + (state << 8) + (state << 24);
+        }
+        state = state >>> 0;
+        var output = "";
+        while (output.length < length) {
+            state ^= state << 13;
+            state ^= state >>> 17;
+            state ^= state << 5;
+            state = state >>> 0;
+            output += state.toString(16).padStart(8, "0");
+        }
+        return output.slice(0, length);
+    }
+
+    // main thread fallback used when the page forbids worker scripts
+    async function findNonceInline(salt, target) {
+        var encoder = new TextEncoder();
+        var batch = 400;
+        var base = 0;
+        while (base < NONCE_LIMIT) {
+            var pending = [];
+            for (var i = 0; i < batch; i++) {
+                pending.push(crypto.subtle.digest("SHA-256", encoder.encode(salt + (base + i))));
+            }
+            var digests = await Promise.all(pending);
+            for (var j = 0; j < batch; j++) {
+                if (toHex(digests[j]).indexOf(target) === 0) return base + j;
+            }
+            base += batch;
+        }
+        return null;
+    }
+
+    // the cap default is dozens of lightweight proofs, throw them at a pool
+    // of digest workers like the site widget does
+    function solveProofs(proofs) {
+        var jobs = proofs.map(function (proof, id) {
+            return { id: id, salt: proof.salt, target: proof.target };
+        });
+        return new Promise(function (resolve) {
+            // null marks an unsolved job, using holes would break the
+            // completeness checks below because indexOf skips them
+            var results = jobs.map(function () { return null; });
+            var failed = false;
+            var settled = false;
+
+            function finish() {
+                if (settled) return;
+                settled = true;
+                workers.forEach(function (worker) { try { worker.terminate(); } catch (e) {} });
+                if (failed || results.indexOf(null) !== -1) {
+                    resolve(null);
+                } else {
+                    resolve(results);
+                }
+            }
+
+            function remainingJobs() {
+                return jobs.filter(function (job) { return results[job.id] === null; });
+            }
+
+            async function drainInline() {
+                var pending = remainingJobs();
+                for (var i = 0; i < pending.length; i++) {
+                    results[pending[i].id] = await findNonceInline(pending[i].salt, pending[i].target);
+                }
+                finish();
+            }
+
+            var workers = [];
+            try {
+                var workerUrl = URL.createObjectURL(new Blob([WORKER_CODE], { type: "application/javascript" }));
+                var count = Math.min(navigator.hardwareConcurrency || 2, 6, jobs.length);
+                for (var w = 0; w < count; w++) {
+                    var worker = new Worker(workerUrl);
+                    worker.onmessage = function (event) {
+                        var data = event.data;
+                        if (data && data.id !== undefined && results[data.id] === null) {
+                            if (data.nonce === null) { failed = true; }
+                            results[data.id] = data.nonce === null ? -1 : data.nonce;
+                            if (results.indexOf(null) === -1) finish();
+                        }
+                    };
+                    worker.onerror = function () {
+                        // a dead worker drops its queue, pick the rest up inline
+                        workers.forEach(function (other) { try { other.terminate(); } catch (e) {} });
+                        drainInline();
+                    };
+                    workers.push(worker);
+                }
+                for (var j = 0; j < jobs.length; j++) {
+                    workers[j % workers.length].postMessage([jobs[j]]);
+                }
+            } catch (e) {
+                drainInline();
+            }
+        });
+    }
+
+    async function solveChallenges(challenges) {
+        var proofs = challenges.map(function (challenge) {
+            if (!challenge || challenge.protocol !== "sha256-pow") return null;
+            return { salt: challenge.payload.salt, target: challenge.payload.target };
+        });
+        if (proofs.indexOf(null) !== -1) throw new Error("unsupported challenge protocol");
+        var nonces = await solveProofs(proofs);
+        if (!nonces) throw new Error("proof of work failed");
+        return nonces.map(function (nonce) { return { nonce: nonce }; });
+    }
+
+    async function solveSeededChallenge(token, challenge) {
+        if (!token || !challenge || !challenge.c) throw new Error("invalid challenge");
+        var proofs = [];
+        for (var i = 1; i <= challenge.c; i++) {
+            proofs.push({ salt: seededHex(token + i, challenge.s), target: seededHex(token + i + "d", challenge.d) });
+        }
+        var nonces = await solveProofs(proofs);
+        if (!nonces) throw new Error("proof of work failed");
+        return nonces;
+    }
+
+    async function openSession(html) {
+        var config = parseConfig(html);
+        var options = parseCryptoOptions(html);
+        var routes = parseRoutes(html);
+        if (!config || !options || !routes.resolve) throw new Error("client api not found in page");
+
+        var key = await crypto.subtle.importKey(
+            "raw", toBytes(config.pk), { name: options.name }, false, ["encrypt", "decrypt"]
+        );
+
+        async function request(route, body) {
+            var iv = crypto.getRandomValues(new Uint8Array(options.ivLength));
+            var sealed = await crypto.subtle.encrypt(
+                { name: options.name, iv: iv, tagLength: options.tagBits },
+                key,
+                new TextEncoder().encode(JSON.stringify(body))
+            );
+            var payload = new Uint8Array(iv.length + sealed.byteLength);
+            payload.set(iv, 0);
+            payload.set(new Uint8Array(sealed), iv.length);
+            var response = await fetch(route, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ s: config.sid, d: toBase64(payload) })
+            });
+            var json = await response.json();
+            if (!json || !json.d) throw new Error("empty api response");
+            var raw = toBytes(json.d);
+            var plain = await crypto.subtle.decrypt(
+                { name: options.name, iv: raw.slice(0, options.ivLength), tagLength: options.tagBits },
+                key,
+                raw.slice(options.ivLength)
+            );
+            return JSON.parse(new TextDecoder().decode(plain));
+        }
+
+        return { config: config, routes: routes, request: request };
+    }
+
+    async function loadPageHtml() {
+        try {
+            var response = await fetch(location.href, { credentials: "same-origin" });
+            if (response.ok) {
+                var text = await response.text();
+                if (text.indexOf("sid") !== -1) return text;
+            }
+        } catch (e) {}
+        return document.documentElement.outerHTML;
+    }
+
+    async function run() {
+        var session = await openSession(await loadPageHtml());
+
+        var resolved = await session.request(session.routes.resolve, { ts: Date.now() });
+        if (resolved && resolved.t === "error" && /verify/i.test(resolved.m || "")) {
+            if (!session.config.cap || !session.routes.verify) throw new Error("cap routes missing");
+            var capBase = session.config.cap;
+            if (capBase.charAt(capBase.length - 1) !== "/") capBase += "/";
+            var challenge = await (await fetch(capBase + "challenge", { method: "POST" })).json();
+            var solutions = Array.isArray(challenge.challenges)
+                ? await solveChallenges(challenge.challenges)
+                : await solveSeededChallenge(challenge.token, challenge.challenge);
+            var redeem = await (await fetch(capBase + "redeem", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: challenge.token, solutions: solutions })
+            })).json();
+            if (!redeem || !redeem.success || !redeem.token) throw new Error("cap redeem failed");
+            var verified = await session.request(session.routes.verify, {
+                ts: Date.now(), token: redeem.token, mode: "invisible"
+            });
+            if (!verified || verified.t !== "ok") throw new Error("cap verify failed");
+            resolved = await session.request(session.routes.resolve, { ts: Date.now() });
+        }
+
+        if (!resolved || !resolved.u) throw new Error((resolved && resolved.m) || "no stream url");
+        if (/\.(m3u8|mp4)(\?|$)/i.test(resolved.u)) {
+            // the host app watches for media requests leaving the webview
+            fetch(resolved.u, { mode: "no-cors" }).catch(function () {});
+        } else {
+            location.href = resolved.u;
+        }
+    }
+
+    var attempts = 0;
+    function attempt() {
+        attempts += 1;
+        if (attempts > MAX_ATTEMPTS) return;
+        run().catch(function () {
+            setTimeout(attempt, RETRY_DELAY);
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", attempt);
+    } else {
+        attempt();
+    }
+})();
+""".trimIndent()
+
     private suspend fun resolveBabaStream(
         malId: Int, epNum: Int, type: String, epUrl: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val embedUrl = "https://babastream.top/embed/$malId/$epNum/$type"
         return try {
-            // the embed gates the player behind a cap.js proof-of-work widget;
-            // its checkbox lives in a shadow root so it needs a direct click,
-            // then the player loads and requests the playlist itself
-            val solver = """
-                (function () {
-                    if (window.__capSolver) return;
-                    window.__capSolver = 1;
-                    var tries = 0;
-                    var timer = setInterval(function () {
-                        if (tries++ > 120) { clearInterval(timer); return; }
-                        var widget = document.querySelector('cap-widget');
-                        var trigger = widget && widget.shadowRoot
-                            && widget.shadowRoot.querySelector('.captcha-trigger');
-                        if (trigger && !trigger.hasAttribute('disabled')) trigger.click();
-                        var play = document.querySelector(
-                            '.vjs-big-play-button, .jw-icon-display, .vds-play-button, .shaka-play-button, video');
-                        if (play) {
-                            try { play.click(); if (play.play) play.play(); } catch (e) {}
-                        }
-                    }, 1000);
-                })();
-            """.trimIndent()
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
-                additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
-                script = solver,
-                // the cloudflare check plus the pow solve take a while
-                useOkhttp = false, timeout = 90_000L
+                script = babaSolverScript,
+                // the pow solve alone can take half a minute on slow hardware
+                useOkhttp = false, timeout = 120_000L
             )
             val resolved = app.get(embedUrl, referer = epUrl, interceptor = resolver).url
             if (resolved.contains(".m3u8") || resolved.contains(".mp4")) {
