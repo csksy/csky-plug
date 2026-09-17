@@ -112,7 +112,7 @@ object Vidzee {
                 if (!url.startsWith("http")) continue
                 val language = obj.get("language")?.asText()
                 val suffix = when {
-                    serverLabel.startsWith("Acme") -> " (Multi Language)"
+                    serverLabel.startsWith("Acme") || serverLabel.endsWith("v3") -> " (Multi Language)"
                     !language.isNullOrBlank() && language != "Auto" ->
                         " (${language.replaceFirstChar { it.uppercase() }})"
                     else -> ""
@@ -120,9 +120,12 @@ object Vidzee {
                 val name = "Server 6 (Vidzee) $serverLabel$suffix"
                 callback(
                     newExtractorLink(name, name, url, type = ExtractorLinkType.M3U8) {
+                        // the ngcorp cdn answers the dcloud streams only with the
+                        // player origin present, the salsa cdns ignore it
                         this.headers = mapOf(
                             "User-Agent" to OneFlexProvider.USER_AGENT,
-                            "Referer" to PAGE
+                            "Referer" to PAGE,
+                            "Origin" to PAGE.trimEnd('/')
                         )
                     }
                 )

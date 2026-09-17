@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 cloudstream {
     description = "Movies and TV from 1flex.org with 8 servers: Viduki, Vidy, VidFast, VidLink, VidRock, Vidzee, Multi Language and Premium Embeds"

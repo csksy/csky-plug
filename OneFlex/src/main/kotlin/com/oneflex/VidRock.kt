@@ -91,9 +91,12 @@ object VidRock {
             }
             callback(
                 newExtractorLink(name, name, url, type = if (isMp4) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8) {
+                    // the file cdns behind orion reject requests without the
+                    // player origin even when the referer is already set
                     this.headers = mapOf(
                         "User-Agent" to OneFlexProvider.USER_AGENT,
-                        "Referer" to PAGE
+                        "Referer" to PAGE,
+                        "Origin" to "https://vidrock.to"
                     )
                 }
             )

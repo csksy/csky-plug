@@ -25,29 +25,44 @@ class OneFlexProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
     override val mainPage = mainPageOf(
-        "trending/all/day" to "Trending",
+        "trending/all/week" to "Trending Now",
         "movie/popular" to "Popular Movies",
         "movie/top_rated" to "Top Rated Movies",
-        "movie/now_playing" to "In Theaters",
-        "movie/upcoming" to "Coming Soon",
         "tv/popular" to "Popular TV Shows",
         "tv/top_rated" to "Top Rated TV Shows",
-        "tv/on_the_air" to "On Air"
+        "discover/movie?with_genres=28&sort_by=popularity.desc" to "Action & Adventure Movies",
+        "discover/movie?with_genres=35&sort_by=popularity.desc" to "Comedy Movies",
+        "discover/movie?with_genres=18&sort_by=popularity.desc" to "Drama Movies",
+        "discover/movie?with_genres=878&sort_by=popularity.desc" to "Sci-Fi Movies",
+        "discover/movie?with_genres=27&sort_by=popularity.desc" to "Horror Movies",
+        "discover/tv?with_genres=35&sort_by=popularity.desc" to "Comedy TV Shows",
+        "discover/tv?with_genres=18&sort_by=popularity.desc" to "Drama TV Shows",
+        "discover/tv?with_genres=80&sort_by=popularity.desc" to "Crime TV Shows",
+        "discover/tv?with_genres=10765&sort_by=popularity.desc" to "Sci-Fi & Fantasy TV Shows"
     )
 
     companion object {
-        // 1flex is a tmdb front end, the player bundles ship the key it calls with
-        const val TMDB_KEY = "adc48d20c0956934fb224de5c40bb85d"
-        const val TMDB_API = "https://api.themoviedb.org/3"
-        const val IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
+        // themoviedb.org is unreachable on several indian isps, the site itself
+        // runs everything through its own proxy domain so the plugin does too,
+        // the proxy only answers requests carrying the site referer
+        const val DB_PROXY = "https://db.1flex.org"
+        const val IMAGE_PROXY = "https://wsrv.nl/?url="
+        const val TMDB_IMAGE = "https://image.tmdb.org/t/p"
         const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         val BASE_HEADERS = mapOf(
             "User-Agent" to USER_AGENT,
-            "Accept" to "application/json, text/plain, */*"
+            "Referer" to "https://www.1flex.org/"
         )
+
+        // posters go through the image cache the site preconnects to, direct
+        // image.tmdb.org is blocked wherever themoviedb.org is blocked
+        fun imageUrl(path: JsonNode?, size: String = "w500"): String? {
+            val clean = path?.asText()?.takeIf { it.isNotBlank() } ?: return null
+            return IMAGE_PROXY + URLEncoder.encode("$TMDB_IMAGE/$size$clean", "UTF-8")
+        }
 
         fun hexBytes(s: String): ByteArray = ByteArray(s.length / 2) { i ->
             ((Character.digit(s[i * 2], 16) shl 4) or Character.digit(s[i * 2 + 1], 16)).toByte()
@@ -56,17 +71,19 @@ class OneFlexProvider : MainAPI() {
 
     private val mapper = ObjectMapper()
 
-    private fun imageUrl(path: JsonNode?): String? =
-        path?.asText()?.takeIf { it.isNotBlank() }?.let { "$IMAGE_BASE$it" }
-
-    private suspend fun tmdb(path: String, extra: String = ""): JsonNode? {
+    private suspend fun dbGet(path: String, page: Int? = null): JsonNode? {
         return try {
-            mapper.readTree(app.get("$TMDB_API/$path?api_key=$TMDB_KEY$extra", headers = BASE_HEADERS).text)
+            val join = if (path.contains('?')) '&' else '?'
+            val url = if (page != null) "$DB_PROXY/$path${join}page=$page" else "$DB_PROXY/$path"
+            mapper.readTree(app.get(url, headers = BASE_HEADERS).text)
         } catch (e: Exception) {
-            Log.e(TAG, "tmdb request failed for $path: ${e.message}")
+            Log.e(TAG, "db request failed for $path: ${e.message}")
             null
         }
     }
+
+    private fun JsonNode?.toList(): List<JsonNode> =
+        if (this != null && isArray) this.map { it } else emptyList()
 
     private fun JsonNode.toSearchResponse(defaultType: String? = null): SearchResponse? {
         val mediaType = get("media_type")?.asText() ?: defaultType ?: return null
@@ -90,20 +107,35 @@ class OneFlexProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val json = tmdb(request.data, "&page=$page")
-            ?: throw ErrorLoadingException("tmdb unavailable")
-        val defaultType = request.data.substringBefore('/')
-        val items = json.get("results")?.mapNotNull { it.toSearchResponse(defaultType) }
-            ?: emptyList()
+        val json = dbGet(request.data, page)
+            ?: throw ErrorLoadingException("1flex database unreachable")
+        // trending lists tag every entry with media_type, the movie and discover
+        // lists do not so the type comes from the path segments instead
+        val segments = request.data.substringBefore('?').split('/')
+        val defaultType = when (segments.first()) {
+            "movie", "tv" -> segments.first()
+            "discover" -> segments.getOrNull(1)?.takeIf { it == "movie" || it == "tv" }
+            else -> null
+        }
+        val items = json.get("results").toList().mapNotNull { it.toSearchResponse(defaultType) }
         val hasNext = (json.get("page")?.asInt() ?: 1) < (json.get("total_pages")?.asInt() ?: 1)
         return newHomePageResponse(request.name, items, hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val json = tmdb("search/multi", "&query=$encoded") ?: return emptyList()
-        return json.get("results")?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        val json = dbGet("search/multi?query=$encoded") ?: return emptyList()
+        return json.get("results").toList().mapNotNull { it.toSearchResponse() }
     }
+
+    private fun buildActors(cast: JsonNode?): List<ActorData> =
+        cast.toList().take(10).mapNotNull { entry ->
+            val name = entry.get("name")?.asText() ?: return@mapNotNull null
+            ActorData(Actor(name, imageUrl(entry.get("profile_path"))))
+        }
+
+    private fun buildRecommendations(similar: JsonNode?, type: String): List<SearchResponse> =
+        similar?.get("results").toList().take(12).mapNotNull { it.toSearchResponse(type) }
 
     override suspend fun load(url: String): LoadResponse? {
         val parts = url.split("|")
@@ -112,49 +144,61 @@ class OneFlexProvider : MainAPI() {
         val id = parts[1]
 
         if (type == "movie") {
-            val json = tmdb("movie/$id") ?: return null
+            val json = dbGet("movie/$id?append_to_response=credits,similar") ?: return null
             val title = json.get("title")?.asText() ?: return null
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = imageUrl(json.get("poster_path"))
-                this.backgroundPosterUrl = imageUrl(json.get("backdrop_path"))
+                this.backgroundPosterUrl = imageUrl(json.get("backdrop_path"), "w780")
                 this.year = json.get("release_date")?.asText()?.take(4)?.toIntOrNull()
                 this.plot = json.get("overview")?.asText()
                 this.duration = json.get("runtime")?.asInt()
                 this.score = json.get("vote_average")?.asDouble()?.let { Score.from10(it.toString()) }
-                this.tags = json.get("genres")?.mapNotNull { it.get("name")?.asText() }
+                this.tags = json.get("genres").toList().mapNotNull { it.get("name")?.asText() }
+                this.actors = buildActors(json.get("credits")?.get("cast"))
+                this.recommendations = buildRecommendations(json.get("similar"), "movie")
             }
         }
 
         if (type == "tv") {
-            val json = tmdb("tv/$id") ?: return null
+            val json = dbGet("tv/$id?append_to_response=aggregate_credits,similar") ?: return null
             val title = json.get("name")?.asText() ?: return null
-            val episodes = mutableListOf<Episode>()
-            val seasons = json.get("seasons") ?: return null
-            for (season in seasons) {
-                val seasonNumber = season.get("season_number")?.asInt() ?: continue
-                val seasonJson = tmdb("tv/$id/season/$seasonNumber") ?: continue
-                val eps = seasonJson.get("episodes") ?: continue
-                for (ep in eps) {
-                    val epNumber = ep.get("episode_number")?.asInt() ?: continue
-                    val epName = ep.get("name")?.asText()?.takeIf { it.isNotBlank() }
-                    episodes.add(
-                        newEpisode("tv|$id|$seasonNumber|$epNumber") {
-                            this.name = epName ?: "Episode $epNumber"
-                            this.season = seasonNumber
-                            this.episode = epNumber
-                            this.posterUrl = imageUrl(ep.get("still_path"))
-                            this.description = ep.get("overview")?.asText()
+
+            // seasons load in parallel, long shows would crawl one by one
+            val episodes = coroutineScope {
+                json.get("seasons").toList()
+                    .mapNotNull { season -> season.get("season_number")?.asInt() }
+                    .map { seasonNumber ->
+                        async {
+                            val seasonJson = dbGet("tv/$id/season/$seasonNumber")
+                                ?: return@async emptyList<Episode>()
+                            seasonJson.get("episodes").toList().mapNotNull { ep ->
+                                val epNumber = ep.get("episode_number")?.asInt() ?: return@mapNotNull null
+                                newEpisode("tv|$id|$seasonNumber|$epNumber") {
+                                    this.name = ep.get("name")?.asText()?.takeIf { it.isNotBlank() }
+                                        ?: "Episode $epNumber"
+                                    this.season = seasonNumber
+                                    this.episode = epNumber
+                                    this.posterUrl = imageUrl(ep.get("still_path"))
+                                    this.description = ep.get("overview")?.asText()
+                                    this.score = ep.get("vote_average")?.asDouble()
+                                        ?.let { Score.from10(it.toString()) }
+                                }
+                            }
                         }
-                    )
-                }
+                    }
+                    .awaitAll()
+                    .flatten()
             }
+
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = imageUrl(json.get("poster_path"))
-                this.backgroundPosterUrl = imageUrl(json.get("backdrop_path"))
+                this.backgroundPosterUrl = imageUrl(json.get("backdrop_path"), "w780")
                 this.year = json.get("first_air_date")?.asText()?.take(4)?.toIntOrNull()
                 this.plot = json.get("overview")?.asText()
                 this.score = json.get("vote_average")?.asDouble()?.let { Score.from10(it.toString()) }
-                this.tags = json.get("genres")?.mapNotNull { it.get("name")?.asText() }
+                this.tags = json.get("genres").toList().mapNotNull { it.get("name")?.asText() }
+                this.actors = buildActors(json.get("aggregate_credits")?.get("cast"))
+                this.recommendations = buildRecommendations(json.get("similar"), "tv")
                 this.showStatus = getStatus(json.get("status")?.asText())
             }
         }
@@ -168,8 +212,8 @@ class OneFlexProvider : MainAPI() {
         else -> null
     }
 
-    // the embed players each run their own token or crypto chain in the page,
-    // so they resolve through a webview while the two open json apis go straight over http
+    // the embed players run their own token or crypto chain in the page, so they
+    // resolve through a webview while the two open json apis go straight over http
     private class Embed(val label: String, val movieUrl: String, val tvUrl: String)
 
     private val embeds = listOf(
@@ -194,12 +238,12 @@ class OneFlexProvider : MainAPI() {
             "https://vidlink.pro/tv/{id}/{s}/{e}?primaryColor=FF0000&secondaryColor=a2a2a2&iconColor=eefdec&icons=default&player=jw&title=true&poster=true&autoplay=true&nextbutton=false"
         ),
         Embed(
-            "Multi Language (Viduki)",
+            "Server 7 (Viduki Multi Language)",
             "https://www.viduki.net/2/movie/{id}?color=FF0000",
             "https://www.viduki.net/2/tv/{id}/{s}/{e}?color=FF0000"
         ),
         Embed(
-            "Premium Embeds (Viduki)",
+            "Server 8 (Viduki Premium Embeds)",
             "https://www.viduki.net/4/movie/{id}?color=FF0000",
             "https://www.viduki.net/4/tv/{id}/{s}/{e}?color=FF0000"
         )
@@ -231,7 +275,7 @@ class OneFlexProvider : MainAPI() {
     private fun embedOrigin(url: String): String {
         val scheme = url.substringBefore("://")
         val host = url.substringAfter("://").substringBefore("/")
-        return "$scheme://$host/"
+        return "$scheme://$host"
     }
 
     private suspend fun resolveEmbed(
@@ -245,14 +289,17 @@ class OneFlexProvider : MainAPI() {
                 additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:[?#]|$)""")),
                 script = playNudge,
                 useOkhttp = false,
-                timeout = 40_000L
+                timeout = 45_000L
             )
             val resolved = app.get(pageUrl, referer = "$mainUrl/", interceptor = resolver).url
-            if (resolved.isBlank()) return false
-            val isM3u8 = resolved.contains(".m3u8", ignoreCase = true)
-            val isMp4 = resolved.contains(".mp4", ignoreCase = true)
-            if (!isM3u8 && !isMp4) return false
-            val linkType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            if (!resolved.contains(".m3u8", ignoreCase = true) &&
+                !resolved.contains(".mp4", ignoreCase = true)
+            ) return false
+            val linkType = if (resolved.contains(".m3u8", ignoreCase = true)) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
+            }
             callback(
                 newExtractorLink(label, label, resolved, type = linkType) {
                     this.headers = mapOf(
@@ -302,16 +349,19 @@ class OneFlexProvider : MainAPI() {
             }
         })
 
-        for (embed in embeds) {
-            val pageUrl = buildEmbedUrl(embed, type, id, season, episode)
-            jobs.add(async {
-                try {
-                    resolveEmbed(embed.label, pageUrl, callback)
-                } catch (e: Exception) {
-                    Log.w(TAG, "${embed.label} resolve failed: ${e.message}")
-                    false
-                }
-            })
+        // webview embeds have no surface while casting
+        if (!isCasting) {
+            for (embed in embeds) {
+                val pageUrl = buildEmbedUrl(embed, type, id, season, episode)
+                jobs.add(async {
+                    try {
+                        resolveEmbed(embed.label, pageUrl, callback)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "${embed.label} resolve failed: ${e.message}")
+                        false
+                    }
+                })
+            }
         }
 
         jobs.awaitAll().any { it }
