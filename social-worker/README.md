@@ -3,6 +3,11 @@
 Free backend for the AnimeComments, AnimeParty and CineQuiz plugins.
 Runs on Cloudflare's free tier: no server, no credit card, about 100k requests per day.
 
+**Status: deployed.** The shared worker lives at
+`https://cs-social-hub.saprujatin70.workers.dev` and `endpoint.json` next to
+this file already points there, so plugin users need to configure nothing.
+Everything below stays for anyone who wants to self host or redeploy.
+
 ## Who needs to deploy this
 
 Only the repo owner, once. The plugins read `endpoint.json` next to this file,

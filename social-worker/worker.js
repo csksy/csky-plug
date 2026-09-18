@@ -112,9 +112,13 @@ export class Store {
     const body = await request.json().catch(() => null);
     if (!body) return json({ error: "bad body" }, 400);
 
+    // Durable Object storage TTLs have a 60 second floor, so an 8s expiry flag
+    // would actually block posters for a full minute. Store the last post
+    // timestamp and compare, with a generous cleanup TTL on the marker itself.
     const rlKey = "rl:" + key + ":" + body.ip;
-    if (await this.state.storage.get(rlKey)) return json({ error: "rate limited" }, 429);
-    await this.state.storage.put(rlKey, true, { expirationTtl: RATE_LIMIT_SECONDS });
+    const last = Number((await this.state.storage.get(rlKey)) || 0);
+    if (Date.now() - last < RATE_LIMIT_SECONDS * 1000) return json({ error: "rate limited" }, 429);
+    await this.state.storage.put(rlKey, Date.now(), { expirationTtl: 300 });
 
     const list = (await this.state.storage.get("cmt:" + key)) || [];
     list.push({ u: body.user, t: body.text, ts: Date.now() });

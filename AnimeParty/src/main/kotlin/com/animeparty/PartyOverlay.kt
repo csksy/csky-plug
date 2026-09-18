@@ -3,16 +3,12 @@ package com.animeparty
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.drawable.ShapeDrawable
-import android.graphics.drawable.shapes.OvalShape
-import android.graphics.drawable.shapes.PathShape
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -90,18 +86,20 @@ class PartyOverlay(
     private fun attach(activity: Activity) {
         val decor = activity.window?.decorView as? ViewGroup ?: return
 
-        val size = dp(activity, 46)
+        val glyph = ImageView(activity).apply {
+            setImageDrawable(Glyphs.icon(Glyphs.GROUPS, Color.rgb(255, 193, 94)))
+        }
+
+        val size = dp(activity, 48)
         val host = FrameLayout(activity).apply {
             layoutParams = FrameLayout.LayoutParams(size, size, Gravity.BOTTOM or Gravity.END).apply {
                 marginEnd = dp(activity, 18)
-                bottomMargin = dp(activity, 150)
+                bottomMargin = dp(activity, 152)
             }
-        }
-
-        val button = ImageView(activity).apply {
-            setImageDrawable(partyGlyph(activity))
-            background = ShapeDrawable(OvalShape()).apply { paint.color = Color.argb(200, 24, 18, 43) }
-            setPadding(6, 6, 6, 6)
+            background = Glyphs.backing(ringWidthPx = dp(activity, 1))
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            elevation = dp(activity, 5).toFloat()
+            isClickable = true
             setOnClickListener {
                 if (manager.role != PartyManager.Role.IDLE) toggleChat(activity) else onOpenControls()
             }
@@ -110,7 +108,7 @@ class PartyOverlay(
                 true
             }
         }
-        host.addView(button, FrameLayout.LayoutParams(size - 8, size - 8, Gravity.CENTER))
+        host.addView(glyph, FrameLayout.LayoutParams(dp(activity, 24), dp(activity, 24), Gravity.CENTER))
 
         decor.addView(host)
         fabHost = host
@@ -237,35 +235,4 @@ class PartyOverlay(
 
     private fun dp(activity: Activity, value: Int): Int =
         (value * activity.resources.displayMetrics.density).toInt()
-
-    // two silhouettes in front of a play triangle, drawn by hand so the
-    // plugin needs no image resources
-    private fun partyGlyph(activity: Activity): ShapeDrawable {
-        val path = Path().apply {
-            moveTo(14f, 16f)
-            quadTo(20f, 8f, 26f, 16f)
-            lineTo(24f, 22f)
-            lineTo(16f, 22f)
-            close()
-            moveTo(28f, 16f)
-            quadTo(34f, 8f, 40f, 16f)
-            lineTo(38f, 22f)
-            lineTo(30f, 22f)
-            close()
-            moveTo(12f, 28f)
-            lineTo(12f, 44f)
-            lineTo(24f, 36f)
-            lineTo(12f, 28f)
-            close()
-            moveTo(28f, 28f)
-            lineTo(28f, 46f)
-            lineTo(44f, 46f)
-            lineTo(44f, 28f)
-            close()
-        }
-        return ShapeDrawable(PathShape(path, 56f, 50f)).apply {
-            paint.color = Color.rgb(255, 183, 77)
-            paint.style = Paint.Style.FILL
-        }
-    }
 }

@@ -59,11 +59,14 @@ class CommentsSheet(
         setPadding(0, dp(8), 0, dp(4))
     }
 
+    // status doubles as a reload button so a stale list is one tap away
     private val statusLine = TextView(activity).apply {
         text = "Loading..."
         textSize = 12f
-        setTextColor(Color.GRAY)
-        setPadding(dp(16), dp(4), dp(16), dp(4))
+        setTextColor(Color.rgb(130, 140, 160))
+        setPadding(dp(16), dp(8), dp(16), dp(8))
+        isClickable = true
+        setOnClickListener { refresh() }
     }
 
     fun show() {
@@ -144,15 +147,17 @@ class CommentsSheet(
         dialog.setOnDismissListener { onDismiss() }
         dialog.show()
 
-        refresh(stored)
+        refresh()
     }
 
-    private fun refresh(stored: StoredSettings) {
+    private fun refresh() {
+        statusLine.text = "Loading..."
         scope.launch {
+            val stored = settings.load()
             val base = WorkerEndpoint.resolve(stored.baseUrl)
             if (base.isBlank()) {
                 render(emptyList())
-                statusLine.text = "No comments server yet, check back later."
+                statusLine.text = "Comments server is not set up yet, check back shortly."
                 return@launch
             }
             val comments = CommentsApi.loadComments(
@@ -166,10 +171,10 @@ class CommentsSheet(
     private fun render(comments: List<CommentEntry>) {
         listContainer.removeAllViews()
         if (comments.isEmpty()) {
-            statusLine.text = "No comments yet. Be the first."
+            statusLine.text = "No comments yet - be the first (tap here to refresh)"
             return
         }
-        statusLine.text = "${comments.size} comment${if (comments.size == 1) "" else "s"}"
+        statusLine.text = "${comments.size} comment${if (comments.size == 1) "" else "s"} - tap to refresh"
         val fmt = SimpleDateFormat("dd MMM HH:mm", Locale.getDefault())
         for (comment in comments.asReversed()) {
             val head = TextView(listContainer.context).apply {
