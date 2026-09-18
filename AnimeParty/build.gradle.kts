@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 dependencies {
     // websocket client for the room relay, pure jvm so it loads from the plugin dex
@@ -12,7 +12,7 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "Watch parties in sync with live chat for up to 5 people, on top of any provider's stream. Public room list, host migration, resync and episode hints. Needs the free cs-social-hub worker from the repo."
+    description = "Watch parties in sync with live chat for up to 5 people, on top of any provider's stream. Public room list, host migration, resync and episode hints. Connects to the repo's shared cs-social-hub server automatically."
     authors = listOf("KSHITIJ8473")
 
     status = 3

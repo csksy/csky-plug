@@ -91,7 +91,7 @@ class CommentsSheet(
         }
 
         val input = EditText(dialog.context).apply {
-            hint = if (stored.baseUrl.isBlank()) "Set the worker URL in extension settings first" else "Write a comment..."
+            hint = "Write a comment..."
             isSingleLine = true
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
@@ -102,15 +102,12 @@ class CommentsSheet(
         send.setOnClickListener {
             val text = input.text.toString().trim()
             if (text.isEmpty()) return@setOnClickListener
-            if (stored.baseUrl.isBlank()) {
-                CommonActivity.showToast("Open extension settings and set the worker URL", 0)
-                return@setOnClickListener
-            }
             input.setText("")
             send.isEnabled = false
             scope.launch {
-                val result = CommentsApi.postComment(
-                    CommentsApi.normalizeBase(stored.baseUrl),
+                val base = WorkerEndpoint.resolve(stored.baseUrl)
+                val result = if (base.isBlank()) null else CommentsApi.postComment(
+                    base,
                     CommentsApi.keyOf(ref),
                     stored.userName,
                     text,
@@ -151,14 +148,15 @@ class CommentsSheet(
     }
 
     private fun refresh(stored: StoredSettings) {
-        if (stored.baseUrl.isBlank()) {
-            render(emptyList())
-            statusLine.text = "No worker configured. Open AnimeComments settings to add one."
-            return
-        }
         scope.launch {
+            val base = WorkerEndpoint.resolve(stored.baseUrl)
+            if (base.isBlank()) {
+                render(emptyList())
+                statusLine.text = "No comments server yet, check back later."
+                return@launch
+            }
             val comments = CommentsApi.loadComments(
-                CommentsApi.normalizeBase(stored.baseUrl),
+                base,
                 CommentsApi.keyOf(ref),
             )
             withContext(Dispatchers.Main) { render(comments) }

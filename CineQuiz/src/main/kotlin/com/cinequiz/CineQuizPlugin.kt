@@ -14,6 +14,9 @@ import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.CommonActivity
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlin.random.Random
 
 @CloudstreamPlugin
@@ -21,6 +24,7 @@ class CineQuizPlugin : Plugin() {
     private val urlKey = "cinequiz_worker_url"
     private val nameKey = "cinequiz_username"
 
+    private val scope = CoroutineScope(Dispatchers.Main)
     private var game: QuizGame? = null
 
     override fun load(context: Context) {
@@ -53,8 +57,9 @@ class CineQuizPlugin : Plugin() {
             setPadding(0, 0, 0, dp(activity, 4))
         }
         val intro = TextView(activity).apply {
-            text = "Movie, anime and general entertainment trivia. Solo works offline of any " +
-                "server, multiplayer rooms (up to 5) need the cs-social-hub worker URL."
+            text = "Movie, anime and general entertainment trivia. Solo works fully offline, " +
+                "multiplayer rooms for up to 5 players connect through the repo's shared " +
+                "server automatically."
             textSize = 13f
             setTextColor(Color.LTGRAY)
             setPadding(0, 0, 0, dp(activity, 10))
@@ -113,13 +118,18 @@ class CineQuizPlugin : Plugin() {
     }
 
     private fun hostFlow(activity: Activity) {
-        val base = workerUrl()
-        if (base.isBlank()) {
-            CommonActivity.showToast("Set the worker URL in Settings first", 0)
-            showSettings(activity)
-            return
+        scope.launch {
+            val base = WorkerEndpoint.resolve(workerUrl())
+            if (base.isBlank()) {
+                CommonActivity.showToast("No quiz server yet, check Settings", 0)
+                showSettings(activity)
+                return@launch
+            }
+            showHostDialog(activity, base)
         }
+    }
 
+    private fun showHostDialog(activity: Activity, base: String) {
         val pin = (100000..999999).random(Random(System.nanoTime())).toString()
         val pad = dp(activity, 18)
 
@@ -160,13 +170,18 @@ class CineQuizPlugin : Plugin() {
     }
 
     private fun joinFlow(activity: Activity) {
-        val base = workerUrl()
-        if (base.isBlank()) {
-            CommonActivity.showToast("Set the worker URL in Settings first", 0)
-            showSettings(activity)
-            return
+        scope.launch {
+            val base = WorkerEndpoint.resolve(workerUrl())
+            if (base.isBlank()) {
+                CommonActivity.showToast("No quiz server yet, check Settings", 0)
+                showSettings(activity)
+                return@launch
+            }
+            showJoinDialog(activity, base)
         }
+    }
 
+    private fun showJoinDialog(activity: Activity, base: String) {
         val pad = dp(activity, 18)
         val input = EditText(activity).apply {
             hint = "6 digit room code"

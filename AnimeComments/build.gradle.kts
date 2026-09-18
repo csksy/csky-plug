@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 dependencies {
     // only needed at compile time, the app provides these at runtime
@@ -9,7 +9,7 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "Comment on any anime episode while it plays. A small bubble appears over the player, tap anywhere to bring it back, tap it to read and post comments for the exact episode. Works over every provider including RaghavAnime. Needs the free cs-social-hub worker from the repo."
+    description = "Comment on any anime episode while it plays. A small bubble appears over the player, tap anywhere to bring it back, tap it to read and post comments for the exact episode. Threads are shared across all users, works over every provider including RaghavAnime."
     authors = listOf("KSHITIJ8473")
 
     status = 3

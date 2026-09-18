@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 cloudstream {
     language = "en"
@@ -7,6 +7,6 @@ cloudstream {
 
     status = 1
     tvTypes = listOf(
-        "Music",
+        "Others",
     )
 }

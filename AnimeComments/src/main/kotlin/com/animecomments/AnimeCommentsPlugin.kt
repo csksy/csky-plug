@@ -40,8 +40,9 @@ class AnimeCommentsPlugin : Plugin() {
         }
 
         val intro = TextView(activity).apply {
-            text = "Comments are stored on your own free Cloudflare worker. " +
-                "Deploy cs-social-hub from the repo, then paste its URL here."
+            text = "Comments live on one free Cloudflare worker shared by everyone using " +
+                "this repo, so threads are the same for all users. Leave the URL empty to " +
+                "use the shared one, set your own only if you host your own worker."
             textSize = 13f
             setTextColor(Color.LTGRAY)
             setPadding(0, 0, 0, dp(activity, 12))

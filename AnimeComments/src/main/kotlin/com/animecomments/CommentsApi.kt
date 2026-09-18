@@ -25,9 +25,6 @@ data class EpisodeRef(
 object CommentsApi {
     private val mapper = ObjectMapper()
 
-    fun normalizeBase(url: String): String =
-        url.trim().trimEnd('/').takeIf { it.startsWith("http") } ?: ""
-
     fun episodeOf(meta: ResultEpisode): EpisodeRef? {
         val show = meta.headerName?.takeIf { it.isNotBlank() } ?: meta.name?.takeIf { it.isNotBlank() }
         ?: return null

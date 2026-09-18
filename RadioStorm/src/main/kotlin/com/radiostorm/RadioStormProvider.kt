@@ -38,7 +38,10 @@ data class RadioStation(
 class RadioStorm : MainAPI() {
     override var mainUrl = "https://de1.api.radio-browser.info"
     override var name = "RadioStorm"
-    override val supportedTypes = setOf(TvType.Music)
+    // Others on purpose: the app's extension browser has no filter chip for
+    // Music, so a Music typed entry goes invisible the moment any type filter
+    // is active. Every non standard extension in the repo uses Others.
+    override val supportedTypes = setOf(TvType.Others)
     override var lang = "en"
     override val hasMainPage = true
 
@@ -156,7 +159,7 @@ class RadioStorm : MainAPI() {
         return newMovieSearchResponse(
             stationName,
             packed,
-            TvType.Music,
+            TvType.Others,
         ) {
             this.posterUrl = station.favicon?.takeIf { it.startsWith("http") }
         }
@@ -190,7 +193,7 @@ class RadioStorm : MainAPI() {
         return newMovieLoadResponse(
             title,
             url,
-            TvType.Music,
+            TvType.Others,
             url,
         ) {
             this.plot = buildString {

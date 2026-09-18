@@ -151,26 +151,33 @@ class AnimePartyPlugin : Plugin() {
     }
 
     private fun createFlow(activity: Activity) {
-        val base = workerUrl()
-        if (base.isBlank()) {
-            CommonActivity.showToast("Set the worker URL in Settings first", 0)
-            showSettings(activity)
-            return
+        scope.launch {
+            val base = WorkerEndpoint.resolve(workerUrl())
+            if (base.isBlank()) {
+                CommonActivity.showToast("No party server yet, check Settings", 0)
+                showSettings(activity)
+                return@launch
+            }
+            val pin = (100000..999999).random(Random(System.nanoTime())).toString()
+            manager.createRoom(base, pin) { displayName() }
+            CommonActivity.showToast("Room $pin created, share the code", 1)
+            openControls()
         }
-        val pin = (100000..999999).random(Random(System.nanoTime())).toString()
-        manager.createRoom(base, pin) { displayName() }
-        CommonActivity.showToast("Room $pin created, share the code", 1)
-        openControls()
     }
 
     private fun joinFlow(activity: Activity) {
-        val base = workerUrl()
-        if (base.isBlank()) {
-            CommonActivity.showToast("Set the worker URL in Settings first", 0)
-            showSettings(activity)
-            return
+        scope.launch {
+            val base = WorkerEndpoint.resolve(workerUrl())
+            if (base.isBlank()) {
+                CommonActivity.showToast("No party server yet, check Settings", 0)
+                showSettings(activity)
+                return@launch
+            }
+            showJoinDialog(activity, base)
         }
+    }
 
+    private fun showJoinDialog(activity: Activity, base: String) {
         val pad = dp(activity, 18)
         val input = EditText(activity).apply {
             hint = "6 digit room code"
@@ -199,13 +206,6 @@ class AnimePartyPlugin : Plugin() {
     }
 
     private fun browseFlow(activity: Activity) {
-        val base = workerUrl()
-        if (base.isBlank()) {
-            CommonActivity.showToast("Set the worker URL in Settings first", 0)
-            showSettings(activity)
-            return
-        }
-
         val pad = dp(activity, 18)
         val list = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -227,10 +227,17 @@ class AnimePartyPlugin : Plugin() {
             .create()
 
         scope.launch {
-            val rooms = fetchRooms(base)
+            val base = WorkerEndpoint.resolve(workerUrl())
+            val rooms = if (base.isBlank()) emptyList() else fetchRooms(base)
             withContext(Dispatchers.Main) {
                 list.removeAllViews()
-                if (rooms.isEmpty()) {
+                if (base.isBlank()) {
+                    list.addView(TextView(activity).apply {
+                        text = "No party server yet, check back later."
+                        setTextColor(Color.LTGRAY)
+                        setPadding(pad, pad / 2, pad, pad / 2)
+                    })
+                } else if (rooms.isEmpty()) {
                     list.addView(TextView(activity).apply {
                         text = "No active rooms right now. Create one and it shows up here for everyone."
                         setTextColor(Color.LTGRAY)
@@ -294,8 +301,10 @@ class AnimePartyPlugin : Plugin() {
             isSingleLine = true
         }
         val intro = TextView(activity).apply {
-            text = "Rooms run through your own free cs-social-hub worker. Media never passes " +
-                "through it, only play, pause, seek and chat messages."
+            text = "Rooms run through one free Cloudflare worker shared by everyone on " +
+                "this repo. Leave the URL empty to use the shared server, set your own " +
+                "only if you self host. Media never passes through it, only play, pause, " +
+                "seek and chat messages."
             textSize = 12f
             setTextColor(Color.LTGRAY)
             setPadding(0, 0, 0, dp(activity, 10))

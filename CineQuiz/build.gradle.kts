@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 dependencies {
     // websocket client for the room relay, pure jvm so it loads from the plugin dex
@@ -12,7 +12,7 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "Movie, anime and entertainment trivia. Play solo or open a room for up to 5 friends with live scores. Multiplayer needs the free cs-social-hub worker from the repo."
+    description = "Movie, anime and entertainment trivia. Play solo offline or open a room for up to 5 friends with live scores. Multiplayer connects to the repo's shared cs-social-hub server automatically."
     authors = listOf("KSHITIJ8473")
 
     status = 3
