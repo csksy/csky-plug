@@ -12,26 +12,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Anidap (anidap.lol) - rebuilt 2026-09 against the live site.
- *
- * Site map (all verified live, see anidap-analysis/):
- *  - catalog:   anidap.lol/api/anime/search?q=, /api/anime/trending,
- *               graphql.anidap.lol/api/recent?page=N (slugs + isSub/isDub)
- *  - detail:    anidap.lol/api/anime/{anilistId} -> data.id IS the slug
- *  - REST api:  chad.anidap.lol/rest/api/{servers,episodes,sources,download}
- *               * providers can differ per episode (verified: one-piece ep1 vs ep1100)
- *               * episodes carry per-episode hasSub / hasDub flags
- *               * sources responses carry provider headers (Referer/Origin/User-Agent)
- *                 that MUST be forwarded to the player, and urls that the web client
- *                 rewrites through the cdnx.aniwatchtv.site uwu proxy - a native app
- *                 plays the raw urls with the headers instead (verified)
- *  - 7 live providers: beep, yuki, neko, zuna (new), loli, sora, uwu
- *    site code also carries handlers for shiro/vee/kiwi/miku/mochi (legacy)
- *
- * Only links whose master -> variant -> first-segment chain serves real video
- * bytes are emitted, so per-episode dead servers drop out automatically.
- */
 class AnidapProvider : MainAPI() {
     override var mainUrl = "https://anidap.lol"
     override var name = "Anidap"
@@ -40,7 +20,7 @@ class AnidapProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // validating 7 providers against their CDNs takes a moment when many are down
+    // validating every provider against its cdn is slow when most are down
     override val loadLinksTimeoutMs: Long? = 3 * 60_000L
 
     private val chadHost = "https://chad.anidap.lol"
@@ -48,8 +28,7 @@ class AnidapProvider : MainAPI() {
     private val graphqlHost = "https://graphql.anidap.lol"
     private val TAG = "Anidap"
 
-    // headers the cdnx.aniwatchtv.site proxy demands (verified live: plain
-    // requests get a Cloudflare 403, these pass)
+    // cdnx.aniwatchtv.site 403s requests without browser-style cors headers
     private fun proxyHeaders(): Map<String, String> = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
         "Accept" to "*/*",
@@ -65,8 +44,6 @@ class AnidapProvider : MainAPI() {
         "Referer" to "$mainUrl/home",
         "Accept" to "application/json",
     )
-
-    // ==================== helpers ====================
 
     private fun normalizeTip(tip: String?): String? {
         if (tip.isNullOrBlank()) return null
@@ -99,7 +76,7 @@ class AnidapProvider : MainAPI() {
         return qualityFromHeight(height)
     }
 
-    /** Unwrap either `[...]`, `{success, data:[...]}` or `{data:{...}}` shapes into the payload node. */
+    // chad wraps its arrays differently per endpoint, unwrap them all here
     private fun unwrapArray(root: com.fasterxml.jackson.databind.JsonNode): com.fasterxml.jackson.databind.JsonNode {
         if (root.isArray) return root
         val d = root.path("data")
@@ -108,8 +85,6 @@ class AnidapProvider : MainAPI() {
         if (root.path("results").isArray) return root
         return root
     }
-
-    // ==================== getMainPage ====================
 
     override val mainPage = mainPageOf(
         "$mainUrl/api/anime/trending" to "Trending",
@@ -124,7 +99,7 @@ class AnidapProvider : MainAPI() {
                 else -> trendingPage()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "getMainPage FAILED: ${e.message}")
+            Log.e(TAG, "getMainPage failed: ${e.message}")
             newHomePageResponse(emptyList<HomePageList>(), hasNext = false)
         }
     }
@@ -198,8 +173,6 @@ class AnidapProvider : MainAPI() {
         )
     }
 
-    // ==================== search ====================
-
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("anidap") ?: mainUrl
         if (query.length < 2) return emptyList()
@@ -215,12 +188,10 @@ class AnidapProvider : MainAPI() {
             if (!results.isArray) emptyList()
             else results.mapNotNull { buildTrendingItem(it) }
         } catch (e: Exception) {
-            Log.e(TAG, "search FAILED: ${e.message}")
+            Log.e(TAG, "search failed: ${e.message}")
             emptyList()
         }
     }
-
-    // ==================== load ====================
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("anidap") ?: mainUrl
@@ -236,12 +207,12 @@ class AnidapProvider : MainAPI() {
             val root = parseJson<com.fasterxml.jackson.databind.JsonNode>(detailRes.text)
             val data = root.path("data").let { if (it.isObject && it.size() > 0) it else root }
 
-            // data.id IS the slug now (verified: one-piece-p8k27)
+            // the detail id is the slug chad expects (e.g. one-piece-p8k27)
             val slug = data.path("id").asText("").ifBlank { animeId }
             val titles = data.path("titles")
             val titleEnglish = data.path("titleEnglish").asText("").ifBlank { null }
-        val titleRomaji = data.path("titleRomaji").asText("").ifBlank { null }
-        val titleJa = titles.path("ja").asText("").ifBlank { null }
+            val titleRomaji = data.path("titleRomaji").asText("").ifBlank { null }
+            val titleJa = titles.path("ja").asText("").ifBlank { null }
             val title = titles.path("en").asText("").ifBlank { null }
                 ?: titleEnglish
                 ?: titleRomaji
@@ -259,9 +230,6 @@ class AnidapProvider : MainAPI() {
                 .mapNotNull { g -> g.path("name").asText("").takeIf { it.isNotBlank() } }
             val format = data.path("format").asText(data.path("type").asText("")).uppercase()
 
-            Log.d(TAG, "load: title='$title' slug=$slug format=$format")
-
-            // episode metadata from chad (per-episode hasSub/hasDub flags)
             data class Ep(
                 val number: Int,
                 val name: String?,
@@ -298,11 +266,11 @@ class AnidapProvider : MainAPI() {
                     } else null
                 } else null
             } catch (e: Exception) {
-                Log.e(TAG, "load: episodes fetch failed: ${e.message}")
+                Log.e(TAG, "episodes fetch failed: ${e.message}")
                 null
             }
 
-            // sub/dub availability: prefer the per-episode flags, fall back to ep1 servers
+            // sub/dub flags can be missing per episode, ep1 servers covers those
             var ep1HasSub: Boolean? = null
             var ep1HasDub: Boolean? = null
             if (episodes == null || episodes.any { it.hasSub == null || it.hasDub == null }) {
@@ -317,7 +285,7 @@ class AnidapProvider : MainAPI() {
                         ep1HasDub = sRoot.path("dubProviders").size() > 0
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "load: servers probe failed: ${e.message}")
+                    Log.e(TAG, "servers probe failed: ${e.message}")
                 }
             }
 
@@ -367,7 +335,8 @@ class AnidapProvider : MainAPI() {
                 }
             }
 
-            // movies keep the sub/dub selector by staying TvType.Anime when dub exists
+            // the app hides the sub/dub switcher on movie types, so dual audio
+            // movies are typed as regular anime to keep both reachable
             val tvType = when {
                 format == "MOVIE" && dubEpisodes.isNotEmpty() -> TvType.Anime
                 format == "MOVIE" -> TvType.AnimeMovie
@@ -386,16 +355,14 @@ class AnidapProvider : MainAPI() {
                 if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "load FAILED: ${e.message}")
+            Log.e(TAG, "load failed: ${e.message}")
             null
         }
     }
 
-    // ==================== loadLinks ====================
-
     private data class ServerProvider(val id: String, val tip: String?)
 
-    // servers differ per episode (verified) - cache per slug|ep
+    // providers differ per episode, cache per slug|ep
     private val serversCache = ConcurrentHashMap<String, Pair<Long, Map<String, List<ServerProvider>>>>()
 
     private suspend fun serversForEpisode(slug: String, epNum: String): Map<String, List<ServerProvider>> {
@@ -425,23 +392,28 @@ class AnidapProvider : MainAPI() {
                         }
                     }
                 }
+                // chad never lists the site's own adp server, the web client
+                // puts it first in every list - do the same or those streams
+                // never get requested
+                fun withAdp(list: List<ServerProvider>): List<ServerProvider> =
+                    if (list.any { it.id == "adp" }) list
+                    else listOf(ServerProvider("adp", null)) + list
                 mapOf(
-                    "sub" to parseList("subProviders"),
-                    "dub" to parseList("dubProviders"),
+                    "sub" to withAdp(parseList("subProviders")),
+                    "dub" to withAdp(parseList("dubProviders")),
                 )
             } else emptyMap()
         } catch (e: Exception) {
-            Log.e(TAG, "serversForEpisode failed: ${e.message}")
+            Log.e(TAG, "servers fetch failed: ${e.message}")
             emptyMap()
         }
         serversCache[key] = System.currentTimeMillis() to out
         return out
     }
 
-    // sources responses can be plain or wrapped in .data
     private data class SourcesPayload(
-        val sources: List<Triple<String, String?, String?>>, // url, quality, type
-        val tracks: List<Triple<String, String, String>>,   // url, label, kind
+        val sources: List<Triple<String, String?, String?>>,
+        val tracks: List<Triple<String, String, String>>,
         val headers: Map<String, String>,
     )
 
@@ -495,12 +467,13 @@ class AnidapProvider : MainAPI() {
 
             SourcesPayload(sources, trackList, headers)
         } catch (e: Exception) {
-            Log.e(TAG, "fetchSources $providerId failed: ${e.message}")
+            Log.e(TAG, "sources $providerId failed: ${e.message}")
             null
         }
     }
 
-    /** master -> variant -> first segment, both raw (with provider headers) and via the site proxy. */
+    // walks master -> best variant -> first segment so dead hosts drop out
+    // before the player ever sees them
     private fun validateHls(
         masterUrl: String,
         headers: Map<String, String>,
@@ -509,7 +482,6 @@ class AnidapProvider : MainAPI() {
         if (!master.contains("#EXTM3U")) return null
         val variants = AnidapUrl.parseMaster(master, masterUrl)
 
-        // a master with stream-inf entries points at variants; otherwise it is the media playlist itself
         val probeTarget = variants.maxByOrNull { it.quality ?: 0 }?.url ?: masterUrl
         val playlist = AnidapUrl.fetchText(probeTarget, headers) ?: return null
         if (!playlist.contains("#EXTM3U")) return null
@@ -564,7 +536,7 @@ class AnidapProvider : MainAPI() {
         val rawParts = data.trim().split("|")
         val parts = if (rawParts.firstOrNull()?.startsWith("http") == true) rawParts.drop(1) else rawParts
         if (parts.size < 3) {
-            Log.e(TAG, "loadLinks: invalid data (parts=${parts.size})")
+            Log.e(TAG, "loadLinks: invalid data")
             return false
         }
         val slug = parts[0]
@@ -614,10 +586,10 @@ class AnidapProvider : MainAPI() {
                                 }
 
                                 AnidapUrl.looksLikeHls(srcUrl, srcType) -> {
-                                    // 1) raw url + the provider headers (native apps can send them, browsers can't)
+                                    // native apps can send the provider headers a browser cannot,
+                                    // so try the raw url first and only then the site proxy
                                     var variants = validateHls(srcUrl, payload.headers)
                                     var headers = payload.headers
-                                    // 2) site proxy fallback (some cdns serve the proxy ip better, e.g. sora)
                                     if (variants == null && proxyUrl != srcUrl) {
                                         val proxied = validateHls(proxyUrl, proxyHeaders())
                                         if (proxied != null) {
@@ -667,7 +639,8 @@ class AnidapProvider : MainAPI() {
                                 }
 
                                 else -> {
-                                    // embed page or unknown - hand to built-in extractors, else probe direct
+                                    // embed page or something unknown - let the built-in
+                                    // extractors try, fall back to a direct probe
                                     val refererForExtractor = payload.headers["Referer"]
                                         ?: payload.headers["referer"] ?: "$mainUrl/"
                                     val loaded = try {
@@ -693,7 +666,7 @@ class AnidapProvider : MainAPI() {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "loadLinks ${provider.id} FAILED: ${e.message}")
+                        Log.e(TAG, "loadLinks ${provider.id} failed: ${e.message}")
                     }
                 }
             }.forEach { it.await() }

@@ -5,32 +5,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
-/**
- * Exact port of anidap.lol's client-side URL pipeline (assets/api-*.js) plus the
- * fast link-validation client (AniSnatch pattern).
- *
- * Everything in here was reverse-engineered from the live site and verified
- * against the real backend - no guesswork:
- *
- *  - uwu proxy:   https://cdnx.aniwatchtv.site/uwu/<token>
- *                 token = base64url( XOR( utf8(url) + 0x00 + utf8(key), "10b06cdc1ca48c9fb0b94af97cc040cf" ) )
- *  - shiro proxy: https://hls.dramavideo.se/media/<hex( XOR(utf8(url), 137 ) )>&origin=https://kem.clvd.xyz/
- *  - global rewrites: vivibebe.site/public/stream/ -> hawk.aniwatchtv.site/media/
- *                     playeng.animeapps.top/r2/<p>  -> bd.aniwatchtv.site/media/<p>
- *  - per-provider handlers: sora/yuki/uwu/kiwi/miku -> uwu proxy with fixed keys,
- *                           mochi -> host swap, beep -> bd.aniwatchtv.site path,
- *                           vee/neko -> passthrough
- *  - fallback: url unchanged by a handler AND response carried a Referer AND
- *              provider not in {vee, neko} -> uwu proxy with the Referer as key
- *               (this is what powers zuna + loli and any future provider)
- */
 internal object AnidapUrl {
 
     private const val UWU_XOR_KEY = "10b06cdc1ca48c9fb0b94af97cc040cf"
     private const val SHIRO_HOST = "https://hls.dramavideo.se"
     private val UWU_HOSTS = listOf("https://cdnx.aniwatchtv.site")
 
-    // providers whose urls the site wraps into the cdnx uwu proxy
+    // providers the web client wraps into the cdnx uwu proxy with a fixed key
     private val UWU_PROXY_KEYS = mapOf(
         "sora" to "https://krussdomi.com",
         "yuki" to "https://megaplay.buzz",
@@ -39,20 +20,17 @@ internal object AnidapUrl {
         "miku" to "https://allanime.uns.bio",
     )
 
-    // providers the site never sends through the referer fallback
+    // these two serve their urls directly, the referer fallback never applies
     private val FALLBACK_EXCLUDE = setOf("vee", "neko")
 
     private val stripDomainRegex = Regex("^https?://[^/]+")
 
     private fun stripDomain(url: String): String = url.replace(stripDomainRegex, "")
 
-    // ==================== uwu proxy ====================
-
     fun uwuToken(url: String, key: String): String {
         val keyBytes = UWU_XOR_KEY.toByteArray(Charsets.US_ASCII)
         val data = url.toByteArray(Charsets.UTF_8) + byteArrayOf(0) + key.toByteArray(Charsets.UTF_8)
         val out = ByteArray(data.size) { i -> (data[i].toInt() xor keyBytes[i % keyBytes.size].toInt()).toByte() }
-        // base64url without padding (the js client strips "=" too)
         return android.util.Base64.encodeToString(out, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
             .trimEnd('=')
     }
@@ -62,8 +40,6 @@ internal object AnidapUrl {
         return "$host/uwu/${uwuToken(url, key)}"
     }
 
-    // ==================== shiro proxy ====================
-
     fun shiroProxy(url: String): String {
         val sb = StringBuilder()
         for (b in url.toByteArray(Charsets.UTF_8)) {
@@ -71,8 +47,6 @@ internal object AnidapUrl {
         }
         return "$SHIRO_HOST/media/$sb&origin=https://kem.clvd.xyz/"
     }
-
-    // ==================== beep rewrite ====================
 
     private fun beepRewrite(url: String): String {
         return when {
@@ -85,13 +59,11 @@ internal object AnidapUrl {
         }
     }
 
-    // ==================== full pipeline (site's transformSourceUrl) ====================
-
+    // mirrors the site's transformSourceUrl so plugin and web client land on the same url
     fun transform(url: String, providerId: String, referer: String?): String {
         val p = providerId.lowercase()
         var r = url
 
-        // global rewrites first (site order)
         if (r.contains("https://vivibebe.site/public/stream/")) {
             r = r.replace("https://vivibebe.site/public/stream/", "https://hawk.aniwatchtv.site/media/")
         }
@@ -99,18 +71,17 @@ internal object AnidapUrl {
             r = "https://bd.aniwatchtv.site/media" + stripDomain(r).replace("/r2", "")
         }
 
-        // per-provider handler
         when (p) {
             "shiro" -> r = shiroProxy(r)
             "sora", "yuki", "uwu", "kiwi", "miku" ->
                 r = uwuProxy(r, UWU_PROXY_KEYS[p] ?: return r)
             "mochi" -> r = r.replace("https://tools.fast4speed.rsvp", "https://mp4.24stream.xyz/storage")
             "beep" -> r = beepRewrite(r)
-            // vee + neko are passthrough; unknown providers (zuna, loli, ...) also pass through
-            // and hit the referer fallback below
         }
 
-        // fallback: nothing touched the url and the response carried a Referer
+        // the site falls back to the proxy keyed by the response referer for
+        // anything its handlers did not rewrite - that path is what makes
+        // zuna, loli and adp dub urls playable
         if (r == url && !referer.isNullOrBlank() && p !in FALLBACK_EXCLUDE) {
             return uwuProxy(url, referer)
         }
@@ -121,11 +92,7 @@ internal object AnidapUrl {
         return r
     }
 
-    // yuki is the only provider whose subtitles the site routes through a proxy;
-    // the app can send the needed headers directly, so everything stays raw
     fun transformSubtitle(url: String, providerId: String): String = url
-
-    // ==================== probe client (AniSnatch pattern) ====================
 
     private val probeClient: OkHttpClient by lazy {
         app.baseClient.newBuilder()
@@ -134,7 +101,6 @@ internal object AnidapUrl {
             .build()
     }
 
-    /** Quick text fetch for playlist validation. Null on failure / non-2xx-3xx. */
     fun fetchText(url: String, headers: Map<String, String>): String? {
         return try {
             val req = Request.Builder().url(url)
@@ -148,7 +114,6 @@ internal object AnidapUrl {
         }
     }
 
-    /** Ranged byte fetch for segment sniffing. Null on failure / non-2xx-3xx. */
     fun fetchBytes(url: String, headers: Map<String, String>, rangeEnd: Int = 2047): ByteArray? {
         return try {
             val h = LinkedHashMap(headers)
@@ -174,18 +139,12 @@ internal object AnidapUrl {
         return -1
     }
 
-    /**
-     * True when the bytes look like actual video:
-     *  - MPEG-TS (0x47 sync byte) - the megaplay CDN hides TS data behind a fake
-     *    1x1 PNG header (verified live); players resync past it (ExoPlayer's
-     *    TsUtil.findSyncBytePosition scans for 0x47 at any offset), we accept it here
-     *  - fMP4 / MP4 (ftyp box)
-     */
+    // megaplay cdns hide TS data behind a fake 1x1 PNG header; players resync
+    // to the 0x47 sync byte past it, so accept that shape here too
     fun isVideoBytes(d: ByteArray?): Boolean {
         if (d == null || d.isEmpty()) return false
         if (d[0] == 0x47.toByte()) return true
         if (d.size > 8 && d[0] == 0x89.toByte() && d[1] == 0x50.toByte()) {
-            // PNG disguise: after the IEND chunk there must be a TS sync byte
             val iend = indexOf(d, "IEND".toByteArray())
             if (iend >= 0) {
                 for (i in iend + 4 until minOf(d.size, iend + 4 + 64)) {
@@ -197,8 +156,6 @@ internal object AnidapUrl {
         if (indexOf(d, "ftyp".toByteArray()) in 0..64) return true
         return false
     }
-
-    // ==================== playlist parsing ====================
 
     class Variant(val quality: Int?, val url: String)
 
@@ -238,7 +195,7 @@ internal object AnidapUrl {
         return null
     }
 
-    /** The site serves HLS playlists behind a ".txt" name - same thing for a player. */
+    // the site names some hls playlists ".txt", treat them the same
     fun looksLikeHls(url: String, declaredType: String?): Boolean {
         val t = (declaredType ?: "").lowercase()
         val path = url.substringBefore("?")
