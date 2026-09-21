@@ -17,13 +17,20 @@ import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
+import android.os.Looper
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 // wefeed platform (same as moviebox, different deployment).
 // any api response carries an x-user jwt used as bearer auth; until one shows
@@ -31,6 +38,11 @@ import java.security.MessageDigest
 // requests without X-Source: webNetnaijaSite, and mp4 urls want the site referer.
 // subject/search rejects anonymous tokens, the site only gets results through
 // the server rendered search page - so the plugin reads that page too.
+//
+// the /home sections are targeted per visitor region, an indian visitor gets
+// bollywood/south indian/hollywood rows while the default list is nollywood
+// and k-drama flavored, so the homepage rows are built from whatever /home
+// actually returns instead of a fixed list.
 class NetNaija : MainAPI() {
     override var mainUrl = "https://netnaija.film"
     override var name = "NetNaija"
@@ -77,6 +89,7 @@ class NetNaija : MainAPI() {
     private val mapper: ObjectMapper = jacksonObjectMapper()
 
     private var jwtToken: String? = null
+    private val tokenMutex = Mutex()
 
     /** Generate X-Client-Token: {timestamp},{md5(reversed_timestamp)}. */
     private fun generateXClientToken(): String {
@@ -102,16 +115,23 @@ class NetNaija : MainAPI() {
         return null
     }
 
-    /** Ensure we have a JWT token; fetch one if needed. */
+    /**
+     * Ensure we have a JWT token; fetch one if needed. The rows all fire in
+     * parallel so the first fetch is single-flight, and it rides the smallest
+     * list endpoint since /home drags the whole curated page along.
+     */
     private suspend fun ensureToken(): String {
         jwtToken?.let { return it }
-        return try {
-            val headers = baseHeaders.toMutableMap()
-            headers["X-Client-Token"] = generateXClientToken()
-            val response = app.get("$bff/home", headers = headers)
-            extractTokenFromResponse(response) ?: ""
-        } catch (e: Exception) {
-            ""
+        return tokenMutex.withLock {
+            jwtToken?.let { return@withLock it }
+            try {
+                val headers = baseHeaders.toMutableMap()
+                headers["X-Client-Token"] = generateXClientToken()
+                val response = app.get("$bff/subject/trending?page=1&perPage=1", headers = headers)
+                extractTokenFromResponse(response) ?: ""
+            } catch (e: Exception) {
+                ""
+            }
         }
     }
 
@@ -132,7 +152,8 @@ class NetNaija : MainAPI() {
     /**
      * The site homepage rows come from one /home call that returns every
      * curated section at once. Rows are requested in parallel by the app so
-     * the response is cached behind a mutex and shared across them.
+     * the response is cached behind a mutex and shared across them. The map is
+     * keyed by the raw server title, cleaning is display only.
      */
     private val homeMutex = Mutex()
     private val homeCacheTtl = 10 * 60_000L
@@ -143,18 +164,72 @@ class NetNaija : MainAPI() {
     @Volatile
     private var homeCacheTime = 0L
 
-    private suspend fun homeSections(): Map<String, List<NetNaijaSubject>> {
-        if (homeSectionsCache.isNotEmpty() && System.currentTimeMillis() - homeCacheTime < homeCacheTtl) {
-            return homeSectionsCache
-        }
-        return homeMutex.withLock {
-            if (homeSectionsCache.isNotEmpty() && System.currentTimeMillis() - homeCacheTime < homeCacheTtl) {
-                return@withLock homeSectionsCache
+    // homepage rows built from the last /home response, empty until it lands
+    @Volatile
+    private var dynamicRows: List<MainPageData> = emptyList()
+
+    @Volatile
+    private var homeRowsFuture: CompletableFuture<Unit>? = null
+
+    private val doneFuture = CompletableFuture.completedFuture(Unit)
+
+    private fun homeRowsFresh(): Boolean =
+        homeSectionsCache.isNotEmpty() && System.currentTimeMillis() - homeCacheTime < homeCacheTtl
+
+    @Synchronized
+    private fun refreshHomeRowsAsync(): CompletableFuture<Unit> {
+        if (homeRowsFresh()) return doneFuture
+        homeRowsFuture?.let { return it }
+        val future = CompletableFuture<Unit>()
+        homeRowsFuture = future
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                homeSections()
+            } catch (e: Exception) {
+            } finally {
+                homeRowsFuture = null
+                future.complete(Unit)
             }
+        }
+        return future
+    }
+
+    /**
+     * mainPage is a plain getter and usually read on a worker thread while the
+     * homepage loads, so there it can wait briefly for an in-flight /home to
+     * finish and show the full row set on the first load. On the ui thread it
+     * just kicks a background refresh instead of blocking.
+     */
+    private fun awaitHomeRows() {
+        if (homeRowsFresh()) return
+        try {
+            refreshHomeRowsAsync().get(4000, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun buildDynamicRows(byTitle: Map<String, List<NetNaijaSubject>>): List<MainPageData> {
+        val used = HashSet<String>()
+        val rows = ArrayList<MainPageData>(byTitle.size)
+        byTitle.forEach { (rawTitle, _) ->
+            val display = cleanSectionTitle(rawTitle).ifBlank { rawTitle }
+            if (used.add(display.lowercase())) {
+                rows.add(MainPageData(name = display, data = "home:$rawTitle"))
+            }
+        }
+        return rows
+    }
+
+    private suspend fun homeSections(): Map<String, List<NetNaijaSubject>> {
+        if (homeRowsFresh()) return homeSectionsCache
+        return homeMutex.withLock {
+            if (homeRowsFresh()) return@withLock homeSectionsCache
             val sections = try {
                 val response = app.get("$bff/home", headers = authHeaders())
                 extractTokenFromResponse(response)
                 parseJson<NetNaijaHomeResponse>(response.text).data?.operatingList.orEmpty()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 emptyList()
             }
@@ -163,41 +238,30 @@ class NetNaija : MainAPI() {
                 val subjects = section.subjects.orEmpty()
                     .filter { !it.title.isNullOrBlank() && !it.detailPath.isNullOrBlank() }
                 if (subjects.isNotEmpty()) {
-                    byTitle[cleanSectionTitle(section.title ?: return@forEach)] = subjects
+                    byTitle[section.title ?: return@forEach] = subjects
                 }
             }
-            homeSectionsCache = byTitle
-            homeCacheTime = System.currentTimeMillis()
+            if (byTitle.isNotEmpty()) {
+                homeSectionsCache = byTitle
+                homeCacheTime = System.currentTimeMillis()
+                val rows = buildDynamicRows(byTitle)
+                // keep the previous list when nothing changed so row indexes
+                // stay stable for pagination between homepage refreshes
+                if (rows.map { it.data } != dynamicRows.map { it.data }) {
+                    dynamicRows = rows
+                }
+            }
             byTitle
         }
     }
 
-    /** Strip emoji and decoration the site mixes into section titles. */
-    private fun cleanSectionTitle(title: String): String =
-        title.replace(Regex("[^\\p{L}\\p{N} &+\\[\\]().'-]"), "").trim()
+    /** Called at plugin load so the rows are ready before the first homepage visit. */
+    fun warmUp() {
+        refreshHomeRowsAsync()
+    }
 
-    override val mainPage = mainPageOf(
+    private val staticMainPage = mainPageOf(
         "trending" to "Trending Now",
-        "home:Popular Series" to "Popular Series",
-        "home:Popular Movie" to "Popular Movies",
-        "home:Nollywood Movie" to "Nollywood Movies",
-        "home:Adult Animation" to "Adult Animation",
-        "home:Epic Fantasy" to "Epic Fantasy",
-        "home:Sitcom" to "Sitcom",
-        "home:Teen Romance" to "Teen Romance",
-        "home:Superhero Series" to "Superhero Series",
-        "home:BL Story" to "BL Story",
-        "home:Bet+" to "Bet+",
-        "home:Action&Thriller" to "Action & Thriller",
-        "home:Gangster" to "Gangster",
-        "home:Teen Fantasy" to "Teen Fantasy",
-        "home:K-Drama" to "K-Drama",
-        "home:C-Drama" to "C-Drama",
-        "home:Anime[English Dubbed]" to "Anime (English Dubbed)",
-        "home:Action Movies" to "Action Movies",
-        "home:Horror Movies" to "Horror Movies",
-        "home:Must-watch Black Shows" to "Must-Watch Black Shows",
-        "home:Romance" to "Romance Movies",
         "filter:$moviesChannel:Latest" to "Latest Movies",
         "filter:$seriesChannel:Latest" to "Latest Series",
         "filter:$animeChannel:Hottest" to "Anime",
@@ -205,6 +269,28 @@ class NetNaija : MainAPI() {
         "rank:$trendingAnimeRanking" to "Trending Anime",
         "rank:$top100AnimeRanking" to "Top 100 Anime",
     )
+
+    override val mainPage: List<MainPageData>
+        get() {
+            if (Looper.myLooper() === Looper.getMainLooper()) {
+                refreshHomeRowsAsync()
+            } else {
+                awaitHomeRows()
+            }
+            val used = HashSet<String>()
+            staticMainPage.forEach { used.add(it.name.lowercase()) }
+            val rows = ArrayList<MainPageData>(staticMainPage.size + dynamicRows.size)
+            rows.add(staticMainPage.first())
+            dynamicRows.forEach { row ->
+                if (used.add(row.name.lowercase())) rows.add(row)
+            }
+            rows.addAll(staticMainPage.drop(1))
+            return rows
+        }
+
+    /** Strip emoji and decoration the site mixes into section titles. */
+    private fun cleanSectionTitle(title: String): String =
+        title.replace(Regex("[^\\p{L}\\p{N} &+\\[\\]().'-]"), "").trim()
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("netnaija") ?: mainUrl
@@ -245,13 +331,17 @@ class NetNaija : MainAPI() {
                 }
 
                 key.startsWith("home:") -> {
-                    val title = cleanSectionTitle(key.removePrefix("home:"))
-                    val items = homeSections()[title].orEmpty().mapNotNull { it.toSearchResponse() }
+                    // curated site sections carry a fixed set of items
+                    if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
+                    val rawTitle = key.removePrefix("home:")
+                    val items = homeSections()[rawTitle].orEmpty().mapNotNull { it.toSearchResponse() }
                     newHomePageResponse(request.name, items, hasNext = false)
                 }
 
                 else -> newHomePageResponse(request.name, emptyList(), hasNext = false)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
