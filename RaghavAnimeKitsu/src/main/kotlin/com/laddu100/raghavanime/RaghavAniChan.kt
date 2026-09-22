@@ -16,7 +16,7 @@ import kotlinx.coroutines.delay
 import java.net.URLEncoder
 
 class RaghavAniChan : MainAPI() {
-    override var mainUrl = "https://anichan.net"
+    override var mainUrl = "https://anichan.to"
     override var name = "AniChan"
     override val hasMainPage = false
     override var lang = "en"
@@ -24,7 +24,6 @@ class RaghavAniChan : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
     private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class ServersEnvelope(
         @JsonProperty("servers") val servers: List<Server>? = null
@@ -78,14 +77,11 @@ class RaghavAniChan : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val category = if (isDub) "dub" else "sub"
-        Log.d("RaghavAnimeKitsu", "[AniChan] loadLinksByAnilistId: anilistId=$anilistId ep=$episode category=$category")
 
         val servers = watchServers(anilistId, episode, category)
         if (servers.isEmpty()) {
-            Log.d("RaghavAnimeKitsu", "[AniChan] no servers for anilistId=$anilistId ep=$episode category=$category")
             return false
         }
-        Log.d("RaghavAnimeKitsu", "[AniChan] parsed ${servers.size} servers: ${servers.joinToString { it.label ?: it.name ?: "?" }}")
 
         val linkHeaders = mapOf(
             "User-Agent" to USER_AGENT,
@@ -104,7 +100,6 @@ class RaghavAniChan : MainAPI() {
                     ?.firstOrNull { it.id.equals(category, true) && !it.src.isNullOrBlank() }
                     ?: continue
                 val src = track.src?.takeIf { it.startsWith("http") } ?: continue
-                Log.d("RaghavAnimeKitsu", "[AniChan] link: $label ${src.take(120)}")
                 callback.invoke(
                     newExtractorLink(name, label, src, type = ExtractorLinkType.M3U8) {
                         this.headers = linkHeaders
@@ -115,7 +110,6 @@ class RaghavAniChan : MainAPI() {
                 val stream = server.stream?.takeIf { it.startsWith("http") }
                     ?: server.stream?.takeIf { it.startsWith("/") }?.let { "$mainUrl$it" }
                     ?: continue
-                Log.d("RaghavAnimeKitsu", "[AniChan] link: $label ${stream.take(120)}")
                 callback.invoke(
                     newExtractorLink(name, label, stream, type = ExtractorLinkType.M3U8) {
                         this.headers = linkHeaders
@@ -132,7 +126,6 @@ class RaghavAniChan : MainAPI() {
                 }
             }
         }
-        Log.d("RaghavAnimeKitsu", "[AniChan] loadLinksByAnilistId done: found=$found")
         return found
     }
 
@@ -156,7 +149,6 @@ class RaghavAniChan : MainAPI() {
             }
             null
         } catch (e: Exception) {
-            Log.d("RaghavAnimeKitsu", "[AniChan] watch session failed: ${e.message}")
             null
         }
     }
@@ -164,21 +156,23 @@ class RaghavAniChan : MainAPI() {
     private suspend fun watchServers(anilistId: Int, ep: Int, category: String): List<Server> {
         val url = "$mainUrl/api/watch/servers?anilistId=$anilistId&ep=$ep&category=$category"
         repeat(SESSION_ATTEMPTS) {
-            val cookie = newWatchSession() ?: return emptyList()
-            try {
-                val resp = app.get(
-                    url,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Accept" to "application/json",
-                        "Cookie" to "anichan_ws=$cookie"
+            val cookie = newWatchSession()
+            if (cookie != null) {
+                try {
+                    val resp = app.get(
+                        url,
+                        headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Accept" to "application/json",
+                            "Cookie" to "anichan_ws=$cookie"
+                        )
                     )
-                )
-                if (resp.isSuccessful) {
-                    return mapper.readValue(resp.text, ServersEnvelope::class.java).servers ?: emptyList()
+                    if (resp.isSuccessful) {
+                        return mapper.readValue(resp.text, ServersEnvelope::class.java).servers ?: emptyList()
+                    }
+                } catch (e: Exception) {
+                    Log.d("RaghavAnimeKitsu", "[AniChan] servers attempt failed: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.d("RaghavAnimeKitsu", "[AniChan] watch servers failed: ${e.message}")
             }
             delay(400)
         }
@@ -197,7 +191,7 @@ class RaghavAniChan : MainAPI() {
                 "Referer" to "$mainUrl/"
             )
             val raceUrl = "https://vidhawk.buzz/api/stream/race?episode=$ep&audio=$audio&server=$server" +
-                "&anilistId=$anilistId&parentHost=anichan.net"
+                "&anilistId=$anilistId&parentHost=anichan.to"
             val raceResp = app.get(raceUrl, headers = headers)
             val race = mapper.readValue(raceResp.text, VidhawkRace::class.java)
 
@@ -211,7 +205,6 @@ class RaghavAniChan : MainAPI() {
             )
             mapper.readValue(playResp.text, VidhawkPlay::class.java).tracks ?: emptyList()
         } catch (e: Exception) {
-            Log.d("RaghavAnimeKitsu", "[AniChan] vidhawk resolve failed: ${e.message}")
             null
         }
     }

@@ -40,6 +40,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
+private const val TAG = "AniDB_CFBypass"
 
 private val CF_BLOCKER_PHRASES = listOf(
     "just a moment", "checking your browser", "ddos-guard",
@@ -292,7 +293,6 @@ class AniDbCFDialog(
                     val title = view?.title ?: ""
 
                     if (isChallengeTitle(title)) {
-                        Log.d("RaghavAnime", "[AniDb] CF: challenge page detected (title '${title.take(40)}')")
                         updateStatus("Challenge active - solve the CAPTCHA above")
                         return
                     }
@@ -330,7 +330,6 @@ class AniDbCFDialog(
 
         val ua = webView?.settings?.userAgentString ?: ""
         AniDbCFStore.save(cookieStr, ua, targetHost)
-        Log.d("RaghavAnime", "[AniDb] CF: cookies saved for $targetHost (len ${cookieStr.length})")
 
         updateStatus("Done! Cookies saved.")
 
@@ -437,21 +436,16 @@ suspend fun cfAppGet(
 
     if (!isCloudflareBlocked(response)) return response
 
-
-    Log.d("RaghavAnime", "[AniDb] CF: Cloudflare block detected (code=${response.code}) for ${url.take(80)}")
     cfBypassMutex.withLock {
 
         val cachedCookies = AniDbCFStore.getCookies()
         if (cachedCookies != null && AniDbCFStore.getHost() == targetHost) {
-            Log.d("RaghavAnime", "[AniDb] CF: have cached cookies for $targetHost, retrying with them")
             response = try { app.get(url, headers = buildCfHeaders()) } catch (e: Exception) { throw e }
             if (!isCloudflareBlocked(response)) return response
-            Log.d("RaghavAnime", "[AniDb] CF: still blocked after cached-cookie retry for $targetHost")
         }
 
         AniDbCFStore.clear()
         val bypassSuccess = showCFBypassDialogAndWait(url)
-        Log.d("RaghavAnime", "[AniDb] CF: bypass dialog finished: success=$bypassSuccess for $targetHost")
 
         if (!bypassSuccess) {
             return@withLock
@@ -460,7 +454,6 @@ suspend fun cfAppGet(
         for (attempt in 1..2) {
             response = try { app.get(url, headers = buildCfHeaders()) } catch (e: Exception) { throw e }
             if (!isCloudflareBlocked(response)) {
-                Log.d("RaghavAnime", "[AniDb] CF: retry succeeded on attempt $attempt for $targetHost")
                 return@withLock
             }
         }
@@ -471,6 +464,5 @@ suspend fun cfAppGet(
 }
 
 fun initAniDbCFBypass(context: Context) {
-    Log.d("RaghavAnime", "[AniDb] CF bypass init")
     AniDbCFStore.init(context)
 }

@@ -26,7 +26,6 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        Log.d("RaghavAnimeKitsu", "[Miruro][${name}] getUrl: url=${url.take(120)} referer=$referer")
         val stream = MegaPlayHelper.resolveStream(url, referer ?: "$mainUrl/", "Miruro")
         if (stream != null) {
             MegaPlayHelper.emitLinks(
@@ -52,7 +51,6 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 "Referer" to "$mainUrl/"
             )
             val m3u8 = app.get(url, referer = mainUrl, interceptor = resolver).url
-            Log.d("RaghavAnimeKitsu", "[Miruro][${name}] WebViewResolver resolved: ${m3u8.take(120)}")
             if (m3u8.contains(".m3u8")) {
                 generateM3u8(name, m3u8, mainUrl, headers = headers).forEach(callback)
             }
@@ -73,7 +71,6 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        Log.d("RaghavAnimeKitsu", "[Miruro][WebView] getUrl: source=$sourceName url=${url.take(120)} referer=${referer?.take(120)}")
         runCatching {
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
@@ -83,15 +80,12 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 timeout = 30_000L
             )
             val resolved = app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url
-            Log.d("RaghavAnimeKitsu", "[Miruro][WebView] resolution result: ${resolved.take(120)}")
             val headers = mapOf("Referer" to url)
             when {
                 resolved.contains(".m3u8", ignoreCase = true) -> {
-                    Log.d("RaghavAnimeKitsu", "[Miruro][WebView] m3u8 resolved, generating M3u8 links")
                     generateM3u8(name, resolved, mainUrl, headers = headers).forEach(callback)
                 }
                 resolved.contains(".mp4", ignoreCase = true) -> {
-                    Log.d("RaghavAnimeKitsu", "[Miruro][WebView] mp4 resolved, emitting direct link")
                     callback(
                         newExtractorLink(
                             source = name,
@@ -103,7 +97,6 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                             this.headers = headers
                         }
                     )
-                    Log.d("RaghavAnimeKitsu", "[Miruro][WebView] emit link: $name url=${resolved.take(120)}")
                 }
             }
         }.onFailure { error ->

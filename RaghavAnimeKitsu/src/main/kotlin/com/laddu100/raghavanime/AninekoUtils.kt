@@ -28,7 +28,6 @@ private val ANILIST_ID_QUERY = """
 """.trimIndent()
 
 suspend fun getAnilistId(title: String): Int? {
-    Log.d("RaghavAnimeKitsu", "[Anineko] getAnilistId querying anilist graphql for '$title'")
     return try {
         val requestData = mapOf(
             "query" to ANILIST_ID_QUERY,
@@ -41,7 +40,6 @@ suspend fun getAnilistId(title: String): Int? {
             requestBody = requestData
         ).parsedSafe<AninekoAniListSearchResponse>()
 
-        Log.d("RaghavAnimeKitsu", "[Anineko] anilist search for '$title' -> id ${res?.data?.Media?.id ?: "not found"}")
         res?.data?.Media?.id
     } catch (e: Exception) {
         Log.e("RaghavAnimeKitsu", "[Anineko] getAnilistId failed for '$title': ${e.message}")

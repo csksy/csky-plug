@@ -21,6 +21,8 @@ import kotlin.coroutines.resume
 object EnmaDecryptor {
     private const val TAG = "EnmaDecryptor"
     private const val PAGE_URL = "https://www.enma.lol/home"
+    const val USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
     private val mapper = ObjectMapper()
 
     @Volatile private var webView: WebView? = null
@@ -48,10 +50,6 @@ object EnmaDecryptor {
             readySignal?.completeExceptionally(Exception(error))
         }
 
-        @JavascriptInterface
-        fun log(msg: String) {
-            Log.d(TAG, "JS: $msg")
-        }
     }
 
     private val bridge = DecryptBridge()

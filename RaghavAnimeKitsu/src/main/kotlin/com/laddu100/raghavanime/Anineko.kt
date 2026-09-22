@@ -46,7 +46,6 @@ class Anineko : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         mainUrl = FirebaseDomainHelper.getDomain("anineko") ?: mainUrl
-        Log.d("RaghavAnimeKitsu", "[Anineko] getMainPage '${request.name}' page $page on $mainUrl")
         val url = "$mainUrl${request.data}?page=$page"
         val doc = app.get(url).document
 
@@ -71,17 +70,13 @@ class Anineko : MainAPI() {
             }
         }
 
-        Log.d("RaghavAnimeKitsu", "[Anineko] getMainPage '${request.name}' parsed ${list.size} items")
-
         return newHomePageResponse(request.name, list)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("anineko") ?: mainUrl
-        Log.d("RaghavAnimeKitsu", "[Anineko] search '$query' on $mainUrl")
         val url = "$mainUrl/browser?keyword=${query}"
         val doc = app.get(url).document
-        Log.d("RaghavAnimeKitsu", "[Anineko] search '$query' found ${doc.select(".nv-anime-card").size} cards")
 
         return doc.select(".nv-anime-card").mapNotNull { element ->
             val href = element.selectFirst("a.nv-anime-thumb")?.attr("href") ?: return@mapNotNull null
@@ -107,11 +102,9 @@ class Anineko : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("anineko") ?: mainUrl
-        Log.d("RaghavAnimeKitsu", "[Anineko] load '$url'")
         val doc = app.get(url).document
 
         val title = doc.selectFirst("h1")?.text() ?: return null
-        Log.d("RaghavAnimeKitsu", "[Anineko] loaded page for '$title'")
         val altTitle = doc.selectFirst(".nv-info-alt-title")?.text()
         val poster = doc.selectFirst("aside.nv-info-poster img")?.attr("src")
 
@@ -139,14 +132,12 @@ class Anineko : MainAPI() {
 
         val searchTitle = altTitle ?: title
         val anilistId = getAnilistId(searchTitle)
-        Log.d("RaghavAnimeKitsu", "[Anineko] anilist id for '$searchTitle': ${anilistId ?: "not found"}")
         var animeMetaData: MetaAnimeData? = null
         if (anilistId != null) {
             val aniZipUrl = "https://api.ani.zip/mappings?anilist_id=$anilistId"
             val aniZipResponse = app.get(aniZipUrl).text
             animeMetaData = parseAnimeData(aniZipResponse)
         }
-        Log.d("RaghavAnimeKitsu", "[Anineko] ani.zip metadata parsed=${animeMetaData != null} (${animeMetaData?.episodes?.size ?: 0} meta episodes)")
 
         val subEpisodes = mutableListOf<Episode>()
         val dubEpisodes = mutableListOf<Episode>()
@@ -197,7 +188,6 @@ class Anineko : MainAPI() {
             }
         }
 
-        Log.d("RaghavAnimeKitsu", "[Anineko] parsed ${subEpisodes.size} sub / ${dubEpisodes.size} dub episodes for '$title'")
         val fanartUrl = animeMetaData?.images?.firstOrNull { it.coverType == "Fanart" }?.url ?: background
 
         return newAnimeLoadResponse(title, url, tvType) {
@@ -221,11 +211,9 @@ class Anineko : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnimeKitsu", "[Anineko] loadLinks data '${data.take(80)}'")
         val parts = data.split("|")
         val url = parts[0]
         val audioType = parts.getOrNull(1) ?: "sub"
-        Log.d("RaghavAnimeKitsu", "[Anineko] resolving '$audioType' episode at $url")
 
         val doc = app.get(url).document
 
@@ -238,8 +226,6 @@ class Anineko : MainAPI() {
         } else {
             listOf(doc)
         }
-        if (panels.isEmpty()) Log.d("RaghavAnimeKitsu", "[Anineko] no server panels found in page, using whole document")
-        Log.d("RaghavAnimeKitsu", "[Anineko] ${panels.size} panels total, ${targetPanels.size} matched audio '$audioType'")
 
         var found = false
         targetPanels.forEach { panel ->
@@ -249,7 +235,6 @@ class Anineko : MainAPI() {
                 val serverName = serverBtn.ownText().trim()
                 val typeName = serverBtn.selectFirst("span")?.text()
                 val label = if (typeName != null) "Anineko $serverName - $typeName" else "Anineko $serverName"
-                Log.d("RaghavAnimeKitsu", "[Anineko] server '$serverName' video: ${videoUrl.take(80)}")
 
                 try {
                     if (RaghavEmbeds.resolveEmbed(videoUrl, "$mainUrl/", label, "Anineko", audioType, subtitleCallback, callback)) {
@@ -261,7 +246,6 @@ class Anineko : MainAPI() {
             }
         }
 
-        Log.d("RaghavAnimeKitsu", "[Anineko] loadLinks done for '$audioType' episode (found=$found)")
         return found
     }
 }

@@ -12,11 +12,8 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import java.net.URL
 import java.net.URLDecoder
 
-// embed hosts shared across the aggregated sources (aninami, anineko, anikage,
-// anikoto). each host family hides the playlist differently: vivibebe/bibiemb
-// inline it plainly, the otaku clones pack it with jsunpacker, playmogo is a
-// doodstream skin the built-in extractor already covers, and the megaplay
-// family needs its ajax flow.
+// embed hosts shared across the aggregated sources: vivibebe/bibiemb inline the
+// playlist, the otaku clones pack it with jsunpacker, megaplay needs its ajax flow
 object RaghavEmbeds {
 
     private const val TAG = "RaghavAnime"
@@ -44,7 +41,7 @@ object RaghavEmbeds {
         if (embedUrl.isBlank()) return false
         val host = hostOf(embedUrl)
         return try {
-            val resolved = when {
+            when {
                 host.endsWith("megaplay.buzz") || host.endsWith("vidwish.live") ||
                     host.endsWith("vidtube.site") || host.contains("megaplay-") ->
                     resolveMegaPlayFamily(embedUrl, referer, label, sourceTag, subtitleCallback, callback)
@@ -60,14 +57,11 @@ object RaghavEmbeds {
 
                 host.endsWith("playmogo.com") -> {
                     passSubtitle(embedUrl, subtitleCallback)
-                    val ok = loadExtractor(embedUrl, referer, subtitleCallback, callback)
-                    Log.d(TAG, "[$sourceTag] playmogo loadExtractor for '$label' -> $ok")
-                    ok
+                    loadExtractor(embedUrl, referer, subtitleCallback, callback)
                 }
 
                 else -> resolveGeneric(embedUrl, referer, label, sourceTag, subtitleCallback, callback)
             }
-            resolved
         } catch (e: Exception) {
             Log.e(TAG, "[$sourceTag] embed '$label' ($host) failed: ${e.message}")
             false
@@ -83,10 +77,7 @@ object RaghavEmbeds {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val stream = MegaPlayHelper.resolveStream(embedUrl, referer, sourceTag)
-        if (stream == null) {
-            Log.d(TAG, "[$sourceTag] megaplay family gave no stream for '$label' (${embedUrl.take(90)})")
-            return false
-        }
+            ?: return false
         return MegaPlayHelper.emitLinks(
             sourceTag, label, stream.m3u8, "https://${hostOf(embedUrl)}/",
             stream.subtitles, subtitleCallback, callback
@@ -103,9 +94,9 @@ object RaghavEmbeds {
     ): Boolean {
         passSubtitle(embedUrl, subtitleCallback)
         val html = fetchEmbedHtml(embedUrl, referer) ?: return false
-        val m3u8 = m3u8Regex.find(html)?.value
-        if (m3u8 == null) {
-            Log.d(TAG, "[$sourceTag] no inline m3u8 for '$label' (${hostOf(embedUrl)}, html len=${html.length})")
+        val m3u8 = m3u8Regex.find(html)?.value ?: return false
+        if (!streamPlayable(m3u8, "https://${hostOf(embedUrl)}/")) {
+            Log.d(TAG, "[$sourceTag] stream behind '$label' is not playable, skipping")
             return false
         }
         return emitM3u8(label, m3u8, "https://${hostOf(embedUrl)}/", subtitleCallback, callback)
@@ -122,16 +113,9 @@ object RaghavEmbeds {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val res = FlixResolver.resolve(embedUrl, referer)
-        if (res == null) {
-            Log.d(TAG, "[Embed] flix resolve failed for '$label'")
-            return false
-        }
+        val res = FlixResolver.resolve(embedUrl, referer) ?: return false
         val proxyMaster = FlixProxy.registerMaster(res.m3u8, res.masterContent, res.pkKey)
-        if (proxyMaster == null) {
-            Log.d(TAG, "[Embed] flix proxy unavailable for '$label'")
-            return false
-        }
+            ?: return false
         val hasEnglishAudio = res.masterContent.contains("""LANGUAGE="en"""") ||
             res.masterContent.contains("NAME=\"English\"")
         val hasOtherAudio = Regex("""TYPE=AUDIO[^\n]*LANGUAGE="(?!en)[^"]*""")
@@ -170,10 +154,7 @@ object RaghavEmbeds {
         if (m3u8 == null) {
             m3u8 = JsPacker.parseAndUnpack(html)?.let { m3u8Regex.find(it)?.value }
         }
-        if (m3u8 == null) {
-            Log.d(TAG, "[$sourceTag] no packed m3u8 for '$label' (${hostOf(embedUrl)}, html len=${html.length})")
-            return false
-        }
+        if (m3u8 == null) return false
         return emitM3u8(label, m3u8, "https://${hostOf(embedUrl)}/", subtitleCallback, callback)
     }
 
@@ -188,7 +169,6 @@ object RaghavEmbeds {
         val loaded = try {
             loadExtractor(embedUrl, referer, subtitleCallback, callback)
         } catch (e: Exception) {
-            Log.d(TAG, "[$sourceTag] loadExtractor threw for '$label' (${embedUrl.take(90)}): ${e.message}")
             false
         }
         if (loaded) return true
@@ -200,10 +180,7 @@ object RaghavEmbeds {
         if (m3u8 == null) {
             m3u8 = JsPacker.parseAndUnpack(html)?.let { m3u8Regex.find(it)?.value }
         }
-        if (m3u8 == null) {
-            Log.d(TAG, "[$sourceTag] generic embed gave nothing for '$label' (${hostOf(embedUrl)})")
-            return false
-        }
+        if (m3u8 == null) return false
         return emitM3u8(label, m3u8, "https://${hostOf(embedUrl)}/", subtitleCallback, callback)
     }
 
@@ -218,9 +195,47 @@ object RaghavEmbeds {
                 timeout = 15_000L
             ).text
         } catch (e: Exception) {
-            Log.d(TAG, "[Embed] page fetch failed for ${embedUrl.take(90)}: ${e.message}")
             null
         }
+    }
+
+    // vivibebe/bibiemb relay through third-party storage that dies quietly and
+    // 403s every segment, so probe once before offering the stream
+    suspend fun streamPlayable(m3u8Url: String, referer: String): Boolean {
+        return try {
+            val headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
+            val master = app.get(m3u8Url, headers = headers, timeout = 15_000L).text
+            if (!master.contains("#EXTM3U")) return false
+            val playlistUrl: String
+            val playlist: String
+            if (master.contains("#EXT-X-STREAM-INF")) {
+                val variant = firstEntry(master) ?: return false
+                playlistUrl = relativeTo(m3u8Url, variant)
+                playlist = app.get(playlistUrl, headers = headers, timeout = 15_000L).text
+                if (!playlist.contains("#EXTM3U")) return false
+            } else {
+                playlistUrl = m3u8Url
+                playlist = master
+            }
+            val seg = firstEntry(playlist) ?: return true
+            val probe = app.get(
+                relativeTo(playlistUrl, seg),
+                headers = headers + mapOf("Range" to "bytes=0-0"),
+                timeout = 15_000L
+            )
+            probe.code == 200 || probe.code == 206
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun firstEntry(playlist: String): String? =
+        playlist.lineSequence().map { it.trim() }
+            .firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+
+    private fun relativeTo(baseUrl: String, entry: String): String {
+        if (entry.startsWith("http://") || entry.startsWith("https://")) return entry
+        return baseUrl.substringBeforeLast("/") + "/" + entry.removePrefix("./")
     }
 
     private suspend fun emitM3u8(
@@ -260,7 +275,6 @@ object RaghavEmbeds {
                 ?.let { URLDecoder.decode(it, "UTF-8") } ?: "English"
             subtitleCallback.invoke(SubtitleFile(label, decoded))
         } catch (e: Exception) {
-            Log.d(TAG, "[Embed] subtitle passthrough failed for ${embedUrl.take(90)}: ${e.message}")
         }
     }
 }

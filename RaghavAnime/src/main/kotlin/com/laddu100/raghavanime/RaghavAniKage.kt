@@ -31,22 +31,45 @@ class RaghavAniKage : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // the stream proxy moved off gg.akage.lol (its dns delegation died); the
-    // site frontend now builds playback urls against prox.anikage.cc unless
-    // its environment overrides it, firebase can do the same for us
-    private val defaultProxyUrl = "https://prox.anikage.cc"
-
-    private val apiHeaders = mapOf("Accept" to "application/json")
+    private val apiHeaders = mapOf(
+        "Accept" to "application/json",
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
 
     private fun proxyHeaders() = mapOf("Referer" to "$mainUrl/", "Origin" to mainUrl)
 
-    private suspend fun proxyBase(): String {
-        return FirebaseDomainHelper.getDomain("anikageproxy")
-            ?: FirebaseDomainHelper.getDomain("akageproxy")
-            ?: defaultProxyUrl
-    }
-
     private fun apiUrl(): String = "$mainUrl/api/media/anime"
+
+    companion object {
+        // the stream proxy is a separate deployment the site swaps from time to
+        // time; every served page carries the current one in PUBLIC_PROXY_URL
+        @Volatile
+        private var cachedProxy: String? = null
+
+        @Volatile
+        private var cachedProxyAt = 0L
+
+        private suspend fun fallbackProxy(): String = FirebaseDomainHelper.getDomain("anikageproxy")
+            ?: FirebaseDomainHelper.getDomain("akageproxy")
+            ?: "https://og.bakayaro.live"
+
+        private suspend fun proxyBase(siteUrl: String): String {
+            if (System.currentTimeMillis() - cachedProxyAt < 10 * 60 * 1000L) {
+                return cachedProxy ?: fallbackProxy()
+            }
+            val parsed = try {
+                val html = app.get(siteUrl, timeout = 10_000L).text
+                Regex(""""PUBLIC_PROXY_URL"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
+            } catch (e: Exception) {
+                null
+            }
+            cachedProxyAt = System.currentTimeMillis()
+            if (parsed != null) {
+                cachedProxy = parsed
+            }
+            return cachedProxy ?: fallbackProxy()
+        }
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class BrowseResponse(
@@ -172,7 +195,6 @@ class RaghavAniKage : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        Log.d("RaghavAnime", "[AniKage] search: q='${query.take(40)}'")
         mainUrl = FirebaseDomainHelper.getDomain("anikage") ?: mainUrl
         if (query.isBlank()) return emptyList()
 
@@ -180,18 +202,15 @@ class RaghavAniKage : MainAPI() {
         val response = try {
             app.get(url, headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] search fetch failed: ${e.message}")
             return emptyList()
         }
 
         val parsed = try {
             parseJson<BrowseResponse>(response)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] search parse failed: ${e.message}")
             return emptyList()
         }
 
-        Log.d("RaghavAnime", "[AniKage] search: ${parsed.data.size} results")
         return parsed.data.mapNotNull { item ->
             val title = item.title?.english ?: item.title?.romaji ?: return@mapNotNull null
             val poster = item.coverImage?.extraLarge ?: item.coverImage?.large
@@ -205,20 +224,17 @@ class RaghavAniKage : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         mainUrl = FirebaseDomainHelper.getDomain("anikage") ?: mainUrl
         val slug = url.substringAfterLast("/")
-        Log.d("RaghavAnime", "[AniKage] load: slug=$slug")
 
         val detailResponse = try {
             app.get("${apiUrl()}/$slug", headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] load detail fetch failed: ${e.message}")
             return null
         }
 
         val detail = try {
             parseJson<AnimeDetailResponse>(detailResponse).anime
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] load detail parse failed: ${e.message}")
-            return null
+            null
         } ?: return null
 
         val title = detail.title?.english ?: detail.title?.romaji ?: return null
@@ -244,19 +260,15 @@ class RaghavAniKage : MainAPI() {
         val episodesResponse = try {
             app.get("${apiUrl()}/$slug/episodes", headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] episodes fetch failed: ${e.message}")
             return null
         }
 
-        // The API returns a plain JSON array of episodes
         val episodes = try {
             parseJson<List<EpisodeInfo>>(episodesResponse)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] episodes parse failed: ${e.message}")
             return null
         }
 
-        Log.d("RaghavAnime", "[AniKage] load: ${episodes.size} episodes")
         val subEpisodes = mutableListOf<Episode>()
         val dubEpisodes = mutableListOf<Episode>()
 
@@ -278,7 +290,6 @@ class RaghavAniKage : MainAPI() {
             })
         }
 
-        Log.d("RaghavAnime", "[AniKage] load ok: ${subEpisodes.size} sub, ${dubEpisodes.size} dub episodes")
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = poster
             this.backgroundPosterUrl = banner
@@ -304,7 +315,6 @@ class RaghavAniKage : MainAPI() {
         val epNum = parts[1]
         val type = parts[2]
 
-        Log.d("RaghavAnime", "[AniKage] loadLinks: slug=$slug ep=$epNum type=$type")
         return fetchSources(slug, epNum, type, subtitleCallback, callback)
     }
 
@@ -317,12 +327,8 @@ class RaghavAniKage : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnime", "[AniKage] loadLinksByAnilistId: anilist=$anilistId ep=$episode dub=$isDub title='${title.take(40)}'")
         val searchQueries = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
-        if (searchQueries.isEmpty()) {
-            Log.w("RaghavAnime", "[AniKage] no search queries for anilist=$anilistId")
-            return false
-        }
+        if (searchQueries.isEmpty()) return false
 
         var slug: String? = null
         for (query in searchQueries) {
@@ -332,38 +338,27 @@ class RaghavAniKage : MainAPI() {
             }
         }
 
-        if (slug == null) {
-            Log.w("RaghavAnime", "[AniKage] no slug match for anilist=$anilistId")
-            return false
-        }
+        if (slug == null) return false
 
-        Log.d("RaghavAnime", "[AniKage] anilist=$anilistId matched slug=$slug")
         val type = if (isDub) "dub" else "sub"
         return fetchSources(slug, episode.toString(), type, subtitleCallback, callback)
     }
 
     private suspend fun findSlugByAnilistId(query: String, anilistId: Int): String? {
-        Log.d("RaghavAnime", "[AniKage] findSlug: query='${query.take(40)}' anilist=$anilistId")
         val url = "${apiUrl()}/browse?q=${URLEncoder.encode(query, "UTF-8")}&sort=popularity&page=1&limit=25&adult=true"
         val response = try {
             app.get(url, headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] browse failed: ${e.message}")
             return null
         }
 
         val parsed = try {
             parseJson<BrowseResponse>(response)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] browse parse failed: ${e.message}")
             return null
         }
 
-        val match = parsed.data.firstOrNull { it.anilistId == anilistId }
-        if (match == null) {
-            Log.d("RaghavAnime", "[AniKage] no anilist match: ${parsed.data.size} results for '${query.take(40)}'")
-        }
-        return match?.slug?.takeIf { it.isNotBlank() }
+        return parsed.data.firstOrNull { it.anilistId == anilistId }?.slug?.takeIf { it.isNotBlank() }
     }
 
     private suspend fun getServerList(slug: String, epNum: String): List<ServerInfo> {
@@ -371,23 +366,15 @@ class RaghavAniKage : MainAPI() {
         val response = try {
             app.get(url, headers = apiHeaders).text
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] servers fetch failed for ep=$epNum: ${e.message}")
             return emptyList()
         }
 
         val parsed = try {
             parseJson<ServersResponse>(response)
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniKage] servers parse failed for ep=$epNum: ${e.message}")
             return emptyList()
         }
 
-        Log.d(
-            "RaghavAnime",
-            "[AniKage] getServerList: ${parsed.servers.joinToString { s ->
-                s.id + (if (s.subTypes.isEmpty()) "" else "[${s.subTypes.joinToString("+")}]")
-            }}"
-        )
         return parsed.servers.filter { it.id.isNotBlank() }
     }
 
@@ -408,47 +395,34 @@ class RaghavAniKage : MainAPI() {
     ): Boolean {
         mainUrl = FirebaseDomainHelper.getDomain("anikage") ?: mainUrl
         val lang = if (type == "dub") "dub" else "sub"
-        val proxy = proxyBase()
-        Log.d("RaghavAnime", "[AniKage] fetchSources: slug=$slug ep=$epNum lang=$lang proxy=$proxy")
+        val proxy = proxyBase(mainUrl)
 
         val servers = getServerList(slug, epNum)
-        if (servers.isEmpty()) {
-            Log.d("RaghavAnime", "[AniKage] no servers for slug=$slug ep=$epNum")
-            return false
-        }
+        if (servers.isEmpty()) return false
 
         var found = false
         for (server in servers) {
             val serverId = server.id
             if (serverId.isBlank()) continue
 
-            // The API enforces subTypes server-side anyway; skipping early saves a request
-            if (server.subTypes.isNotEmpty() && !server.subTypes.contains(lang)) {
-                Log.d("RaghavAnime", "[AniKage] skip server=$serverId: lang '$lang' not in subTypes=${server.subTypes.joinToString("+")}")
-                continue
-            }
+            // the API enforces subTypes server-side anyway; skipping early saves a request
+            if (server.subTypes.isNotEmpty() && !server.subTypes.contains(lang)) continue
 
             val providerId = server.providerId?.takeIf { it.isNotBlank() } ?: serverId
             try {
                 val sourcesUrl = "${apiUrl()}/$slug/episodes/$epNum/sources?provider=$providerId&lang=$lang&server=$serverId"
-                Log.d("RaghavAnime", "[AniKage] fetching sources: server=$serverId provider=$providerId")
 
                 val responseText = app.get(sourcesUrl, headers = apiHeaders).text
                 var parsed = parseSourcesResponse(responseText)
-                if (parsed == null) {
-                    Log.e("RaghavAnime", "[AniKage] sources parse failed for server=$serverId")
-                    continue
-                }
+                if (parsed == null) continue
 
                 // megg/dib can serve stale cached tokens that 401 on the proxy;
                 // a cache-busted re-request rotates them
                 if (parsed.stale == true) {
-                    Log.d("RaghavAnime", "[AniKage] server=$serverId stale cache, rotating tokens")
                     try {
                         val freshText = app.get("$sourcesUrl&_=${System.currentTimeMillis()}", headers = apiHeaders).text
                         parseSourcesResponse(freshText)?.let { parsed = it }
                     } catch (e: Exception) {
-                        Log.d("RaghavAnime", "[AniKage] token rotation failed for server=$serverId: ${e.message}")
                     }
                 }
 
@@ -459,7 +433,6 @@ class RaghavAniKage : MainAPI() {
                     val label = sub.label?.takeIf { it.isNotBlank() } ?: lang
                     val subUrl = buildProxyUrl(sub.file, proxy, "stream")
                     if (seenSubs.add(subUrl)) {
-                        Log.d("RaghavAnime", "[AniKage] subtitle: $label ${subUrl.take(80)}")
                         subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
                             this.headers = proxyHeaders()
                         })
@@ -480,11 +453,9 @@ class RaghavAniKage : MainAPI() {
                     val embedUrl = src.embedUrl?.takeIf { it.isNotBlank() }
                     if (embedUrl != null && usedEmbedUrls.add(embedUrl)) {
                         try {
-                            Log.d("RaghavAnime", "[AniKage] embed resolve: ${embedUrl.take(100)}")
                             val embedLabel = "AniKage ${src.server ?: serverId} ${subType}"
                             if (RaghavEmbeds.resolveEmbed(embedUrl, "$mainUrl/", embedLabel, "AniKage", lang, subtitleCallback, callback)) found = true
                         } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[AniKage] embed failed for server=$serverId: ${e.message}")
                         }
                     }
 
@@ -502,7 +473,6 @@ class RaghavAniKage : MainAPI() {
                             qualityClean?.replaceFirstChar { it.uppercase() }
                         ).joinToString(" ")
 
-                        Log.d("RaghavAnime", "[AniKage] link: $nameStr url=${videoUrl.take(100)}")
                         callback.invoke(
                             newExtractorLink(
                                 source = name,
@@ -523,24 +493,16 @@ class RaghavAniKage : MainAPI() {
                     if (usedEmbedUrls.add(embedUrl)) {
                         try {
                             val embedLabel = "AniKage ${embed.server ?: serverId} ${subType}"
-                            Log.d("RaghavAnime", "[AniKage] embeds[] resolve: ${embedUrl.take(100)}")
                             if (RaghavEmbeds.resolveEmbed(embedUrl, "$mainUrl/", embedLabel, "AniKage", lang, subtitleCallback, callback)) found = true
                         } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[AniKage] embeds[] failed for server=$serverId: ${e.message}")
                         }
                     }
                 }
-
-                Log.d(
-                    "RaghavAnime",
-                    "[AniKage] server=$serverId done: ${parsed.sources.size} sources, ${subtitles.size} subtitles, ${parsed.embeds?.size ?: 0} embeds"
-                )
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniKage] server=$serverId sources failed: ${e.message}")
+                Log.e("RaghavAnime", "[AniKage] server $serverId failed: ${e.message}")
             }
         }
 
-        Log.d("RaghavAnime", "[AniKage] fetchSources done: found=$found")
         return found
     }
 }

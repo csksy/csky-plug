@@ -45,12 +45,10 @@ class RaghavReAnime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("RaghavAnimeKitsu", "[ReAnime] loadLinksByAnilistId: anilistId=$anilistId ep=$episode ${if (isDub) "dub" else "sub"}")
         if (anilistId <= 0 || episode <= 0) return false
 
         val servers = flixServers(anilistId, episode)
         if (servers.isEmpty()) {
-            Log.d("RaghavAnimeKitsu", "[ReAnime] no flix servers for anilistId=$anilistId ep=$episode")
             return false
         }
 
@@ -59,7 +57,6 @@ class RaghavReAnime : MainAPI() {
             val server = s.serverName ?: "HD"
             link to server
         }.distinctBy { it.first.substringBefore("?") + it.second }
-        Log.d("RaghavAnimeKitsu", "[ReAnime] ${embeds.size} embeds for anilistId=$anilistId ep=$episode")
 
         val seenSubs = HashSet<String>()
         val seenUrls = HashSet<String>()
@@ -113,7 +110,6 @@ class RaghavReAnime : MainAPI() {
         }.forEach { it.join() }
 
         val found = any.get()
-        Log.d("RaghavAnimeKitsu", "[ReAnime] loadLinksByAnilistId done: found=$found")
         return found
     }
 
