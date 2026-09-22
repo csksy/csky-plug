@@ -107,7 +107,7 @@ object AniPMApi {
     }
 
     suspend fun bootstrap(id: Int, episode: Int, lang: String): AniPMBootstrap? {
-        val url = "$MAIN_URL/api/anime/playback-bootstrap/settlar/$id?ep=$episode&lang=$lang"
+        val url = "$MAIN_URL/api/anime/playback-bootstrap/settlar/$id?ep=$episode&lang=$lang&backup=1"
         val text = getJson(url) ?: return null
         return try {
             parseJson<AniPMBootstrap>(text)

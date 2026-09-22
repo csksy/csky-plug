@@ -91,7 +91,14 @@ data class AniPMFillerList(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniPMBootstrap(
-    @JsonProperty("settlarSelection") val settlarSelection: String? = null
+    @JsonProperty("settlarSelection") val settlarSelection: String? = null,
+    @JsonProperty("backupEmbed") val backupEmbed: AniPMBackupEmbed? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniPMBackupEmbed(
+    @JsonProperty("available") val available: Boolean? = null,
+    @JsonProperty("url") val url: String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)

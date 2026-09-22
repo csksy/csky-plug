@@ -134,18 +134,12 @@ class AniPMProvider : MainAPI() {
         val mixedNumbers = expandRanges(filler?.mixed)
         val packages = AniPMApi.packages(series.anilistId)
 
-        // megaplay backup is addressable by anilist or mal id, whichever the title carries
-        val backupIds = when {
-            !series.anilistId.isNullOrBlank() -> "ani${series.anilistId}"
-            !series.malId.isNullOrBlank() -> "mal${series.malId}"
-            else -> ""
-        }
-
         fun episodeData(number: Int, dub: Boolean): String {
             val channel = if (dub) "dub" else "sub"
             val hard = packages?.episodes?.get(number.toString())
                 ?.let { if (dub) it.dubhard == true else it.subhard == true } == true
-            return "$mainUrl|$id|$number|$channel|${if (hard) "hs" else ""}|$backupIds"
+            return "$mainUrl|$id|$number|$channel|${if (hard) "hs" else ""}" +
+                "|${series.anilistId.orEmpty()}|${series.malId.orEmpty()}"
         }
 
         fun episodeList(dub: Boolean): List<Episode> {
@@ -219,10 +213,11 @@ class AniPMProvider : MainAPI() {
         val episode = parts[2].toIntOrNull() ?: return false
         val channel = if (parts[3] == "dub") "dub" else "sub"
         val hardAvailable = parts.getOrNull(4) == "hs"
-        val backupIds = parts.getOrNull(5).orEmpty()
+        val anilistId = parts.getOrNull(5).orEmpty()
+        val malId = parts.getOrNull(6).orEmpty()
 
-        val selection = AniPMApi.bootstrap(seriesId, episode, channel)
-            ?.settlarSelection?.takeIf { it.isNotBlank() }
+        val bootstrap = AniPMApi.bootstrap(seriesId, episode, channel)
+        val selection = bootstrap?.settlarSelection?.takeIf { it.isNotBlank() }
 
         val seenLinks = ConcurrentHashMap.newKeySet<String>()
         val seenSubUrls = ConcurrentHashMap.newKeySet<String>()
@@ -248,7 +243,7 @@ class AniPMProvider : MainAPI() {
         }
         tasks.add {
             emitBackup(
-                backupIds, episode, channel,
+                bootstrap?.backupEmbed, anilistId, malId, episode, channel,
                 seenLinks, seenSubUrls, seenSubLabels,
                 subtitleCallback, callback
             )
@@ -325,7 +320,9 @@ class AniPMProvider : MainAPI() {
     }
 
     private suspend fun emitBackup(
-        backupIds: String,
+        backupEmbed: AniPMBackupEmbed?,
+        anilistId: String,
+        malId: String,
         episode: Int,
         channel: String,
         seenLinks: MutableSet<String>,
@@ -334,33 +331,35 @@ class AniPMProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // ids are carried as "ani123" / "mal123", megaplay serves both styles
-        if (backupIds.length < 4) return false
-        val kind = backupIds.take(3)
-        val id = backupIds.drop(3)
-        val embedUrl = "https://megaplay.buzz/stream/$kind/$id/$episode/$channel"
-
-        val stream = MegaPlayBackup.resolveStream(embedUrl, "$mainUrl/")
-        if (stream == null) {
-            Log.d(TAG, "megaplay resolve failed for $id ep$episode $channel")
-            return false
+        val candidates = mutableListOf<String>()
+        if (backupEmbed?.available == true) {
+            backupEmbed.url?.takeIf { it.startsWith("http") }?.let { candidates.add(it) }
+        }
+        // megaplay also serves ani and mal style addresses for titles the site
+        // lists without a backup entry
+        if (anilistId.isNotBlank()) {
+            candidates.add("https://megaplay.buzz/stream/ani/$anilistId/$episode/$channel")
+        }
+        if (malId.isNotBlank()) {
+            candidates.add("https://megaplay.buzz/stream/mal/$malId/$episode/$channel")
         }
 
         val playHeaders = mapOf(
             "User-Agent" to AniPMApi.USER_AGENT,
             "Referer" to MEGAPLAY_REFERER
         )
-        for ((label, url) in stream.subtitles) {
-            emitSubtitle(label, url, playHeaders, seenSubUrls, seenSubLabels, subtitleCallback)
-        }
 
-        if (!seenLinks.add(stream.m3u8)) return true
-        callback.invoke(
-            newExtractorLink(name, "MegaPlay", MegaPlayBackup.signUrl(stream.m3u8), type = ExtractorLinkType.M3U8) {
-                referer = MEGAPLAY_REFERER
-                headers = playHeaders
+        for (embedUrl in candidates) {
+            val stream = MegaPlayBackup.resolveStream(embedUrl, "$mainUrl/") ?: continue
+            for ((label, url) in stream.subtitles) {
+                emitSubtitle(label, url, playHeaders, seenSubUrls, seenSubLabels, subtitleCallback)
             }
-        )
-        return true
+            MegaPlayBackup.emitVariantLinks(
+                name, "MegaPlay", stream.m3u8, MEGAPLAY_REFERER, playHeaders, seenLinks, callback
+            )
+            return true
+        }
+        Log.d(TAG, "megaplay resolve failed for ep$episode $channel")
+        return false
     }
 }
