@@ -29,9 +29,9 @@ class SourceSettingsFragment : DialogFragment() {
     private val cText = Color.parseColor("#FFFFFF")
     private val cSub = Color.parseColor("#9AA4B8")
     private val cDim = Color.parseColor("#5C677D")
-    private val cAccent = Color.parseColor("#FFC53D")
-    private val cAccentDeep = Color.parseColor("#FF9800")
-    private val cOnDark = Color.parseColor("#1A1200")
+    private val cAccent = Color.parseColor("#FF4757")
+    private val cAccentDeep = Color.parseColor("#E0243F")
+    private val cOnDark = Color.parseColor("#1A0508")
 
     private val pending = HashSet<String>()
     private val switches = HashMap<String, SwitchCompat>()
@@ -103,8 +103,8 @@ class SourceSettingsFragment : DialogFragment() {
             countView = TextView(ctx).apply {
                 textSize = 11f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD)
                 background = GradientDrawable().apply {
-                    setStroke(1, Color.argb(0x30, 0xFF, 0xC5, 0x3D)); cornerRadius = 12 * d
-                    setColor(Color.argb(0x1A, 0xFF, 0xC5, 0x3D))
+                    setStroke(1, Color.argb(0x30, 0xFF, 0x47, 0x57)); cornerRadius = 12 * d
+                    setColor(Color.argb(0x1A, 0xFF, 0x47, 0x57))
                 }
                 setPadding(10.dp(), 4.dp(), 10.dp(), 4.dp())
             }
@@ -269,7 +269,7 @@ class SourceSettingsFragment : DialogFragment() {
             gradientType = GradientDrawable.RADIAL_GRADIENT
             gradientRadius = 280f * d
             setGradientCenter(0.15f, 0.05f)
-            colors = intArrayOf(Color.argb(0x26, 0xFF, 0xC5, 0x3D), Color.TRANSPARENT)
+            colors = intArrayOf(Color.argb(0x26, 0xFF, 0x47, 0x57), Color.TRANSPARENT)
         },
         GradientDrawable().apply {
             gradientType = GradientDrawable.RADIAL_GRADIENT

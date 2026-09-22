@@ -330,7 +330,9 @@ class NetNaija : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("netnaija") ?: mainUrl
         if (query.isBlank()) return emptyList()
-        // subject/search rejects anonymous tokens, the site reads the rendered page
+        // the search api needs the bearer from the token bootstrap, the rendered
+        // page only backs it up for when that call gets refused
+        apiSearch(query)?.let { return it }
         return try {
             val html = app.get(
                 "$mainUrl/search-result?keyword=${URLEncoder.encode(query, "UTF-8")}",
@@ -340,6 +342,21 @@ class NetNaija : MainAPI() {
         } catch (e: Exception) {
             Log.d(TAG, "search failed: ${e.message}")
             emptyList()
+        }
+    }
+
+    private suspend fun apiSearch(query: String): List<SearchResponse>? {
+        return try {
+            val response = app.post(
+                "$bff/subject/search",
+                json = mapOf("keyword" to query, "page" to 1, "perPage" to 20),
+                headers = authHeaders()
+            )
+            val parsed = parseJson<NetNaijaListResponse>(response.text)
+            parsed.data?.items?.mapNotNull { it.toSearchResponse() }
+        } catch (e: Exception) {
+            Log.d(TAG, "api search failed: ${e.message}")
+            null
         }
     }
 
