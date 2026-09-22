@@ -335,8 +335,7 @@ class AniPMProvider : MainAPI() {
         if (backupEmbed?.available == true) {
             backupEmbed.url?.takeIf { it.startsWith("http") }?.let { candidates.add(it) }
         }
-        // megaplay also serves ani and mal style addresses for titles the site
-        // lists without a backup entry
+        // megaplay also serves ani and mal style addresses when the site lists no backup
         if (anilistId.isNotBlank()) {
             candidates.add("https://megaplay.buzz/stream/ani/$anilistId/$episode/$channel")
         }

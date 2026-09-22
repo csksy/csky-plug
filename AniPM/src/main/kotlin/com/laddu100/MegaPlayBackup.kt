@@ -212,8 +212,7 @@ object MegaPlayBackup {
         return out
     }
 
-    // variants without a CODECS attribute crash the ffmpeg renderer during track
-    // selection, so each quality is handed to the player as its own media playlist
+    // codec-less variants crash the ffmpeg renderer at track selection, so each quality goes out as its own playlist
     suspend fun emitVariantLinks(
         source: String,
         label: String,
