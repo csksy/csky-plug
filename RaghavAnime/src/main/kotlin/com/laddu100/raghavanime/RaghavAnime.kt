@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -383,7 +384,7 @@ class RaghavAnime : MainAPI() {
         val searchTitles = listOfNotNull(title, jpTitle).filter { it.isNotBlank() }
         val targetTitles = listOfNotNull(title, jpTitle)
 
-        runAllAsync(
+        val sources = listOf<suspend () -> Unit>(
             {
                 try {
                     val epData = SourceCache.episodeData("Miruro", animeKey, isDub, episode) {
@@ -585,6 +586,12 @@ class RaghavAnime : MainAPI() {
                 }
             },
         )
+
+        // slow sources keep resolving in the background, but the player never waits past the cap
+        val waitJob = prefetchScope.launch {
+            runAllAsync(*sources.toTypedArray())
+        }
+        withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { waitJob.join() }
 
         return true
     }
@@ -898,6 +905,7 @@ class RaghavAnime : MainAPI() {
     companion object {
         var hasShownThisSession = false
         private val homePageCache = mutableMapOf<String, List<AniListMedia>>()
+        private const val MAX_SOURCE_WAIT_MS = 50_000L
     }
 }
 
