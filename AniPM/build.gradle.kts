@@ -1,9 +1,9 @@
-version = 1
+version = 2
 
 cloudstream {
     language = "en"
     description = "Anime with Sub & Dub from ani.pm"
-    authors = listOf("csksy")
+    authors = listOf("raghav")
 
     status = 1
     tvTypes = listOf(

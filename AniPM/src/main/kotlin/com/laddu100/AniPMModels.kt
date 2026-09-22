@@ -29,8 +29,6 @@ data class AniPMLatestItem(
     @JsonProperty("dub") val dub: Boolean? = null
 )
 
-// the api sends malId as a number and anilistId as a string, jackson coerces
-// both into String so the two shapes stay interchangeable
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniPMTitle(
     @JsonProperty("id") val id: Int? = null,
@@ -59,7 +57,7 @@ data class AniPMSeries(
     @JsonProperty("year") val year: Int? = null,
     @JsonProperty("score") val score: Double? = null,
     @JsonProperty("rating") val rating: String? = null,
-    @JsonProperty("duration") val duration: Int? = null,
+    @JsonProperty("duration") val duration: String? = null,
     @JsonProperty("status") val status: String? = null,
     @JsonProperty("type") val type: String? = null,
     @JsonProperty("genres") val genres: List<String>? = null,
@@ -93,15 +91,20 @@ data class AniPMFillerList(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AniPMBootstrap(
-    @JsonProperty("settlarSelection") val settlarSelection: String? = null,
-    @JsonProperty("effectiveLanguage") val effectiveLanguage: String? = null,
-    @JsonProperty("backupEmbed") val backupEmbed: AniPMBackupEmbed? = null
+    @JsonProperty("settlarSelection") val settlarSelection: String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class AniPMBackupEmbed(
-    @JsonProperty("available") val available: Boolean? = null,
-    @JsonProperty("url") val url: String? = null
+data class AniPMPackageEpisode(
+    @JsonProperty("sub") val sub: Boolean? = null,
+    @JsonProperty("dub") val dub: Boolean? = null,
+    @JsonProperty("subhard") val subhard: Boolean? = null,
+    @JsonProperty("dubhard") val dubhard: Boolean? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AniPMPackages(
+    @JsonProperty("episodes") val episodes: Map<String, AniPMPackageEpisode>? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)

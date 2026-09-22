@@ -14,7 +14,6 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addDubStatus
 import com.lagradost.cloudstream3.addEpisodes
-import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newAnimeLoadResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
@@ -44,7 +43,6 @@ class AniPMProvider : MainAPI() {
         const val SETTLAR_REFERER = "https://embed.settlar.io/"
         const val MEGAPLAY_REFERER = "https://megaplay.buzz/"
 
-        // titles the site had no real name for, the episode number is enough
         val genericEpisodeTitle = Regex("""^Episode \d+(\.\d+)?$""")
     }
 
@@ -106,7 +104,6 @@ class AniPMProvider : MainAPI() {
         return AniPMApi.search(query).mapNotNull { titleResponse(it) }
     }
 
-    // filler entries are [n] or [first, last] pairs of episode numbers
     private fun expandRanges(ranges: List<List<Int>>?): Set<Int> {
         if (ranges.isNullOrEmpty()) return emptySet()
         val out = mutableSetOf<Int>()
@@ -119,6 +116,14 @@ class AniPMProvider : MainAPI() {
         return out
     }
 
+    private fun parseDuration(value: String?): Int? {
+        if (value.isNullOrBlank()) return null
+        val hours = Regex("(\\d+)\\s*hr").find(value)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        val minutes = Regex("(\\d+)\\s*min").find(value)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        if (hours > 0 || minutes > 0) return hours * 60 + minutes
+        return value.filter { it.isDigit() }.takeIf { it.isNotEmpty() }?.toInt()
+    }
+
     override suspend fun load(url: String): LoadResponse? {
         val id = url.substringAfterLast("|").trim().toIntOrNull() ?: return null
         val series = AniPMApi.series(id) ?: return null
@@ -127,6 +132,21 @@ class AniPMProvider : MainAPI() {
         val filler = AniPMApi.filler(series.anilistId, title)
         val fillerNumbers = expandRanges(filler?.filler)
         val mixedNumbers = expandRanges(filler?.mixed)
+        val packages = AniPMApi.packages(series.anilistId)
+
+        // megaplay backup is addressable by anilist or mal id, whichever the title carries
+        val backupIds = when {
+            !series.anilistId.isNullOrBlank() -> "ani${series.anilistId}"
+            !series.malId.isNullOrBlank() -> "mal${series.malId}"
+            else -> ""
+        }
+
+        fun episodeData(number: Int, dub: Boolean): String {
+            val channel = if (dub) "dub" else "sub"
+            val hard = packages?.episodes?.get(number.toString())
+                ?.let { if (dub) it.dubhard == true else it.subhard == true } == true
+            return "$mainUrl|$id|$number|$channel|${if (hard) "hs" else ""}|$backupIds"
+        }
 
         fun episodeList(dub: Boolean): List<Episode> {
             return series.episodes.orEmpty().mapNotNull { ep ->
@@ -139,7 +159,7 @@ class AniPMProvider : MainAPI() {
                     else -> ""
                 }
                 val realName = ep.title?.takeIf { it.isNotBlank() && !genericEpisodeTitle.matches(it) }
-                newEpisode("$mainUrl|$id|$number|${if (dub) "dub" else "sub"}") {
+                newEpisode(episodeData(number, dub)) {
                     this.name = realName?.let { "$it$mark" } ?: "Episode $number$mark"
                     this.episode = number
                     this.description = ep.description?.takeIf { it.isNotBlank() }
@@ -152,8 +172,6 @@ class AniPMProvider : MainAPI() {
         val dubEpisodes = episodeList(dub = true)
 
         val format = series.type?.lowercase()
-        // the app hides the sub/dub switcher on movie types, so dual audio
-        // movies are typed as regular anime to keep both reachable
         val tvType = when {
             format == "movie" && dubEpisodes.isNotEmpty() -> TvType.Anime
             format == "movie" -> TvType.AnimeMovie
@@ -161,9 +179,12 @@ class AniPMProvider : MainAPI() {
             else -> TvType.Anime
         }
 
-        val showStatus = when (series.status?.lowercase()) {
-            "releasing", "ongoing" -> ShowStatus.Ongoing
-            "finished", "completed" -> ShowStatus.Completed
+        val statusLower = series.status?.lowercase()
+        val showStatus = when {
+            statusLower == null -> null
+            statusLower.startsWith("releasing") || statusLower.startsWith("ongoing") ||
+                statusLower.startsWith("currently") -> ShowStatus.Ongoing
+            statusLower.startsWith("finished") || statusLower.startsWith("completed") -> ShowStatus.Completed
             else -> null
         }
 
@@ -177,7 +198,7 @@ class AniPMProvider : MainAPI() {
             tags = series.genres.orEmpty()
             series.score?.takeIf { it > 0 }?.let { score = Score.from10(it.toString()) }
             showStatus?.let { this.showStatus = it }
-            duration = series.duration
+            duration = parseDuration(series.duration)
             contentRating = series.rating?.takeIf { it.isNotBlank() }
             series.anilistId?.toIntOrNull()?.let { addAniListId(it) }
             series.malId?.toIntOrNull()?.let { addMalId(it) }
@@ -192,34 +213,49 @@ class AniPMProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data: "<mainUrl>|<seriesId>|<episode>|<sub|dub>"
         val parts = data.split("|")
         if (parts.size < 4) return false
-        val seriesId = parts[parts.size - 3].toIntOrNull() ?: return false
-        val episode = parts[parts.size - 2].toIntOrNull() ?: return false
-        val channel = if (parts.last() == "dub") "dub" else "sub"
+        val seriesId = parts[1].toIntOrNull() ?: return false
+        val episode = parts[2].toIntOrNull() ?: return false
+        val channel = if (parts[3] == "dub") "dub" else "sub"
+        val hardAvailable = parts.getOrNull(4) == "hs"
+        val backupIds = parts.getOrNull(5).orEmpty()
+
+        val selection = AniPMApi.bootstrap(seriesId, episode, channel)
+            ?.settlarSelection?.takeIf { it.isNotBlank() }
 
         val seenLinks = ConcurrentHashMap.newKeySet<String>()
         val seenSubUrls = ConcurrentHashMap.newKeySet<String>()
         val seenSubLabels = ConcurrentHashMap.newKeySet<String>()
 
+        val tasks = mutableListOf<suspend () -> Boolean>()
+        tasks.add {
+            emitSettlar(
+                selection, episode, channel, name,
+                seenLinks, seenSubUrls, seenSubLabels,
+                subtitleCallback, callback
+            )
+        }
+        // burned in subtitle channel, only a handful of titles carry it
+        if (hardAvailable) {
+            tasks.add {
+                emitSettlar(
+                    selection, episode, "${channel}hard", "$name Hardsub",
+                    seenLinks, seenSubUrls, seenSubLabels,
+                    subtitleCallback, callback
+                )
+            }
+        }
+        tasks.add {
+            emitBackup(
+                backupIds, episode, channel,
+                seenLinks, seenSubUrls, seenSubLabels,
+                subtitleCallback, callback
+            )
+        }
+
         val results = coroutineScope {
-            listOf(
-                async {
-                    emitSettlar(
-                        seriesId, episode, channel,
-                        seenLinks, seenSubUrls, seenSubLabels,
-                        subtitleCallback, callback
-                    )
-                },
-                async {
-                    emitBackup(
-                        seriesId, episode, channel,
-                        seenLinks, seenSubUrls, seenSubLabels,
-                        subtitleCallback, callback
-                    )
-                }
-            ).awaitAll()
+            tasks.map { async { it() } }.awaitAll()
         }
         return results.any { it }
     }
@@ -234,8 +270,6 @@ class AniPMProvider : MainAPI() {
     ) {
         if (!url.startsWith("http")) return
         if (!seenUrls.add(url)) return
-        // settlar and its megaplay mirror carry the same track list under
-        // different urls, the label keeps one entry per language in the picker
         if (!seenLabels.add(label.trim().lowercase())) return
         try {
             subtitleCallback.invoke(newSubtitleFile(label, url) {
@@ -247,19 +281,18 @@ class AniPMProvider : MainAPI() {
     }
 
     private suspend fun emitSettlar(
-        seriesId: Int,
+        selection: String?,
         episode: Int,
         channel: String,
+        label: String,
         seenLinks: MutableSet<String>,
         seenSubUrls: MutableSet<String>,
         seenSubLabels: MutableSet<String>,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val selection = AniPMApi.bootstrap(seriesId, episode, channel)
-            ?.settlarSelection?.takeIf { it.isNotBlank() }
         if (selection == null) {
-            Log.d(TAG, "no settlar selection for $seriesId ep$episode $channel")
+            Log.d(TAG, "no settlar selection for ep$episode $channel")
             return false
         }
 
@@ -280,21 +313,10 @@ class AniPMProvider : MainAPI() {
             )
         }
 
-        // read the master once so the link carries its real resolution,
-        // an unreachable master still gets emitted and lets the player decide
-        val quality = try {
-            val text = app.get(master, headers = playHeaders, timeout = 15_000L).text
-            Regex("""RESOLUTION=\d+x(\d+)""").find(text)?.groupValues?.get(1)?.toIntOrNull()
-        } catch (e: Exception) {
-            Log.d(TAG, "settlar master fetch failed: ${e.message}")
-            null
-        }
-
         if (seenLinks.add(master)) {
             callback.invoke(
-                newExtractorLink(name, "Ani.pm", master, type = ExtractorLinkType.M3U8) {
+                newExtractorLink(name, label, master, type = ExtractorLinkType.M3U8) {
                     referer = SETTLAR_REFERER
-                    quality?.let { this.quality = it }
                     headers = playHeaders
                 }
             )
@@ -303,7 +325,7 @@ class AniPMProvider : MainAPI() {
     }
 
     private suspend fun emitBackup(
-        seriesId: Int,
+        backupIds: String,
         episode: Int,
         channel: String,
         seenLinks: MutableSet<String>,
@@ -312,26 +334,33 @@ class AniPMProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val embed = AniPMApi.bootstrap(seriesId, episode, channel, backup = true)
-            ?.backupEmbed ?: return false
-        if (embed.available != true) return false
-        val embedUrl = embed.url?.takeIf { it.startsWith("http") } ?: return false
+        // ids are carried as "ani123" / "mal123", megaplay serves both styles
+        if (backupIds.length < 4) return false
+        val kind = backupIds.take(3)
+        val id = backupIds.drop(3)
+        val embedUrl = "https://megaplay.buzz/stream/$kind/$id/$episode/$channel"
 
         val stream = MegaPlayBackup.resolveStream(embedUrl, "$mainUrl/")
         if (stream == null) {
-            Log.d(TAG, "megaplay resolve failed for $seriesId ep$episode $channel")
+            Log.d(TAG, "megaplay resolve failed for $id ep$episode $channel")
             return false
         }
 
-        val subHeaders = mapOf(
+        val playHeaders = mapOf(
             "User-Agent" to AniPMApi.USER_AGENT,
             "Referer" to MEGAPLAY_REFERER
         )
         for ((label, url) in stream.subtitles) {
-            emitSubtitle(label, url, subHeaders, seenSubUrls, seenSubLabels, subtitleCallback)
+            emitSubtitle(label, url, playHeaders, seenSubUrls, seenSubLabels, subtitleCallback)
         }
 
         if (!seenLinks.add(stream.m3u8)) return true
-        return MegaPlayBackup.emitLinks(name, "MegaPlay", stream.m3u8, MEGAPLAY_REFERER, callback)
+        callback.invoke(
+            newExtractorLink(name, "MegaPlay", MegaPlayBackup.signUrl(stream.m3u8), type = ExtractorLinkType.M3U8) {
+                referer = MEGAPLAY_REFERER
+                headers = playHeaders
+            }
+        )
+        return true
     }
 }
