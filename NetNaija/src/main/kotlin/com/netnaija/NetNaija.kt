@@ -17,6 +17,7 @@ import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
+import com.lagradost.api.Log
 import android.os.Looper
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import kotlinx.coroutines.CancellationException
@@ -32,17 +33,6 @@ import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
-// wefeed platform (same as moviebox, different deployment).
-// any api response carries an x-user jwt used as bearer auth; until one shows
-// up a timestamp+md5 client token is sent instead. the play api also rejects
-// requests without X-Source: webNetnaijaSite, and mp4 urls want the site referer.
-// subject/search rejects anonymous tokens, the site only gets results through
-// the server rendered search page - so the plugin reads that page too.
-//
-// the /home sections are targeted per visitor region, an indian visitor gets
-// bollywood/south indian/hollywood rows while the default list is nollywood
-// and k-drama flavored, so the homepage rows are built from whatever /home
-// actually returns instead of a fixed list.
 class NetNaija : MainAPI() {
     override var mainUrl = "https://netnaija.film"
     override var name = "NetNaija"
@@ -59,6 +49,7 @@ class NetNaija : MainAPI() {
 
     private val apiUrl = "https://h5-api.aoneroom.com"
     private val bff = "$apiUrl/wefeed-h5api-bff"
+    private val TAG = "NetNaija"
 
     private val ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
@@ -91,7 +82,6 @@ class NetNaija : MainAPI() {
     private var jwtToken: String? = null
     private val tokenMutex = Mutex()
 
-    /** Generate X-Client-Token: {timestamp},{md5(reversed_timestamp)}. */
     private fun generateXClientToken(): String {
         val ts = System.currentTimeMillis() / 1000
         val reversed = ts.toString().reversed()
@@ -100,7 +90,6 @@ class NetNaija : MainAPI() {
         return "$ts,$md5"
     }
 
-    /** Extract JWT from x-user response header (JSON: {"token":"eyJ..."}). */
     private fun extractTokenFromResponse(response: com.lagradost.nicehttp.NiceResponse): String? {
         try {
             val xUser = response.headers?.get("x-user") ?: return null
@@ -111,15 +100,12 @@ class NetNaija : MainAPI() {
                 return token
             }
         } catch (e: Exception) {
+            Log.d(TAG, "x-user parse failed: ${e.message}")
         }
         return null
     }
 
-    /**
-     * Ensure we have a JWT token; fetch one if needed. The rows all fire in
-     * parallel so the first fetch is single-flight, and it rides the smallest
-     * list endpoint since /home drags the whole curated page along.
-     */
+    // rows all want a token at once, single flight on the lightest list endpoint
     private suspend fun ensureToken(): String {
         jwtToken?.let { return it }
         return tokenMutex.withLock {
@@ -130,12 +116,13 @@ class NetNaija : MainAPI() {
                 val response = app.get("$bff/subject/trending?page=1&perPage=1", headers = headers)
                 extractTokenFromResponse(response) ?: ""
             } catch (e: Exception) {
+                Log.d(TAG, "token bootstrap failed: ${e.message}")
                 ""
             }
         }
     }
 
-    /** Build auth headers with BOTH Cookie and Bearer (play needs Cookie, lists need Bearer). */
+    // play calls need the cookie, list calls need the bearer
     private suspend fun authHeaders(extra: Map<String, String> = emptyMap()): Map<String, String> {
         val token = ensureToken()
         val headers = baseHeaders.toMutableMap()
@@ -149,12 +136,8 @@ class NetNaija : MainAPI() {
         return headers
     }
 
-    /**
-     * The site homepage rows come from one /home call that returns every
-     * curated section at once. Rows are requested in parallel by the app so
-     * the response is cached behind a mutex and shared across them. The map is
-     * keyed by the raw server title, cleaning is display only.
-     */
+    // one /home response holds every section and the rows load in parallel,
+    // so cache it behind the mutex and share across them
     private val homeMutex = Mutex()
     private val homeCacheTtl = 10 * 60_000L
 
@@ -164,7 +147,7 @@ class NetNaija : MainAPI() {
     @Volatile
     private var homeCacheTime = 0L
 
-    // homepage rows built from the last /home response, empty until it lands
+    // /home sections are region targeted, build the rows from whatever it returns
     @Volatile
     private var dynamicRows: List<MainPageData> = emptyList()
 
@@ -186,6 +169,7 @@ class NetNaija : MainAPI() {
             try {
                 homeSections()
             } catch (e: Exception) {
+                Log.d(TAG, "home refresh failed: ${e.message}")
             } finally {
                 homeRowsFuture = null
                 future.complete(Unit)
@@ -194,17 +178,13 @@ class NetNaija : MainAPI() {
         return future
     }
 
-    /**
-     * mainPage is a plain getter and usually read on a worker thread while the
-     * homepage loads, so there it can wait briefly for an in-flight /home to
-     * finish and show the full row set on the first load. On the ui thread it
-     * just kicks a background refresh instead of blocking.
-     */
+    // block briefly for the first /home on worker threads, never on the ui thread
     private fun awaitHomeRows() {
         if (homeRowsFresh()) return
         try {
             refreshHomeRowsAsync().get(4000, TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
+            Log.d(TAG, "home rows wait failed: ${e.message}")
         }
     }
 
@@ -231,6 +211,7 @@ class NetNaija : MainAPI() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                Log.d(TAG, "home fetch failed: ${e.message}")
                 emptyList()
             }
             val byTitle = LinkedHashMap<String, List<NetNaijaSubject>>()
@@ -245,8 +226,7 @@ class NetNaija : MainAPI() {
                 homeSectionsCache = byTitle
                 homeCacheTime = System.currentTimeMillis()
                 val rows = buildDynamicRows(byTitle)
-                // keep the previous list when nothing changed so row indexes
-                // stay stable for pagination between homepage refreshes
+                // keep the old list when unchanged so row indexes stay stable for pagination
                 if (rows.map { it.data } != dynamicRows.map { it.data }) {
                     dynamicRows = rows
                 }
@@ -255,7 +235,6 @@ class NetNaija : MainAPI() {
         }
     }
 
-    /** Called at plugin load so the rows are ready before the first homepage visit. */
     fun warmUp() {
         refreshHomeRowsAsync()
     }
@@ -288,7 +267,7 @@ class NetNaija : MainAPI() {
             return rows
         }
 
-    /** Strip emoji and decoration the site mixes into section titles. */
+    // the site decorates section titles with emoji and symbols
     private fun cleanSectionTitle(title: String): String =
         title.replace(Regex("[^\\p{L}\\p{N} &+\\[\\]().'-]"), "").trim()
 
@@ -343,6 +322,7 @@ class NetNaija : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            Log.d(TAG, "main page $key failed: ${e.message}")
             newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
     }
@@ -350,6 +330,7 @@ class NetNaija : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         mainUrl = FirebaseDomainHelper.getDomain("netnaija") ?: mainUrl
         if (query.isBlank()) return emptyList()
+        // subject/search rejects anonymous tokens, the site reads the rendered page
         return try {
             val html = app.get(
                 "$mainUrl/search-result?keyword=${URLEncoder.encode(query, "UTF-8")}",
@@ -357,6 +338,7 @@ class NetNaija : MainAPI() {
             ).text
             parseSearchPage(html)
         } catch (e: Exception) {
+            Log.d(TAG, "search failed: ${e.message}")
             emptyList()
         }
     }
@@ -371,6 +353,7 @@ class NetNaija : MainAPI() {
         val root = try {
             mapper.readTree(match.groupValues[1])
         } catch (e: Exception) {
+            Log.d(TAG, "search page json failed: ${e.message}")
             return emptyList()
         }
         if (root !is ArrayNode) return emptyList()
@@ -390,11 +373,7 @@ class NetNaija : MainAPI() {
         return emptyList()
     }
 
-    /**
-     * Nuxt flattens the rendered page state into a single array where every
-     * object and array holds indexes into that array instead of values. Each
-     * index resolves one level, primitives are the leaves.
-     */
+    // nuxt flattens the page state into one array of indexes, resolve one level at a time
     private fun resolveNuxtNode(arr: ArrayNode, idx: Int, depth: Int): Any? {
         if (idx < 0 || idx >= arr.size() || depth > 8) return null
         return when (val node = arr.get(idx)) {
@@ -476,6 +455,8 @@ class NetNaija : MainAPI() {
                 )
             }
 
+            NetNaijaSources.register(dubs.mapNotNull { sourceLabel(it) })
+
             if (tvType == TvType.Movie || seasons.isEmpty()) {
                 // Movie - store all dub subjectIds so loadLinks can fetch each audio
                 val movieData = NetNaijaEpisodeData(dubs = dubs, season = 0, episode = 0).toJson()
@@ -517,6 +498,7 @@ class NetNaija : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            Log.d(TAG, "load failed: ${e.message}")
             null
         }
     }
@@ -531,6 +513,7 @@ class NetNaija : MainAPI() {
             val items = parseJson<NetNaijaListResponse>(response.text).data?.items.orEmpty()
             items.filter { it.detailPath != detailPath }.mapNotNull { it.toSearchResponse() }.take(12)
         } catch (e: Exception) {
+            Log.d(TAG, "recommendations failed: ${e.message}")
             emptyList()
         }
     }
@@ -544,21 +527,23 @@ class NetNaija : MainAPI() {
         val epData = try {
             parseJson<NetNaijaEpisodeData>(data)
         } catch (e: Exception) {
+            Log.d(TAG, "episode data parse failed: ${e.message}")
             return false
         }
 
-        val dubs = epData.dubs
+        NetNaijaSources.register(epData.dubs.mapNotNull { sourceLabel(it) })
+
+        // a source turned off in the settings is skipped entirely, its play
+        // endpoint is never touched
+        val dubs = epData.dubs.filter { dub ->
+            sourceLabel(dub)?.let { NetNaijaSources.isEnabled(it) } == true
+        }
         var found = false
 
-        // soft subtitles only hang off the original audio stream, remember it
-        // and pull them once at the end
+        // soft subs only hang off the original audio stream, pull them once at the end
         var captionStream: Triple<String, String, String>? = null
 
-        // Each dub (audio language) is a separate source, labeled with language name.
-        // This follows the same pattern as MovieBox (phisher98).
-        // CloudStream's audioTracks field uses SingleSampleMediaSource which only
-        // works with single-file audio URLs (like YouTube), NOT DASH manifests.
-        // So we must use separate sources for each audio language.
+        // one source per audio track, cloudstream's audioTracks can't handle dash manifests
         dubs.forEach { dub ->
             val dubSubjectId = dub.subjectId ?: return@forEach
             val dubDetailPath = dub.detailPath ?: return@forEach
@@ -579,10 +564,10 @@ class NetNaija : MainAPI() {
                 extractTokenFromResponse(resp)
                 parseJson<NetNaijaPlayResponse>(resp.text).data
             } catch (e: Exception) {
+                Log.d(TAG, "play fetch failed for $label: ${e.message}")
                 return@forEach
             } ?: return@forEach
 
-            // MP4 streams
             val mp4Streams = playData.streams ?: emptyList()
             mp4Streams.forEach { stream ->
                 val url = stream.url ?: return@forEach
@@ -621,7 +606,6 @@ class NetNaija : MainAPI() {
                 }
             }
 
-            // DASH stream
             playData.dash?.forEach { dashStream ->
                 val url = dashStream.url ?: return@forEach
                 callback.invoke(
@@ -638,7 +622,6 @@ class NetNaija : MainAPI() {
                 found = true
             }
 
-            // HLS stream
             playData.hls?.forEach { hlsStream ->
                 val url = hlsStream.url ?: return@forEach
                 val resolution = hlsStream.resolutions ?: "0"
@@ -674,7 +657,7 @@ class NetNaija : MainAPI() {
         return found
     }
 
-    /** "Original Audio" -> Original, "English dub" -> English Dub, "Arabic sub" -> Arabic Hardsub. */
+    // "English dub" -> English Dub, "Arabic sub" -> Arabic Hardsub
     private fun sourceLabel(dub: NetNaijaDub): String? {
         val lanName = dub.lanName ?: return null
         if (dub.original == true) return "Original"
@@ -688,7 +671,6 @@ class NetNaija : MainAPI() {
         return if (dub.type == 1) "$pretty Hardsub" else "$pretty Dub"
     }
 
-    /** Fetch and emit all available subtitles. */
     private suspend fun fetchSubtitles(
         streamId: String,
         subjectId: String,
@@ -706,6 +688,7 @@ class NetNaija : MainAPI() {
                 subtitleCallback.invoke(newSubtitleFile(lang, url))
             }
         } catch (e: Exception) {
+            Log.d(TAG, "caption fetch failed: ${e.message}")
         }
     }
 
