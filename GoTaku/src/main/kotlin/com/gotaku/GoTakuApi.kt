@@ -1,5 +1,6 @@
 package com.gotaku
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -54,16 +55,13 @@ object GoTakuApi {
         return null
     }
 
-    suspend fun <T> fetchParsed(url: String, k: Boolean = false): T? {
+    // k endpoints answer sealed, the rest speak plain json, callers parse the
+    // text themselves so the concrete type always reaches parseJson
+    private suspend fun fetchText(url: String, k: Boolean = false): String? {
         val fullUrl = if (k) "$url${if (url.contains('?')) '&' else '?'}k=1" else url
         val body = getBody(fullUrl, siteHeaders()) ?: return null
         val plain = GoTakuCrypto.unseal(body) ?: body
-        return try {
-            parseJson(String(plain, Charsets.UTF_8))
-        } catch (e: Exception) {
-            Log.d(TAG, "response parse failed for $url: ${e.message}")
-            null
-        }
+        return String(plain, Charsets.UTF_8)
     }
 
     class ManifestInfo(
@@ -106,6 +104,7 @@ object GoTakuApi {
         }
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class ManifestResponse(
         val title: String? = null,
         val source: String? = null,
@@ -115,16 +114,20 @@ object GoTakuApi {
         val stamp: String? = null,
         val obf: Obf? = null
     ) {
+        @JsonIgnoreProperties(ignoreUnknown = true)
         class Obf(val segmentBytes: Int = 0, val version: Int = 0)
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class EmbedData(
         val url: String? = null,
         val skip: Map<String, List<Int>>? = null
     )
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class EmbedResponse(val data: EmbedData? = null)
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class EpisodeInfo(
         val id: String? = null,
         val number: Int? = null,
@@ -141,8 +144,10 @@ object GoTakuApi {
         }
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class EpisodeInfoResponse(val data: EpisodeInfo? = null)
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class EpisodeEntry(
         val id: String? = null,
         val number: Int? = null,
@@ -155,11 +160,15 @@ object GoTakuApi {
         val dub: Boolean? = null
     )
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class EpisodesResponse(val data: List<EpisodeEntry>? = null, val meta: Meta? = null) {
+        @JsonIgnoreProperties(ignoreUnknown = true)
         class Meta(val next_airing: NextAiring? = null)
+        @JsonIgnoreProperties(ignoreUnknown = true)
         class NextAiring(val number: Int? = null, val airs_at: String? = null)
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class TitleEntry(
         val id: String? = null,
         val url: String? = null,
@@ -178,44 +187,80 @@ object GoTakuApi {
         val duration_minutes: Int? = null,
         val genres: List<Genre>? = null
     ) {
+        @JsonIgnoreProperties(ignoreUnknown = true)
         class EpisodeCounts(val latest_sub: Int? = null, val latest_dub: Int? = null, val total: Int? = null)
+        @JsonIgnoreProperties(ignoreUnknown = true)
         class Genre(val id: Int? = null, val name: String? = null)
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class TitlesResponse(
         val data: List<TitleEntry>? = null,
         val meta: Meta? = null
     ) {
+        @JsonIgnoreProperties(ignoreUnknown = true)
         class Meta(val page: Int? = null, val limit: Int? = null, val has_more: Boolean? = null, val total: Int? = null)
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     class TitleDetailResponse(val data: TitleData? = null) {
+        @JsonIgnoreProperties(ignoreUnknown = true)
         class TitleData(val title: TitleEntry? = null)
     }
 
     suspend fun fetchEmbed(episodeId: String, type: String): String? {
-        val parsed: EmbedResponse? = fetchParsed("$API/episodes/$episodeId/embed?type=$type", k = true)
+        val text = fetchText("$API/episodes/$episodeId/embed?type=$type", k = true) ?: return null
+        val parsed = try {
+            parseJson<EmbedResponse>(text)
+        } catch (e: Exception) {
+            Log.d(TAG, "embed response parse failed: ${e.message}")
+            null
+        }
         return parsed?.data?.url?.takeIf { it.isNotBlank() }
     }
 
     suspend fun fetchEpisodeInfo(episodeId: String): EpisodeInfo? {
-        val parsed: EpisodeInfoResponse? = fetchParsed("$API/episodes/$episodeId", k = true)
+        val text = fetchText("$API/episodes/$episodeId", k = true) ?: return null
+        val parsed = try {
+            parseJson<EpisodeInfoResponse>(text)
+        } catch (e: Exception) {
+            Log.d(TAG, "episode info parse failed: ${e.message}")
+            null
+        }
         return parsed?.data
     }
 
     suspend fun fetchEpisodes(titleId: String): List<EpisodeEntry> {
-        val parsed: EpisodesResponse? = fetchParsed("$API/titles/$titleId/episodes", k = true)
+        val text = fetchText("$API/titles/$titleId/episodes", k = true) ?: return emptyList()
+        val parsed = try {
+            parseJson<EpisodesResponse>(text)
+        } catch (e: Exception) {
+            Log.d(TAG, "episode list parse failed: ${e.message}")
+            null
+        }
         return parsed?.data.orEmpty()
     }
 
     suspend fun fetchTitleDetail(titleId: String): TitleEntry? {
-        val parsed: TitleDetailResponse? = fetchParsed("$API/titles/$titleId")
+        val text = fetchText("$API/titles/$titleId") ?: return null
+        val parsed = try {
+            parseJson<TitleDetailResponse>(text)
+        } catch (e: Exception) {
+            Log.d(TAG, "title detail parse failed: ${e.message}")
+            null
+        }
         return parsed?.data?.title
     }
 
     suspend fun fetchTitles(params: Map<String, String>): Pair<List<TitleEntry>, Boolean> {
         val query = params.entries.joinToString("&") { "${it.key}=${java.net.URLEncoder.encode(it.value, "UTF-8")}" }
-        val parsed: TitlesResponse? = fetchParsed("$API/titles?$query")
+        val text = fetchText("$API/titles?$query") ?: return Pair(emptyList(), false)
+        val parsed = try {
+            parseJson<TitlesResponse>(text)
+        } catch (e: Exception) {
+            Log.d(TAG, "titles parse failed: ${e.message}")
+            null
+        }
         return Pair(parsed?.data.orEmpty(), parsed?.meta?.has_more == true)
     }
 }

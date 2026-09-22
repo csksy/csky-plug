@@ -34,8 +34,8 @@ class GoTaku : MainAPI() {
         "latest" to "Recently Updated",
         "track:sub" to "Latest Sub",
         "track:dub" to "Latest Dub",
-        "format:MOVIE" to "Anime Movies",
-        "format:ONA" to "ONA"
+        "type:MOVIE" to "Anime Movies",
+        "type:ONA" to "ONA"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -47,7 +47,7 @@ class GoTaku : MainAPI() {
         when {
             request.data == "trending_day" || request.data == "trending_week" -> params["sort"] = request.data
             request.data.startsWith("track:") -> params["track"] = request.data.removePrefix("track:")
-            request.data.startsWith("format:") -> params["format"] = request.data.removePrefix("format:")
+            request.data.startsWith("type:") -> params["type"] = request.data.removePrefix("type:")
         }
         val (titles, hasMore) = GoTakuApi.fetchTitles(params)
         val items = titles.mapNotNull { it.toSearchResponse() }
