@@ -1,4 +1,4 @@
-version = 4
+version = 5
 
 android {
     buildFeatures {
@@ -6,8 +6,12 @@ android {
     }
 }
 
+dependencies {
+    implementation("com.google.android.material:material:1.12.0")
+}
+
 cloudstream {
-    description = "cartoons anime and movies from toonworld4all with hubcloud gdflix and filepress downloads"
+    description = "cartoons anime and movies from toonworld4all with hubcloud gdflix filepress and mega downloads"
     authors = listOf("csksy")
 
     status = 1
