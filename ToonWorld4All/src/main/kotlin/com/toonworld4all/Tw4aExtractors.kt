@@ -8,12 +8,15 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 
 internal object Tw4aExtractors {
 
@@ -23,28 +26,6 @@ internal object Tw4aExtractors {
 
     private val rawClient: OkHttpClient by lazy {
         OkHttpClient.Builder().build()
-    }
-
-    @Volatile
-    private var domainOverrides: Map<String, String>? = null
-
-    private suspend fun latestDomain(hostKey: String, fallback: String): String {
-        val cached = domainOverrides
-        if (cached != null) return cached[hostKey] ?: fallback
-        return try {
-            val fetched = app.get(
-                "https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json",
-                timeout = 10_000L
-            ).text
-            val parsed = JSONObject(fetched)
-            val map = mutableMapOf<String, String>()
-            for (k in parsed.keys()) map[k] = parsed.optString(k)
-            domainOverrides = map
-            map[hostKey] ?: fallback
-        } catch (e: Exception) {
-            domainOverrides = emptyMap()
-            fallback
-        }
     }
 
     private fun absolute(href: String, base: String): String = when {
@@ -72,143 +53,203 @@ internal object Tw4aExtractors {
         )
     }
 
-    private suspend fun resolveFinalUrl(startUrl: String): String? {
-        var current = startUrl
-        repeat(7) {
-            try {
-                val res = app.head(
-                    current, allowRedirects = false, timeout = 5000L,
-                    headers = mapOf("User-Agent" to UA)
-                )
-                if (res.code in 300..399) {
-                    val location = res.headers["location"] ?: return current
-                    if (!location.startsWith("http")) return current
-                    current = location
-                } else {
-                    return current
-                }
-            } catch (e: Exception) {
-                return null
-            }
-        }
-        return current
+    private fun fileSlug(url: String): String {
+        val clean = url.substringBefore("?").substringBefore("#").trimEnd('/')
+        return clean.substringAfterLast('/')
     }
 
-    internal suspend fun extractHubCloud(
+    private fun hostOfUrl(url: String): String = tw4aHostOf(url)
+
+    private fun pixeldrainDirect(link: String): String {
+        if (link.contains("download", true)) return link
+        val id = link.substringBefore("?").substringAfterLast("/")
+        return "https://pixeldrain.com/api/file/$id?download"
+    }
+
+    internal suspend fun extractDriveFamily(
         url: String,
         quality: Int,
         label: String,
+        sourceName: String,
         callback: (ExtractorLink) -> Unit,
     ) {
         try {
-            val host = tw4aHostOf(url)
-            val latestHost = if (host.contains("hubcloud")) latestDomain("hubcloud", host) else host
-            val targetUrl = if (latestHost != host) url.replaceFirst(host, latestHost) else url
-            val base = "https://$latestHost"
-
-            val response = tw4aGet(targetUrl, mapOf("User-Agent" to UA), timeout = 30_000L)
+            val response = tw4aGet(url, mapOf("User-Agent" to UA), timeout = 30_000L)
+            val host = hostOfUrl(response.url)
+            val base = "https://$host"
             var html = response.text
-            var currentUrl = response.url
 
             val jsRedirect = Regex("""window\.location\.replace\(['"]([^'"]+)['"]\)""")
                 .find(html)?.groupValues?.get(1)
-            if (jsRedirect != null && jsRedirect != currentUrl) {
+            if (jsRedirect != null && jsRedirect.contains("/file/")) {
                 val second = tw4aGet(
                     absolute(jsRedirect, base),
-                    mapOf(
-                        "User-Agent" to UA,
-                        "Referer" to currentUrl,
-                        "Cookie" to response.headers.values("set-cookie")
-                            .joinToString("; ") { it.substringBefore(";") }
-                    ),
+                    mapOf("User-Agent" to UA, "Referer" to response.url),
                     timeout = 30_000L
                 )
                 html = second.text
-                currentUrl = second.url
             }
-            if (html.contains("404") && html.contains("File Not Found", true) && html.length < 200) return
 
             val doc = Jsoup.parse(html)
-
-            var dlPageUrl: String? = null
-            when {
-                currentUrl.contains("/video/") -> {
-                    dlPageUrl = doc.selectFirst("div.vd > center > a")?.attr("href")
-                }
-                else -> {
-                    val script = doc.selectFirst("script:containsData(url)")?.data().orEmpty()
-                    dlPageUrl = Regex("""var\s+url\s*=\s*atob\s*\(\s*atob\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\)""")
-                        .find(script)?.groupValues?.get(1)
-                        ?.let { runCatching { base64Decode(base64Decode(it)) }.getOrNull() }
-                        ?: Regex("""var\s+url\s*=\s*['"]([^'"]*)['"]""").find(script)?.groupValues?.get(1)
-                }
-            }
-            if (dlPageUrl.isNullOrBlank()) {
-                emitHubServers(doc, base, quality, label, callback)
+            val title = doc.selectFirst("title")?.text().orEmpty()
+            if (title.contains("Google Drive Files Sharing Platform") && !html.contains("Instant DL") && !html.contains("/cloud/") && !html.contains("/wfile/")) {
                 return
             }
 
-            val dlHtml = tw4aGet(
-                absolute(dlPageUrl, base),
-                mapOf("User-Agent" to UA, "Referer" to currentUrl),
-                timeout = 30_000L
-            ).text
-            emitHubServers(Jsoup.parse(dlHtml), base, quality, label, callback)
+            val info = listOf(
+                doc.select("ul > li.list-group-item:contains(Name)").text().substringAfter("Name : ").trim(),
+                doc.select("ul > li.list-group-item:contains(Size)").text().substringAfter("Size : ").trim()
+            ).filter { it.isNotBlank() }.joinToString(" ")
+            val nameInfo = info.ifBlank { label }
+
+            val slug = fileSlug(url)
+            var emitted = false
+            val emittedUrls = mutableSetOf<String>()
+
+            if (slug.isNotBlank()) {
+                val wfileLinks = resolveWfileLinks(base, slug)
+                for (link in wfileLinks) {
+                    if (emittedUrls.add(link)) {
+                        emit(callback, sourceName, "$sourceName Direct $nameInfo", link, quality)
+                        emitted = true
+                    }
+                }
+            }
+
+            for (anchor in doc.select("div.text-center a, div.card-body a, a.btn, a[href]")) {
+                val text = anchor.text()
+                val link = anchor.attr("href").trim()
+                if (link.isBlank()) continue
+                when {
+                    text.contains("Instant DL") || link.contains("instant.busycdn") -> {
+                        val direct = resolveBusycdn(absolute(link, base))
+                        if (!direct.isNullOrBlank() && emittedUrls.add(direct)) {
+                            emit(callback, sourceName, "$sourceName Instant $nameInfo", direct, quality, referer = base)
+                            emitted = true
+                        }
+                    }
+
+                    text.contains("FAST CLOUD") || link.contains("/cloud/") -> {
+                        val ok = resolveCloudChain(absolute(link, base), host, quality, nameInfo, sourceName, callback, emittedUrls)
+                        emitted = ok || emitted
+                    }
+
+                    text.contains("GD Index") || link.contains("/wfile/") -> {
+                        val ok = resolveWfilePage(absolute(link, base), sourceName, nameInfo, quality, callback, emittedUrls)
+                        emitted = ok || emitted
+                    }
+
+                    text.contains("GoFile") || link.contains("goflix") || link.contains("gofile") -> {
+                        val gofile = absolute(link, base)
+                        if (gofile.contains("gofile.io")) {
+                            if (emittedUrls.add(gofile)) {
+                                extractGofile(gofile, quality, "$sourceName GoFile $nameInfo", callback)
+                                emitted = true
+                            }
+                        } else if (gofile.contains("/mirror/") || goflixSlug(gofile) != null) {
+                            val resolved = resolveGoflixMirror(gofile)
+                            if (resolved != null && emittedUrls.add(resolved)) {
+                                extractGofile(resolved, quality, "$sourceName GoFile $nameInfo", callback)
+                                emitted = true
+                            }
+                        }
+                    }
+
+                    link.contains("pixeldra") -> {
+                        val final = pixeldrainDirect(absolute(link, base))
+                        if (emittedUrls.add(final)) {
+                            emit(callback, sourceName, "$sourceName Pixeldrain $nameInfo", final, quality)
+                            emitted = true
+                        }
+                    }
+
+                    (link.contains("drive.google") || link.contains("googleusercontent") ||
+                            link.contains(".mp4") || link.contains(".mkv")) && link.startsWith("http") -> {
+                        if (emittedUrls.add(link)) {
+                            emit(callback, sourceName, "$sourceName ${text.ifBlank { nameInfo }}", link, quality)
+                            emitted = true
+                        }
+                    }
+                }
+            }
+
         } catch (e: Exception) {
-            Log.d(TAG, "hubcloud failed: ${e.message}")
+            Log.d(TAG, "drive family failed for $url: ${e.message}")
         }
     }
 
-    private suspend fun emitHubServers(
-        doc: org.jsoup.nodes.Document,
-        base: String,
-        quality: Int,
-        label: String,
-        callback: (ExtractorLink) -> Unit,
-    ) {
-        val headerText = doc.selectFirst("div.card-header")?.text().orEmpty()
-        val size = doc.selectFirst("i#size")?.text().orEmpty()
-        val pageTitle = listOf(headerText, size).filter { it.isNotBlank() }.joinToString(" ")
+    private fun goflixSlug(url: String): String? {
+        val m = Regex("""/mirror/([a-f0-9]{16,})""").find(url)
+        return m?.groupValues?.get(1)
+    }
 
-        for (btn in doc.select("a.btn")) {
-            val text = btn.text()
-            val link = btn.attr("href").ifBlank { continue }
-            when {
-                text.contains("FSL Server") ->
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud FSL $label", absolute(link, base), quality)
-
-                text.contains("FSLv2") ->
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud FSLv2 $label", absolute(link, base), quality)
-
-                text.contains("Mega Server") ->
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud Mega $label", absolute(link, base), quality)
-
-                text.contains("ZipDisk") ->
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud ZipDisk $label", absolute(link, base), quality)
-
-                text.contains("Download File") ->
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud ${pageTitle.ifBlank { label }}", absolute(link, base), quality)
-
-                link.contains("pixeldrain") || text.contains("PixelServer") -> {
-                    val pxl = Regex("""var\s+pxl\s*=\s*["']([^"']+)["']""")
-                        .find(doc.toString())?.groupValues?.get(1) ?: link
-                    val final = if (pxl.contains("download", true)) pxl
-                    else "https://pixeldrain.com/api/file/${pxl.substringAfterLast("/")}?download"
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud Pixeldrain $label", final, quality)
+    private suspend fun resolveWfileLinks(base: String, slug: String): List<String> {
+        val urls = mutableListOf<String>()
+        try {
+            coroutineScope {
+                val jobs = listOf("", "?type=1", "?type=2").map { suffix ->
+                    async {
+                        try {
+                            val page = tw4aGet(
+                                "$base/wfile/$slug$suffix",
+                                mapOf("User-Agent" to UA, "Referer" to "$base/file/$slug"),
+                                timeout = 20_000L
+                            )
+                            val doc = Jsoup.parse(page.text)
+                            doc.select("a.btn-success, a.btn[href*='workers.dev'], a[href*='workers.dev']").map { it.attr("href").trim() }
+                                .filter { it.startsWith("http") }
+                        } catch (e: Exception) {
+                            emptyList()
+                        }
+                    }
                 }
-
-                text.contains("Server : 10Gbps") -> {
-                    val resolved = resolveFinalUrl(absolute(link, base)) ?: continue
-                    val clean = if (resolved.contains("link=")) resolved.substringAfter("link=") else resolved
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud 10Gbps $label", clean, quality)
+                jobs.forEach { job ->
+                    runCatching { urls.addAll(job.await()) }
                 }
-
-                text.contains("Gofile", true) ->
-                    extractGofile(absolute(link, base), quality, "HubCloud Gofile $label", callback)
-
-                text.contains("Download") && link.startsWith("http") ->
-                    emit(callback, "ToonWorld4All HubCloud", "HubCloud ${text.substringAfter("Download").trim(' ', '[', ']')} $label", link, quality)
             }
+        } catch (e: Exception) {
+            Log.d(TAG, "wfile failed: ${e.message}")
+        }
+        return urls.distinct()
+    }
+
+    private suspend fun resolveWfilePage(
+        wfileUrl: String,
+        sourceName: String,
+        nameInfo: String,
+        quality: Int,
+        callback: (ExtractorLink) -> Unit,
+        seen: MutableSet<String>,
+    ): Boolean {
+        var emitted = false
+        val targets = mutableListOf(wfileUrl)
+        for (suffix in listOf("?type=1", "?type=2")) {
+            targets.add(wfileUrl + suffix)
+        }
+        for (target in targets) {
+            try {
+                val page = tw4aGet(target, mapOf("User-Agent" to UA), timeout = 20_000L)
+                val doc = Jsoup.parse(page.text)
+                for (btn in doc.select("a.btn-success, a[href*='workers.dev']")) {
+                    val href = btn.attr("href").trim()
+                    if (href.startsWith("http") && seen.add(href)) {
+                        emit(callback, sourceName, "$sourceName GDIndex $nameInfo", href, quality)
+                        emitted = true
+                    }
+                }
+            } catch (e: Exception) {
+            }
+        }
+        return emitted
+    }
+
+    private suspend fun resolveGoflixMirror(url: String): String? {
+        return try {
+            val page = tw4aGet(url, mapOf("User-Agent" to UA), timeout = 20_000L)
+            val doc = Jsoup.parse(page.text)
+            doc.select("a[href*='gofile.io']").firstOrNull()?.attr("href")?.trim()?.takeIf { it.startsWith("http") }
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -216,11 +257,11 @@ internal object Tw4aExtractors {
         return try {
             val resp = app.get(instantUrl, allowRedirects = false, timeout = 20_000L)
             val loc = resp.headers["location"] ?: resp.headers["Location"]
-            if (!loc.isNullOrBlank() && loc.contains("url=")) {
-                java.net.URLDecoder.decode(loc.substringAfter("url="), "UTF-8")
-            } else if (!loc.isNullOrBlank()) {
-                loc
-            } else null
+            if (loc.isNullOrBlank()) return null
+            if (loc.contains("url=")) {
+                return java.net.URLDecoder.decode(loc.substringAfter("url="), "UTF-8")
+            }
+            if (loc.startsWith("http")) loc else null
         } catch (e: Exception) {
             null
         }
@@ -252,120 +293,6 @@ internal object Tw4aExtractors {
         }
     }
 
-    internal suspend fun extractDriveFamily(
-        url: String,
-        quality: Int,
-        label: String,
-        sourceName: String,
-        callback: (ExtractorLink) -> Unit,
-    ) {
-        try {
-            val response = tw4aGet(url, mapOf("User-Agent" to UA), timeout = 30_000L)
-            val host = tw4aHostOf(response.url)
-            val base = "https://$host"
-            val doc = Jsoup.parse(response.text)
-
-            val info = listOf(
-                doc.select("ul > li.list-group-item:contains(Name)").text().substringAfter("Name : ").trim(),
-                doc.select("ul > li.list-group-item:contains(Size)").text().substringAfter("Size : ").trim()
-            ).filter { it.isNotBlank() }.joinToString(" ")
-
-            val instant = doc.selectFirst("a[href*='instant.busycdn.xyz']")?.attr("href")?.trim()
-            if (!instant.isNullOrBlank()) {
-                val direct = resolveBusycdn(absolute(instant, base))
-                if (!direct.isNullOrBlank()) {
-                    emit(callback, sourceName, "$sourceName Instant ${info.ifBlank { label }}", direct, quality)
-                }
-            }
-
-            for (anchor in doc.select("div.text-center a, div.card-body a, a.btn")) {
-                val text = anchor.text()
-                val link = anchor.attr("href").trim()
-                if (link.isBlank()) continue
-                when {
-                    text.contains("FSL V2") ->
-                        emit(callback, sourceName, "$sourceName FSLv2 ${info.ifBlank { label }}", absolute(link, base), quality)
-
-                    text.contains("DIRECT DL") || text.contains("DIRECT SERVER") ->
-                        emit(callback, sourceName, "$sourceName Direct ${info.ifBlank { label }}", absolute(link, base), quality)
-
-                    text.contains("CLOUD DOWNLOAD") ->
-                        emit(callback, sourceName, "$sourceName Cloud ${info.ifBlank { label }}", absolute(link, base), quality)
-
-                    text.contains("GD Index") -> {
-                        for (cfType in listOf(1, 2)) {
-                            try {
-                                val cfDoc = Jsoup.parse(
-                                    tw4aGet(
-                                        absolute("$link?type=$cfType", base),
-                                        mapOf("User-Agent" to UA),
-                                        timeout = 20_000L
-                                    ).text
-                                )
-                                for (btn in cfDoc.select("a.btn-success")) {
-                                    emit(callback, sourceName, "$sourceName CF$cfType ${info.ifBlank { label }}", absolute(btn.attr("href"), base), quality)
-                                }
-                            } catch (e: Exception) {
-                            }
-                        }
-                    }
-
-                    link.contains("/cloud/") -> {
-                        resolveCloudChain(absolute(link, base), host, quality, info.ifBlank { label }, sourceName, callback)
-                    }
-
-                    link.contains("pixeldra") -> {
-                        val final = if (link.contains("download", true)) link
-                        else "https://pixeldrain.com/api/file/" + link.substringAfterLast("/") + "?download"
-                        emit(callback, sourceName, "$sourceName Pixeldrain ${info.ifBlank { label }}", final, quality)
-                    }
-
-                    text.contains("Instant DL") -> {
-                        val direct = resolveBusycdn(absolute(link, base))
-                        if (!direct.isNullOrBlank()) {
-                            emit(callback, sourceName, "$sourceName Instant ${info.ifBlank { label }}", direct, quality)
-                        }
-                    }
-
-                    text.contains("GoFile") || link.contains("gofile") ->
-                        extractGofile(absolute(link, base), quality, "$sourceName Gofile ${info.ifBlank { label }}", callback)
-                }
-            }
-
-            if (host.contains("filepress") || host.contains("filebee")) {
-                val seen = mutableSetOf<String>()
-                for (a in doc.select("a[href]")) {
-                    val href = a.attr("href")
-                    if (href.startsWith("http") &&
-                        (href.contains("drive.google") || href.contains("googleusercontent") ||
-                                href.contains(".mp4") || href.contains(".mkv") ||
-                                href.contains("pixeldrain")) && seen.add(href)
-                    ) {
-                        val final = if (href.contains("pixeldrain") && !href.contains("download", true))
-                            "https://pixeldrain.com/api/file/${href.substringAfterLast("/")}?download"
-                        else href
-                        emit(callback, sourceName, "$sourceName ${a.text().ifBlank { label }}", final, quality)
-                    }
-                }
-                for (script in doc.select("script")) {
-                    val data = script.data()
-                    if (!data.contains("drive.google") && !data.contains("googleusercontent") &&
-                        !data.contains(".mp4") && !data.contains(".mkv")
-                    ) continue
-                    Regex("""(https?://[^"'\s]+(?:drive\.google|googleusercontent|\.mp4|\.mkv)[^"'\s]*)""")
-                        .findAll(data).forEach { m ->
-                            val href = m.groupValues[1]
-                            if (seen.add(href)) {
-                                emit(callback, sourceName, "$sourceName $label", href, quality)
-                            }
-                        }
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "drive family failed for $url: ${e.message}")
-        }
-    }
-
     private suspend fun resolveCloudChain(
         cloudPageUrl: String,
         host: String,
@@ -373,22 +300,26 @@ internal object Tw4aExtractors {
         label: String,
         sourceName: String,
         callback: (ExtractorLink) -> Unit,
-    ) {
+        seen: MutableSet<String>,
+    ): Boolean {
         try {
             val page = tw4aGet(cloudPageUrl, mapOf("User-Agent" to UA), timeout = 30_000L)
             val html = page.text
-            val key = Regex("""formData\.append\("key",\s*"([a-f0-9]{40})""").find(html)?.groupValues?.get(1) ?: return
+            if (html.contains("File Not Found") || html.contains("404")) {
+                if (html.length < 400) return false
+            }
+            val key = Regex("""formData\.append\("key",\s*"([a-f0-9]{40})""").find(html)?.groupValues?.get(1) ?: return false
             val startBody = multipartPost(
                 host, cloudPageUrl,
                 mapOf("action" to "cloud", "key" to key, "action_token" to "")
-            ) ?: return
-            val start = try { JSONObject(startBody) } catch (e: Exception) { return }
-            if (start.optBoolean("error", true)) return
-            val tokenPath = start.optString("url").takeIf { it.isNotBlank() } ?: return
+            ) ?: return false
+            val start = try { JSONObject(startBody) } catch (e: Exception) { return false }
+            if (start.optBoolean("error", true)) return false
+            val tokenPath = start.optString("url").takeIf { it.isNotBlank() } ?: return false
             val tokenUrl = absolute(tokenPath, "https://$host")
             tw4aGet(tokenUrl, mapOf("User-Agent" to UA), timeout = 20_000L)
             var redirect: String? = null
-            for (i in 1..20) {
+            for (i in 1..15) {
                 val pollResp = try {
                     app.get(
                         "$tokenUrl&xhr=1",
@@ -409,16 +340,206 @@ internal object Tw4aExtractors {
                         break
                     }
                 }
-                kotlinx.coroutines.delay(1500)
+                kotlinx.coroutines.delay(1000)
             }
-            val redirectPath = redirect ?: return
+            val redirectPath = redirect ?: return false
             val finalUrl = absolute(redirectPath, "https://$host")
             val finalDoc = Jsoup.parse(tw4aGet(finalUrl, mapOf("User-Agent" to UA), timeout = 30_000L).text)
-            val dl = finalDoc.selectFirst("a[href*='workers.dev/'], a[href*='cloud-dl']")?.attr("href")?.trim() ?: return
-            emit(callback, sourceName, "$sourceName Cloud ${label}", absolute(dl, "https://$host"), quality)
+            val dl = finalDoc.selectFirst("a[href*='workers.dev/'], a[href*='cloud-dl']")?.attr("href")?.trim() ?: return false
+            if (seen.add(dl)) {
+                emit(callback, sourceName, "$sourceName Cloud $label", absolute(dl, "https://$host"), quality)
+                return true
+            }
+            return false
         } catch (e: Exception) {
             Log.d(TAG, "cloud chain failed: ${e.message}")
+            return false
         }
+    }
+
+    internal suspend fun extractHubCloud(
+        url: String,
+        quality: Int,
+        label: String,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        try {
+            val variants = hubcloudVariants(url)
+            for (candidate in variants) {
+                try {
+                    val response = tw4aGet(candidate, mapOf("User-Agent" to UA), timeout = 25_000L)
+                    var html = response.text
+                    if (html.contains("File Not Found") && html.length < 200) continue
+
+                    val host = hostOfUrl(response.url)
+                    val base = "https://$host"
+
+                    val jsRedirect = Regex("""window\.location\.replace\(['"]([^'"]+)['"]\)""")
+                        .find(html)?.groupValues?.get(1)
+                    if (jsRedirect != null && jsRedirect != response.url) {
+                        val second = tw4aGet(
+                            absolute(jsRedirect, base),
+                            mapOf(
+                                "User-Agent" to UA,
+                                "Referer" to response.url,
+                                "Cookie" to response.headers.values("set-cookie")
+                                    .joinToString("; ") { it.substringBefore(";") }
+                            ),
+                            timeout = 25_000L
+                        )
+                        html = second.text
+                    }
+                    if (html.contains("File Not Found") && html.length < 200) continue
+
+                    val doc = Jsoup.parse(html)
+                    var dlPageUrl: String? = null
+                    when {
+                        response.url.contains("/video/") -> {
+                            dlPageUrl = doc.selectFirst("div.vd > center > a")?.attr("href")
+                        }
+                        else -> {
+                            val script = doc.selectFirst("script:containsData(url)")?.data().orEmpty()
+                            dlPageUrl = Regex("""var\s+url\s*=\s*atob\s*\(\s*atob\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\)""")
+                                .find(script)?.groupValues?.get(1)
+                                ?.let { runCatching { base64Decode(base64Decode(it)) }.getOrNull() }
+                                ?: Regex("""var\s+url\s*=\s*['"]([^'"]*)['"]""").find(script)?.groupValues?.get(1)
+                        }
+                    }
+                    if (dlPageUrl.isNullOrBlank()) {
+                        val emitted = emitHubServers(doc, base, quality, label, callback)
+                        if (emitted) return
+                        continue
+                    }
+
+                    val dlHtml = tw4aGet(
+                        absolute(dlPageUrl, base),
+                        mapOf("User-Agent" to UA, "Referer" to response.url),
+                        timeout = 25_000L
+                    ).text
+                    if (emitHubServers(Jsoup.parse(dlHtml), base, quality, label, callback)) return
+                } catch (e: Exception) {
+                    Log.d(TAG, "hubcloud variant failed: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "hubcloud failed: ${e.message}")
+        }
+    }
+
+    private fun hubcloudVariants(url: String): List<String> {
+        val out = mutableListOf<String>()
+        val clean = url.substringBefore("?")
+        val slug = fileSlug(clean)
+        out.add(url)
+        if (slug.isBlank() || !clean.contains("hubcloud")) return out
+        val pathKind = when {
+            clean.contains("/video/") -> "video"
+            clean.contains("/drive/") -> "drive"
+            clean.contains("/file/") -> "file"
+            else -> ""
+        }
+        val pathKinds = mutableListOf<String>()
+        if (pathKind.isNotBlank()) pathKinds.add(pathKind)
+        for (k in listOf("drive", "video", "file")) {
+            if (k != pathKind) pathKinds.add(k)
+        }
+        val primaryDomain = when {
+            clean.contains("hubcloud.foo") -> "https://hubcloud.foo"
+            else -> "https://hubcloud.ist"
+        }
+        val otherDomain = if (primaryDomain == "https://hubcloud.ist") "https://hubcloud.foo" else "https://hubcloud.ist"
+        for (domain in listOf(primaryDomain, otherDomain)) {
+            for (kind in pathKinds) {
+                val candidate = "$domain/$kind/$slug"
+                if (candidate != clean) out.add(candidate)
+            }
+        }
+        return out.distinct()
+    }
+
+    private suspend fun emitHubServers(
+        doc: Document,
+        base: String,
+        quality: Int,
+        label: String,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        var emitted = false
+        val headerText = doc.selectFirst("div.card-header")?.text().orEmpty()
+        val size = doc.selectFirst("i#size")?.text().orEmpty()
+        val pageTitle = listOf(headerText, size).filter { it.isNotBlank() }.joinToString(" ")
+
+        for (btn in doc.select("a.btn")) {
+            val text = btn.text()
+            val link = btn.attr("href")
+            if (link.isBlank()) continue
+            when {
+                text.contains("FSL Server") -> {
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud FSL $label", absolute(link, base), quality); emitted = true
+                }
+
+                text.contains("FSLv2") -> {
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud FSLv2 $label", absolute(link, base), quality); emitted = true
+                }
+
+                text.contains("Mega Server") -> {
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud Mega $label", absolute(link, base), quality); emitted = true
+                }
+
+                text.contains("ZipDisk") -> {
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud ZipDisk $label", absolute(link, base), quality); emitted = true
+                }
+
+                text.contains("Download File") -> {
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud ${pageTitle.ifBlank { label }}", absolute(link, base), quality); emitted = true
+                }
+
+                link.contains("pixeldrain") || text.contains("PixelServer") -> {
+                    val pxl = Regex("""var\s+pxl\s*=\s*["']([^"']+)["']""")
+                        .find(doc.toString())?.groupValues?.get(1) ?: link
+                    val final = if (pxl.contains("download", true)) pxl
+                    else "https://pixeldrain.com/api/file/${pxl.substringAfterLast("/")}?download"
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud Pixeldrain $label", final, quality); emitted = true
+                }
+
+                text.contains("Server : 10Gbps") -> {
+                    val resolved = resolveFinalUrl(absolute(link, base)) ?: continue
+                    val clean = if (resolved.contains("link=")) resolved.substringAfter("link=") else resolved
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud 10Gbps $label", clean, quality); emitted = true
+                }
+
+                text.contains("Gofile", true) -> {
+                    extractGofile(absolute(link, base), quality, "HubCloud Gofile $label", callback); emitted = true
+                }
+
+                text.contains("Download") && link.startsWith("http") -> {
+                    emit(callback, "ToonWorld4All HubCloud", "HubCloud ${text.substringAfter("Download").trim(' ', '[', ']')} $label", link, quality); emitted = true
+                }
+            }
+        }
+        return emitted
+    }
+
+    private suspend fun resolveFinalUrl(startUrl: String): String? {
+        var current = startUrl
+        repeat(7) {
+            try {
+                val res = app.head(
+                    current, allowRedirects = false, timeout = 5000L,
+                    headers = mapOf("User-Agent" to UA)
+                )
+                if (res.code in 300..399) {
+                    val location = res.headers["location"] ?: return current
+                    if (!location.startsWith("http")) return current
+                    current = location
+                } else {
+                    return current
+                }
+            } catch (e: Exception) {
+                return null
+            }
+        }
+        return current
     }
 
     private suspend fun extractGofile(

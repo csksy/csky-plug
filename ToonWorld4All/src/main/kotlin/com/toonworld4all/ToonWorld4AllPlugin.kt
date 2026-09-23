@@ -9,6 +9,8 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.jsoup.Jsoup
 import java.util.concurrent.ConcurrentHashMap
 
@@ -330,8 +332,10 @@ class ToonWorld4All : MainAPI() {
 
         private val resolvedCache = ConcurrentHashMap<String, String>()
         private val linkCache = ConcurrentHashMap<String, List<CachedLink>>()
+        private val linkCacheTimes = ConcurrentHashMap<String, Long>()
         private val episodeNameCache = ConcurrentHashMap<String, String>()
 
+        private const val LINK_CACHE_TTL = 30 * 60_000L
         private const val FAIL_TTL = 10 * 60_000L
         private val failTimes = ConcurrentHashMap<String, Long>()
 
@@ -342,6 +346,17 @@ class ToonWorld4All : MainAPI() {
         private fun isFreshFail(key: String): Boolean {
             val t = failTimes[key] ?: return false
             return System.currentTimeMillis() - t < FAIL_TTL
+        }
+
+        private fun cachedLinksFor(url: String): List<CachedLink>? {
+            val cached = linkCache[url] ?: return null
+            val t = linkCacheTimes[url] ?: 0L
+            if (System.currentTimeMillis() - t > LINK_CACHE_TTL) {
+                linkCache.remove(url)
+                linkCacheTimes.remove(url)
+                return null
+            }
+            return cached
         }
     }
 
@@ -424,37 +439,121 @@ class ToonWorld4All : MainAPI() {
         if (pending.isEmpty()) return emittedAny
         pending.sortBy { it.priority }
 
-        val toEmit = mutableListOf<PendingFile>()
+        val toResolve = mutableListOf<PendingFile>()
         for (file in pending) {
             val resolvedUrl = resolvedCache[file.cacheKey]
-            if (!resolvedUrl.isNullOrBlank() && linkCache.containsKey(resolvedUrl)) {
+            if (!resolvedUrl.isNullOrBlank()) {
                 emittedAny = emitHostLinks(resolvedUrl, callback) || emittedAny
                 continue
             }
             if (isFreshFail(file.cacheKey)) continue
-            toEmit.add(file)
+            toResolve.add(file)
         }
+        if (toResolve.isEmpty()) return emittedAny
 
-        val deadline = System.currentTimeMillis() + 150_000L
-        for (file in toEmit) {
-            if (System.currentTimeMillis() > deadline) break
-            if (resolvedCache[file.cacheKey].isNullOrBlank() && tw4aShortenerRefused()) continue
-            try {
-                val ok = resolveFile(file, callback)
-                emittedAny = ok || emittedAny
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                Log.d(TAG, "file resolution failed (${file.host}): ${e.message}")
+        val paths = toResolve.map { it.redirectPath }.distinct()
+        var redirectInfos = Tw4aArchive.resolveRedirects(paths)
+
+        val directFiles = mutableListOf<Pair<PendingFile, String>>()
+        var shortenerFiles = mutableListOf<Pair<PendingFile, String>>()
+        fun classify(infos: Map<String, Tw4aArchive.RedirectInfo>) {
+            directFiles.clear()
+            shortenerFiles.clear()
+            for (file in toResolve) {
+                if (resolvedCache[file.cacheKey] != null) continue
+                val info = infos[file.redirectPath]
+                if (info == null) {
+                    if (!isFreshFail(file.cacheKey)) cacheFail(file.cacheKey)
+                    continue
+                }
+                val dest = info.destination
+                if (TW4A_FILE_HOST.containsMatchIn(dest) && !tw4aIsShortenerUrl(dest)) {
+                    directFiles.add(file to dest)
+                } else if (dest.startsWith("http")) {
+                    shortenerFiles.add(file to dest)
+                } else {
+                    cacheFail(file.cacheKey)
+                }
             }
         }
-        return emittedAny
+        classify(redirectInfos)
+
+        for ((file, dest) in directFiles) {
+            resolvedCache[file.cacheKey] = dest
+        }
+
+        val landings = mutableMapOf<String, String>()
+        if (shortenerFiles.isNotEmpty() && !tw4aShortenerRefused()) {
+            val bestPerHost = mutableMapOf<String, String>()
+            for ((file, dest) in shortenerFiles.sortedBy { it.first.priority }) {
+                val hostLower = file.host.lowercase()
+                if (!bestPerHost.containsKey(hostLower) && !landings.containsKey(dest)) {
+                    bestPerHost[hostLower] = dest
+                }
+            }
+            val firstWave = bestPerHost.values.distinct().take(4)
+            if (firstWave.isNotEmpty()) {
+                val session = showTw4aShortenerSessionAndWait(firstWave)
+                session.landings.forEach { (dest, landing) ->
+                    landings[dest] = landing
+                }
+                if (session.landings.isEmpty()) {
+                    markTw4aShortenerRefused()
+                }
+            }
+            for ((file, dest) in shortenerFiles) {
+                val landing = landings[dest]
+                if (landing != null) {
+                    resolvedCache[file.cacheKey] = landing
+                }
+            }
+
+            val solvedAny = landings.isNotEmpty()
+            val unsolved = shortenerFiles.filter { resolvedCache[it.first.cacheKey] == null }
+            if (solvedAny && unsolved.isNotEmpty()) {
+                val retryPaths = unsolved.map { it.first.redirectPath }.distinct()
+                redirectInfos = Tw4aArchive.resolveRedirects(retryPaths)
+                classify(redirectInfos)
+                for ((file, dest) in directFiles) {
+                    resolvedCache[file.cacheKey] = dest
+                }
+            }
+        }
+
+        val resolvable = mutableListOf<Pair<PendingFile, String>>()
+        for (file in toResolve) {
+            val realUrl = resolvedCache[file.cacheKey]
+            if (!realUrl.isNullOrBlank()) {
+                resolvable.add(file to realUrl)
+            }
+        }
+
+        if (resolvable.isEmpty()) return emittedAny
+
+        val deadline = System.currentTimeMillis() + 240_000L
+        val emittedFlag = java.util.concurrent.atomic.AtomicBoolean(emittedAny)
+        coroutineScope {
+            resolvable.sortedBy { it.first.priority }.map { (file, realUrl) ->
+                async {
+                    if (System.currentTimeMillis() > deadline) return@async
+                    try {
+                        val ok = resolveFile(file, realUrl, callback)
+                        if (ok) emittedFlag.set(true)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.d(TAG, "file resolution failed (${file.host}): ${e.message}")
+                    }
+                }
+            }.forEach { runCatching { it.await() } }
+        }
+        return emittedFlag.get()
     }
 
     private suspend fun emitHostLinks(
         hostUrl: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val cached = linkCache[hostUrl]
+        val cached = cachedLinksFor(hostUrl)
         if (cached != null) {
             for (l in cached) {
                 callback(
@@ -472,43 +571,22 @@ class ToonWorld4All : MainAPI() {
 
     private suspend fun resolveFile(
         file: PendingFile,
+        realUrl: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val realUrl = resolvedCache[file.cacheKey].takeUnless { it.isNullOrBlank() }
-            ?: run {
-                val destinations = Tw4aArchive.resolveDestinations(file.redirectPath)
-                if (destinations.isEmpty()) {
-                    Log.d(TAG, "no destination for ${file.redirectPath}")
-                    cacheFail(file.cacheKey)
-                    return false
-                }
-
-                var url: String? = null
-                for (destination in destinations) {
-                    if (TW4A_FILE_HOST.containsMatchIn(destination) && !tw4aIsShortenerUrl(destination)) {
-                        url = destination
-                        break
+        val cachedLinks = cachedLinksFor(realUrl)
+        if (cachedLinks != null) {
+            for (l in cachedLinks) {
+                callback(
+                    newExtractorLink("ToonWorld4All", l.name, l.url, ExtractorLinkType.VIDEO) {
+                        this.quality = if (l.quality > 0) l.quality else com.lagradost.cloudstream3.utils.Qualities.Unknown.value
+                        this.referer = l.referer
+                        if (l.headers != null) this.headers = l.headers
                     }
-                    url = quickPass(destination)
-                    if (url != null) break
-                }
-                if (url == null) {
-                    for (destination in destinations) {
-                        if (tw4aShortenerRefused()) break
-                        if (TW4A_FILE_HOST.containsMatchIn(destination) && !tw4aIsShortenerUrl(destination)) continue
-                        url = showTw4aShortenerDialogAndWait(destination)
-                        if (url != null) break
-                    }
-                }
-                if (url.isNullOrBlank()) {
-                    Log.d(TAG, "shortener bypass failed: $destinations")
-                    cacheFail(file.cacheKey)
-                    return false
-                }
-                Log.d(TAG, "resolved ${file.host} -> $url")
-                resolvedCache[file.cacheKey] = url
-                url
+                )
             }
+            return cachedLinks.isNotEmpty()
+        }
 
         val collected = mutableListOf<CachedLink>()
         val capturing: (ExtractorLink) -> Unit = { link ->
@@ -541,31 +619,12 @@ class ToonWorld4All : MainAPI() {
             else ->
                 Tw4aExtractors.emitDirect(realUrl, file.quality, file.label, capturing)
         }
-        if (collected.isNotEmpty()) linkCache[realUrl] = collected.toList()
-        return collected.isNotEmpty()
-    }
-
-    private suspend fun quickPass(destination: String): String? {
-        return try {
-            var current = destination
-            var hops = 0
-            while (hops < 6) {
-                val resp = com.lagradost.cloudstream3.app.get(
-                    current, allowRedirects = false, timeout = 8L, headers = headers
-                )
-                val location = resp.headers["location"]
-                if (location != null && location.startsWith("http")) {
-                    if (TW4A_FILE_HOST.containsMatchIn(location) && !tw4aIsShortenerUrl(location)) return location
-                    current = location
-                    hops++
-                } else {
-                    return null
-                }
-            }
-            null
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-            null
+        if (collected.isNotEmpty()) {
+            linkCache[realUrl] = collected.toList()
+            linkCacheTimes[realUrl] = System.currentTimeMillis()
+            return true
         }
+        cacheFail(file.cacheKey)
+        return false
     }
 }

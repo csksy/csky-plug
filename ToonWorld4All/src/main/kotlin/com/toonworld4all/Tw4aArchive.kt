@@ -1,9 +1,11 @@
 package com.toonworld4all
 
 import com.lagradost.api.Log
-import com.lagradost.cloudstream3.app
-import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 internal object Tw4aArchive {
 
@@ -37,6 +39,13 @@ internal object Tw4aArchive {
         val size: String,
         val quality: Int,
         val files: List<ArchiveFile>,
+    )
+
+    internal class RedirectInfo(
+        val destination: String,
+        val linkDomain: String,
+        val linkHidden: String,
+        val userSystem: String,
     )
 
     suspend fun fetchArchive(url: String): ArchiveData? {
@@ -94,67 +103,69 @@ internal object Tw4aArchive {
         return out
     }
 
-    @Volatile
-    private var manualSystemSet = false
-
-    private suspend fun ensureManualSystem() {
-        if (manualSystemSet) return
-        try {
-            val sessionHeaders = tw4aSessionHeaders(BASE)
-            val h = headers.toMutableMap()
-            if (sessionHeaders.isNotEmpty()) {
-                h.putAll(sessionHeaders.filterValues { it.isNotBlank() })
-            }
-            app.post(
-                "$BASE/api/user/preference/system?id=manual",
-                headers = h,
-                timeout = 15_000L
-            )
-            manualSystemSet = true
-        } catch (e: Exception) {
-            Log.d(TAG, "system preference save failed: ${e.message}")
-        }
-    }
-
-    private suspend fun fetchDestination(redirectPath: String): String? {
+    suspend fun resolveRedirect(redirectPath: String): RedirectInfo? {
         val url = if (redirectPath.startsWith("http")) redirectPath else BASE + redirectPath
-        repeat(3) { attempt ->
+        repeat(2) { attempt ->
             try {
-                val response = tw4aGet(url, headers, allowRedirects = false, timeout = 30_000L)
+                val response = tw4aGet(url, headers, allowRedirects = false, timeout = 20_000L)
                 val location = response.headers["location"]
-                if (location != null && location.startsWith("http")) return location
+                if (location != null && location.startsWith("http")) {
+                    return RedirectInfo(location, "", "", "")
+                }
                 val props = parseProps(response.text)
-                val dest = props?.optString("destination").orEmpty()
-                if (dest.startsWith("http")) return dest
+                if (props != null) {
+                    val dest = props.optString("destination")
+                    if (dest.startsWith("http")) {
+                        val link = props.optJSONObject("link")
+                        return RedirectInfo(
+                            destination = dest,
+                            linkDomain = link?.optString("domain").orEmpty(),
+                            linkHidden = link?.optString("hidden").orEmpty(),
+                            userSystem = props.optString("userSystem")
+                        )
+                    }
+                }
                 if (response.text.length < 200) {
                     kotlinx.coroutines.delay(400L * (attempt + 1))
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.d(TAG, "redirect attempt $attempt failed: ${e.message}")
-                kotlinx.coroutines.delay(400L * (attempt + 1))
+                kotlinx.coroutines.delay(300L * (attempt + 1))
             }
         }
         return null
     }
 
-    suspend fun resolveDestinations(redirectPath: String): List<String> {
-        val found = LinkedHashSet<String>()
-        val first = fetchDestination(redirectPath)
-        if (first != null && TW4A_FILE_HOST.containsMatchIn(first) && !tw4aIsShortenerUrl(first)) {
-            return listOf(first)
-        }
-        if (first != null && first.startsWith("http")) found.add(first)
-        ensureManualSystem()
-        repeat(2) {
-            val dest = fetchDestination(redirectPath) ?: return@repeat
-            if (TW4A_FILE_HOST.containsMatchIn(dest) && !tw4aIsShortenerUrl(dest)) {
-                return listOf(dest)
+    suspend fun resolveRedirects(paths: List<String>): Map<String, RedirectInfo> {
+        if (paths.isEmpty()) return emptyMap()
+        return try {
+            coroutineScope {
+                val gate = Semaphore(6)
+                paths.distinct().map { path ->
+                    async {
+                        try {
+                            gate.withPermit {
+                                Pair(path, resolveRedirect(path))
+                            }
+                        } catch (e: Exception) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            Pair(path, null)
+                        }
+                    }
+                }.mapNotNull { deferred ->
+                    try {
+                        val (path, info) = deferred.await()
+                        if (info != null) path to info else null
+                    } catch (e: Exception) {
+                        null
+                    }
+                }.toMap()
             }
-            if (dest.startsWith("http")) found.add(dest)
-            kotlinx.coroutines.delay(250)
+        } catch (e: Exception) {
+            Log.d(TAG, "resolveRedirects failed: ${e.message}")
+            emptyMap()
         }
-        return found.sortedByDescending { it.contains("gplinks") }
     }
 
     private fun parseProps(html: String): JSONObject? {

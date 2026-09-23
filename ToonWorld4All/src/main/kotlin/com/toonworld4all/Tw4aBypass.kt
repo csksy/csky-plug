@@ -51,11 +51,14 @@ private val CF_CHALLENGE_TITLES = listOf(
 )
 
 private const val COOKIE_TTL_MS = 15L * 60 * 60 * 1000
-private const val SOLVER_TIMEOUT_MS = 120_000L
+private const val SOLVER_TIMEOUT_MS = 90_000L
+private const val QUEUE_TIMEOUT_MS = 300_000L
 private const val POLL_INTERVAL_MS = 1000L
 private const val CURSOR_STEP_DP = 10f
 private const val BYPASS_COOLDOWN_MS = 60_000L
 private const val STORE_KEY = "TW4A_CF_SESSIONS"
+private const val MOBILE_UA =
+    "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
 @Volatile private var lastBypassHostTime: MutableMap<String, Long> = mutableMapOf()
 
@@ -128,6 +131,10 @@ internal object Tw4aCFStore {
         persist()
     }
 
+    fun hasUserCookie(host: String): Boolean {
+        return sessions[host]?.cookies?.contains("user=") == true
+    }
+
     fun clear(host: String) {
         sessions.remove(host)
         persist()
@@ -176,18 +183,10 @@ internal fun isTw4aCloudflareBlocked(response: NiceResponse): Boolean {
     return false
 }
 
-private fun isChallengeTitle(title: String): Boolean {
-    val lower = title.lowercase()
-    return CF_CHALLENGE_TITLES.any { lower.contains(it) }
-}
-
-private val cfBypassMutex = Mutex()
-private class CursorPosHolder { var x: Float = 0f; var y: Float = 0f }
-
 internal val TW4A_FILE_HOST = Regex(
     """(?i)(hubcloud\.|gdflix|filepress|filebee|gdtot|appdrive|gdrive\.|pixeldrain""" +
             """|gofile\.io|drive\.google\.com|googleusercontent|mega\.nz|mega\.co\.nz""" +
-            """|\.mp4|\.mkv|\.m3u8|\.ts(?![a-z])|workers\.dev|busycdn)"""
+            """|\.mp4|\.mkv|\.m3u8|\.ts(?![a-z])|workers\.dev|busycdn|fastdl)"""
 )
 
 internal val TW4A_SHORTENER_HOST = listOf(
@@ -199,690 +198,6 @@ internal fun tw4aIsShortenerUrl(url: String): Boolean {
     val host = tw4aHostOf(url).lowercase()
     if (host.isEmpty()) return false
     return TW4A_SHORTENER_HOST.any { host == it || host.endsWith(".$it") }
-}
-
-@SuppressLint("InflateParams")
-private class Tw4aCFDialog(
-    private val targetUrl: String,
-    private val onFinished: ((Boolean) -> Unit)? = null
-) {
-    private var dialog: AlertDialog? = null
-    private var webView: WebView? = null
-    private var statusText: TextView? = null
-    private val handler = Handler(Looper.getMainLooper())
-    private val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
-    private var pollElapsedMs = 0L
-
-    private val targetHost: String by lazy {
-        try {
-            val uri = Uri.parse(targetUrl)
-            "${uri.scheme}://${uri.host}"
-        } catch (e: Exception) { targetUrl }
-    }
-
-    private fun extractAndFinish() {
-        if (resolved.get()) return
-        try {
-            CookieManager.getInstance().flush()
-            val cookieStr = CookieManager.getInstance().getCookie(targetHost) ?: ""
-            if (cookieStr.contains("cf_clearance")) {
-                finishSuccess(cookieStr)
-                return
-            }
-            val currentUrl = webView?.url
-            if (currentUrl != null && currentUrl != targetUrl) {
-                try {
-                    val uri = Uri.parse(currentUrl)
-                    val altHost = "${uri.scheme}://${uri.host}"
-                    val altCookies = CookieManager.getInstance().getCookie(altHost) ?: ""
-                    if (altCookies.contains("cf_clearance")) {
-                        finishSuccessForHost(altCookies, altHost)
-                        return
-                    }
-                } catch (e: Exception) {}
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "extract: ${e.message}")
-        }
-    }
-
-    private fun finishSuccess(cookieStr: String) {
-        finishSuccessForHost(cookieStr, targetHost)
-    }
-
-    private fun finishSuccessForHost(cookieStr: String, host: String) {
-        if (!resolved.compareAndSet(false, true)) return
-        handler.removeCallbacksAndMessages(null)
-        val ua = webView?.settings?.userAgentString ?: ""
-        val hostKey = try { Uri.parse(host).host ?: host } catch (e: Exception) { host }
-        Tw4aCFStore.save(hostKey, cookieStr, ua)
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { (webView?.getTag() as? Dialog)?.dismiss() } catch (e: Exception) {}
-        try { onFinished?.invoke(true) } catch (e: Exception) {}
-    }
-
-    private fun finishFailure() {
-        if (!resolved.compareAndSet(false, true)) return
-        handler.removeCallbacksAndMessages(null)
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { dialog?.dismiss() } catch (e: Exception) {}
-        try { onFinished?.invoke(false) } catch (e: Exception) {}
-    }
-
-    private val cookiePollRunnable = object : Runnable {
-        override fun run() {
-            if (resolved.get() || dialog == null || dialog?.isShowing != true) return
-            pollElapsedMs += POLL_INTERVAL_MS
-            extractAndFinish()
-            if (!resolved.get()) {
-                if (pollElapsedMs >= SOLVER_TIMEOUT_MS) {
-                    finishFailure()
-                } else {
-                    statusText?.text = "Waiting... (${pollElapsedMs / 1000}s)"
-                    handler.postDelayed(this, POLL_INTERVAL_MS)
-                }
-            }
-        }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    fun show(activity: AppCompatActivity) {
-        val dp = activity.resources.displayMetrics.density
-        val screenH = activity.resources.displayMetrics.heightPixels
-        val dialogW = (activity.resources.displayMetrics.widthPixels * 0.95f).toInt()
-        val dialogH = (screenH * 0.9f).toInt()
-        val webViewHeight = (screenH * 0.65f).toInt()
-
-        val container = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding((16 * dp).toInt(), (12 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
-        }
-
-        container.addView(TextView(activity).apply {
-            text = "Cloudflare Bypass"
-            textSize = 16f; setTextColor(Color.WHITE)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(0, 0, 0, (8 * dp).toInt())
-        })
-
-        val statusView = TextView(activity).apply {
-            text = "Loading..."
-            textSize = 12f; setTextColor(Color.parseColor("#A0A0B0"))
-            setPadding(0, 0, 0, (4 * dp).toInt())
-        }
-        statusText = statusView
-        container.addView(statusView)
-
-        val isTv = try { Globals.isLayout(Globals.TV) } catch (e: Throwable) { false }
-        container.addView(TextView(activity).apply {
-            text = if (isTv) "Use D-pad to move cursor, OK to click."
-            else "Solve the CAPTCHA below, then tap Done."
-            textSize = 11f; setTextColor(Color.parseColor("#707080"))
-            setPadding(0, 0, 0, (8 * dp).toInt())
-        })
-
-        container.addView(ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
-            isIndeterminate = true
-            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (8 * dp).toInt() }
-        })
-
-        val webContainer = FrameLayout(activity).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, webViewHeight)
-            isFocusable = true; isFocusableInTouchMode = true
-        }
-        webView = buildWebView(activity)
-        webContainer.addView(webView, FrameLayout.LayoutParams(-1, -1))
-
-        if (isTv) {
-            val cursorSize = (22 * dp).toInt()
-            val cursor = View(activity).apply {
-                layoutParams = FrameLayout.LayoutParams(cursorSize, cursorSize)
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.argb(160, 255, 50, 50))
-                    setStroke((2 * dp).toInt(), Color.WHITE)
-                }
-                elevation = 999f
-            }
-            webContainer.addView(cursor)
-
-            val pos = CursorPosHolder()
-            pos.x = webViewHeight / 2f; pos.y = webViewHeight / 2f
-            cursor.translationX = pos.x - cursorSize / 2f
-            cursor.translationY = pos.y - cursorSize / 2f
-
-            webContainer.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
-                override fun onGlobalLayout() {
-                    webContainer.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                    pos.x = webContainer.width / 2f; pos.y = webContainer.height / 2f
-                    cursor.translationX = pos.x - cursorSize / 2f
-                    cursor.translationY = pos.y - cursorSize / 2f
-                }
-            })
-
-            val step = CURSOR_STEP_DP * dp
-            webContainer.setOnKeyListener { _, keyCode, event ->
-                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-                when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_UP -> { moveCursor(pos, cursor, cursorSize, webContainer, 0f, -step); true }
-                    KeyEvent.KEYCODE_DPAD_DOWN -> { moveCursor(pos, cursor, cursorSize, webContainer, 0f, step); true }
-                    KeyEvent.KEYCODE_DPAD_LEFT -> { moveCursor(pos, cursor, cursorSize, webContainer, -step, 0f); true }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> { moveCursor(pos, cursor, cursorSize, webContainer, step, 0f); true }
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { clickAtCursor(pos, webView); true }
-                    else -> false
-                }
-            }
-            webContainer.requestFocus()
-        }
-        container.addView(webContainer)
-
-        val btnContainer = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.topMargin = (8 * dp).toInt() }
-        }
-        btnContainer.addView(Button(activity).apply {
-            text = "Done"
-            setOnClickListener {
-                CookieManager.getInstance().flush()
-                extractAndFinish()
-                if (!resolved.get()) statusText?.text = "No cf_clearance found."
-            }
-        })
-        btnContainer.addView(Button(activity).apply {
-            text = "Cancel"
-            setOnClickListener { finishFailure() }
-        })
-        container.addView(btnContainer)
-
-        dialog = AlertDialog.Builder(activity).setView(container).setCancelable(false).create()
-        webView?.setTag(dialog)
-        dialog?.setOnDismissListener {
-            handler.removeCallbacksAndMessages(null)
-            if (!resolved.get()) {
-                resolved.set(true)
-                try { webView?.destroy() } catch (e: Exception) {}
-                try { onFinished?.invoke(false) } catch (e: Exception) {}
-            }
-        }
-        dialog?.show()
-        dialog?.window?.apply {
-            setLayout(dialogW, dialogH)
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        }
-
-        CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, true)
-            flush()
-        }
-        webView?.loadUrl(targetUrl)
-        handler.postDelayed(cookiePollRunnable, POLL_INTERVAL_MS)
-        handler.postDelayed({ finishFailure() }, SOLVER_TIMEOUT_MS)
-    }
-
-    private fun moveCursor(pos: CursorPosHolder, cursorView: View, cursorSize: Int, container: View, dx: Float, dy: Float) {
-        pos.x = (pos.x + dx).coerceIn(0f, container.width.toFloat())
-        pos.y = (pos.y + dy).coerceIn(0f, container.height.toFloat())
-        cursorView.translationX = pos.x - cursorSize / 2f
-        cursorView.translationY = pos.y - cursorSize / 2f
-    }
-
-    private fun clickAtCursor(pos: CursorPosHolder, webView: WebView?) {
-        val wv = webView ?: return
-        val t = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, pos.x, pos.y, 0)
-        val up = MotionEvent.obtain(t, t + 120, MotionEvent.ACTION_UP, pos.x, pos.y, 0)
-        try { wv.dispatchTouchEvent(down); wv.dispatchTouchEvent(up) } catch (e: Exception) {}
-        finally { down.recycle(); up.recycle() }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun buildWebView(context: Context): WebView {
-        return WebView(context).apply {
-            isFocusable = true; isFocusableInTouchMode = true; requestFocus()
-            settings.apply {
-                javaScriptEnabled = true; domStorageEnabled = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                allowContentAccess = true; allowFileAccess = true; loadsImagesAutomatically = true
-                userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-                mediaPlaybackRequiresUserGesture = false
-            }
-            webChromeClient = object : WebChromeClient() {
-                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    if (!resolved.get()) statusText?.text = "Loading... $newProgress%"
-                }
-            }
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    if (resolved.get()) return
-                    val title = view?.title ?: ""
-                    if (isChallengeTitle(title)) {
-                        statusText?.text = "Challenge active - solve the CAPTCHA"
-                        extractAndFinish()
-                        return
-                    }
-                    statusText?.text = "Page loaded - checking cookies..."
-                    extractAndFinish()
-                }
-            }
-        }
-    }
-
-    fun dismiss() {
-        handler.removeCallbacksAndMessages(null)
-        try { webView?.apply { stopLoading(); destroy() } } catch (e: Exception) {}
-        webView = null
-        try { dialog?.dismiss() } catch (e: Exception) {}
-        dialog = null
-    }
-}
-
-suspend fun showTw4aCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
-    val activity = CommonActivity.activity as? AppCompatActivity
-    if (activity == null || activity.isFinishing || activity.isDestroyed) {
-        return@withContext false
-    }
-    suspendCancellableCoroutine { cont ->
-        val cfDialog = Tw4aCFDialog(url) { success ->
-            if (cont.isActive) cont.resume(success)
-        }
-        try { cfDialog.show(activity) } catch (e: Exception) {
-            Log.e(TAG, "show dialog: ${e.message}")
-            if (cont.isActive) cont.resume(false)
-        }
-        cont.invokeOnCancellation { cfDialog.dismiss() }
-    }
-}
-
-private val SHORTENER_CLICKER = """
-    (function () {
-        var h = (location.hostname || "").toLowerCase();
-        if (h.indexOf("gplinks.") !== -1) {
-            if (window.__tw4aGpl) return;
-            window.__tw4aGpl = 1;
-            var waited = 0, posting = false;
-            var t = setInterval(function () {
-                waited += 5;
-                if (waited < 10) return;
-                try {
-                    var form = document.querySelector("form[action]");
-                    if (form && !posting) {
-                        posting = true;
-                        fetch(form.action, {
-                            method: "POST",
-                            credentials: "same-origin",
-                            headers: { "X-Requested-With": "XMLHttpRequest" },
-                            body: new URLSearchParams(new FormData(form))
-                        }).then(function (r) { return r.json(); })
-                          .then(function (res) {
-                              if (res && res.url) location.href = res.url;
-                              else posting = false;
-                          })
-                          .catch(function () { posting = false; });
-                        return;
-                    }
-                    var b = document.querySelector(".get-link, #get-link, .skip-ad, #skip-ad");
-                    if (b && !b.disabled) b.click();
-                } catch (e) { }
-                if (waited > 120) clearInterval(t);
-            }, 5000);
-            return;
-        }
-        if (window.__tw4aClicker) return;
-        window.__tw4aClicker = 1;
-        var clicks = 0;
-        var t = setInterval(function () {
-            clicks++;
-            try {
-                var b;
-                if ((b = document.querySelector('button[data-ref="continue"]')) &&
-                    !b.disabled) { b.click(); return; }
-                if ((b = document.querySelector('button[data-ref="captcha"]')) &&
-                    !b.disabled) { b.click(); return; }
-                if ((b = document.querySelector('button#invisibleCaptchaShortlink')) &&
-                    !b.disabled) { b.click(); return; }
-                if ((b = document.querySelector('button#submit-button')) &&
-                    !b.disabled) { b.click(); return; }
-                if ((b = document.querySelector('button#VerifyBtn')) &&
-                    !b.disabled) { b.click(); return; }
-                var g = document.querySelector('a.gate-btn-skip');
-                if (g && g.href && g.href.indexOf(location.origin) !== 0 &&
-                    g.href.charAt(g.href.length - 1) !== '#') { g.click(); return; }
-            } catch (e) { }
-            if (clicks > 90) clearInterval(t);
-        }, 1500);
-    })();
-""".trimIndent()
-
-@SuppressLint("InflateParams")
-private class Tw4aShortenerDialog(
-    private val startUrl: String,
-    private val onFinished: ((String?) -> Unit)? = null
-) {
-    private var dialog: AlertDialog? = null
-    private var webView: WebView? = null
-    private var statusText: TextView? = null
-    private val handler = Handler(Looper.getMainLooper())
-    private val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val resultUrl = java.util.concurrent.atomic.AtomicReference<String?>(null)
-    private var pollElapsedMs = 0L
-
-    private val allowedHosts = listOf(
-        "exe.io", "exeygo.com", "cuty.io", "cuttty.com",
-        "gplinks.co", "gplinks.com", "challenges.cloudflare.com",
-        "cloudflareinsights.com", "toonworld4all.me",
-        "static.cloudflareinsights.com", "fstatic.netpub.media",
-        "live.demand.supply", "a.nel.cloudflare.com"
-    )
-
-    private fun hostOf(url: String): String = try {
-        Uri.parse(url).host?.lowercase() ?: ""
-    } catch (e: Exception) { "" }
-
-    private fun isAllowed(url: String): Boolean {
-        if (!url.startsWith("http")) return true
-        if (TW4A_FILE_HOST.containsMatchIn(url) && !tw4aIsShortenerUrl(url)) return true
-        val host = hostOf(url)
-        if (host.isEmpty()) return true
-        return allowedHosts.any { host == it || host.endsWith(".$it") }
-    }
-
-    private fun maybeCapture(url: String) {
-        if (resolved.get()) return
-        if (resultUrl.get() != null) return
-        if (TW4A_FILE_HOST.containsMatchIn(url) && !tw4aIsShortenerUrl(url)) {
-            resultUrl.set(url)
-            finishSuccess(url)
-        }
-    }
-
-    private fun finishSuccess(url: String) {
-        if (!resolved.compareAndSet(false, true)) return
-        handler.removeCallbacksAndMessages(null)
-        try {
-            CookieManager.getInstance().flush()
-            val hosts = mutableListOf("archive.toonworld4all.me", "toonworld4all.me")
-            val landed = hostOf(url)
-            if (landed.isNotEmpty() && landed !in hosts) hosts.add(landed)
-            for (host in hosts) {
-                val c = CookieManager.getInstance().getCookie("https://$host")
-                if (!c.isNullOrBlank()) {
-                    Tw4aCFStore.mergeCookies(host, c.split("; "), webView?.settings?.userAgentString ?: "")
-                }
-            }
-        } catch (e: Exception) {}
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { (webView?.getTag() as? Dialog)?.dismiss() } catch (e: Exception) {}
-        try { onFinished?.invoke(url) } catch (e: Exception) {}
-    }
-
-    private fun finishFailure() {
-        if (!resolved.compareAndSet(false, true)) return
-        handler.removeCallbacksAndMessages(null)
-        try {
-            CookieManager.getInstance().flush()
-            for (host in listOf("archive.toonworld4all.me", "toonworld4all.me")) {
-                val c = CookieManager.getInstance().getCookie("https://$host")
-                if (!c.isNullOrBlank()) {
-                    Tw4aCFStore.mergeCookies(host, c.split("; "), webView?.settings?.userAgentString ?: "")
-                }
-            }
-        } catch (e: Exception) {}
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { dialog?.dismiss() } catch (e: Exception) {}
-        try { onFinished?.invoke(null) } catch (e: Exception) {}
-    }
-
-    private val pollRunnable = object : Runnable {
-        override fun run() {
-            if (resolved.get() || dialog == null || dialog?.isShowing != true) return
-            pollElapsedMs += POLL_INTERVAL_MS
-            webView?.url?.let { maybeCapture(it) }
-            if (!resolved.get()) {
-                if (pollElapsedMs >= SOLVER_TIMEOUT_MS) {
-                    finishFailure()
-                } else {
-                    statusText?.text = "Opening link... (${pollElapsedMs / 1000}s)"
-                    handler.postDelayed(this, POLL_INTERVAL_MS)
-                }
-            }
-        }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    fun show(activity: AppCompatActivity) {
-        val dp = activity.resources.displayMetrics.density
-        val screenH = activity.resources.displayMetrics.heightPixels
-        val dialogW = (activity.resources.displayMetrics.widthPixels * 0.95f).toInt()
-        val dialogH = (screenH * 0.9f).toInt()
-        val webViewHeight = (screenH * 0.65f).toInt()
-
-        val container = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding((16 * dp).toInt(), (12 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
-        }
-
-        container.addView(TextView(activity).apply {
-            text = "Opening Download Link"
-            textSize = 16f; setTextColor(Color.WHITE)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(0, 0, 0, (8 * dp).toInt())
-        })
-
-        val statusView = TextView(activity).apply {
-            text = "Loading..."
-            textSize = 12f; setTextColor(Color.parseColor("#A0A0B0"))
-            setPadding(0, 0, 0, (4 * dp).toInt())
-        }
-        statusText = statusView
-        container.addView(statusView)
-
-        val isTv = try { Globals.isLayout(Globals.TV) } catch (e: Throwable) { false }
-        container.addView(TextView(activity).apply {
-            text = if (isTv) "Press Continue / verify the captcha when it appears."
-            else "Tap Continue and verify the captcha when it appears."
-            textSize = 11f; setTextColor(Color.parseColor("#707080"))
-            setPadding(0, 0, 0, (8 * dp).toInt())
-        })
-
-        container.addView(ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
-            isIndeterminate = true
-            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (8 * dp).toInt() }
-        })
-
-        val webContainer = FrameLayout(activity).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, webViewHeight)
-            isFocusable = true; isFocusableInTouchMode = true
-        }
-        webView = buildWebView(activity)
-        webContainer.addView(webView, FrameLayout.LayoutParams(-1, -1))
-
-        if (isTv) {
-            val cursorSize = (22 * dp).toInt()
-            val cursor = View(activity).apply {
-                layoutParams = FrameLayout.LayoutParams(cursorSize, cursorSize)
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.argb(160, 255, 50, 50))
-                    setStroke((2 * dp).toInt(), Color.WHITE)
-                }
-                elevation = 999f
-            }
-            webContainer.addView(cursor)
-
-            val pos = CursorPosHolder()
-            pos.x = webViewHeight / 2f; pos.y = webViewHeight / 2f
-            cursor.translationX = pos.x - cursorSize / 2f
-            cursor.translationY = pos.y - cursorSize / 2f
-
-            webContainer.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
-                override fun onGlobalLayout() {
-                    webContainer.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                    pos.x = webContainer.width / 2f; pos.y = webContainer.height / 2f
-                    cursor.translationX = pos.x - cursorSize / 2f
-                    cursor.translationY = pos.y - cursorSize / 2f
-                }
-            })
-
-            val step = CURSOR_STEP_DP * dp
-            webContainer.setOnKeyListener { _, keyCode, event ->
-                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-                when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_UP -> { moveCursor(pos, cursor, cursorSize, webContainer, 0f, -step); true }
-                    KeyEvent.KEYCODE_DPAD_DOWN -> { moveCursor(pos, cursor, cursorSize, webContainer, 0f, step); true }
-                    KeyEvent.KEYCODE_DPAD_LEFT -> { moveCursor(pos, cursor, cursorSize, webContainer, -step, 0f); true }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> { moveCursor(pos, cursor, cursorSize, webContainer, step, 0f); true }
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { clickAtCursor(pos, webView); true }
-                    else -> false
-                }
-            }
-            webContainer.requestFocus()
-        }
-        container.addView(webContainer)
-
-        val btnContainer = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.topMargin = (8 * dp).toInt() }
-        }
-        btnContainer.addView(Button(activity).apply {
-            text = "Done"
-            setOnClickListener {
-                webView?.url?.let { maybeCapture(it) }
-                if (!resolved.get()) statusText?.text = "Link not opened yet - keep going."
-            }
-        })
-        btnContainer.addView(Button(activity).apply {
-            text = "Cancel"
-            setOnClickListener { finishFailure() }
-        })
-        container.addView(btnContainer)
-
-        dialog = AlertDialog.Builder(activity).setView(container).setCancelable(false).create()
-        webView?.setTag(dialog)
-        dialog?.setOnDismissListener {
-            handler.removeCallbacksAndMessages(null)
-            if (!resolved.get()) {
-                resolved.set(true)
-                try { webView?.destroy() } catch (e: Exception) {}
-                try { onFinished?.invoke(null) } catch (e: Exception) {}
-            }
-        }
-        dialog?.show()
-        dialog?.window?.apply {
-            setLayout(dialogW, dialogH)
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        }
-
-        CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, true)
-            flush()
-        }
-        webView?.loadUrl(startUrl)
-        handler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
-        handler.postDelayed({ finishFailure() }, SOLVER_TIMEOUT_MS)
-    }
-
-    private fun moveCursor(pos: CursorPosHolder, cursorView: View, cursorSize: Int, container: View, dx: Float, dy: Float) {
-        pos.x = (pos.x + dx).coerceIn(0f, container.width.toFloat())
-        pos.y = (pos.y + dy).coerceIn(0f, container.height.toFloat())
-        cursorView.translationX = pos.x - cursorSize / 2f
-        cursorView.translationY = pos.y - cursorSize / 2f
-    }
-
-    private fun clickAtCursor(pos: CursorPosHolder, webView: WebView?) {
-        val wv = webView ?: return
-        val t = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, pos.x, pos.y, 0)
-        val up = MotionEvent.obtain(t, t + 120, MotionEvent.ACTION_UP, pos.x, pos.y, 0)
-        try { wv.dispatchTouchEvent(down); wv.dispatchTouchEvent(up) } catch (e: Exception) {}
-        finally { down.recycle(); up.recycle() }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun buildWebView(context: Context): WebView {
-        return WebView(context).apply {
-            isFocusable = true; isFocusableInTouchMode = true; requestFocus()
-            settings.apply {
-                javaScriptEnabled = true; domStorageEnabled = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                allowContentAccess = true; allowFileAccess = true; loadsImagesAutomatically = true
-                userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-                mediaPlaybackRequiresUserGesture = false
-                setSupportMultipleWindows(true)
-                javaScriptCanOpenWindowsAutomatically = false
-            }
-            webChromeClient = object : WebChromeClient() {
-                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    if (!resolved.get()) statusText?.text = "Loading... $newProgress%"
-                }
-                override fun onCreateWindow(
-                    view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?
-                ): Boolean = false
-            }
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                    val url = request?.url?.toString() ?: return false
-                    return !isAllowed(url)
-                }
-
-                override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
-                    url?.let { maybeCapture(it) }
-                }
-
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    if (resolved.get()) return
-                    url?.let { maybeCapture(it) }
-                    runCatching { view?.evaluateJavascript(SHORTENER_CLICKER, null) }
-                    statusText?.text = "Continue in the page below if asked..."
-                }
-            }
-        }
-    }
-
-    fun dismiss() {
-        handler.removeCallbacksAndMessages(null)
-        try { webView?.apply { stopLoading(); destroy() } } catch (e: Exception) {}
-        webView = null
-        try { dialog?.dismiss() } catch (e: Exception) {}
-        dialog = null
-    }
-}
-
-internal suspend fun showTw4aShortenerDialogAndWait(url: String): String? =
-    withContext(Dispatchers.Main) {
-        val activity = CommonActivity.activity as? AppCompatActivity
-        if (activity == null || activity.isFinishing || activity.isDestroyed) {
-            return@withContext null
-        }
-        val result = suspendCancellableCoroutine { cont ->
-            val sDialog = Tw4aShortenerDialog(url) { res ->
-                if (cont.isActive) cont.resume(res)
-            }
-            try { sDialog.show(activity) } catch (e: Exception) {
-                Log.e(TAG, "show shortener dialog: ${e.message}")
-                if (cont.isActive) cont.resume(null)
-            }
-            cont.invokeOnCancellation { sDialog.dismiss() }
-        }
-        if (result == null) markTw4aShortenerRefused()
-        result
-    }
-
-@Volatile private var shortenerRefusedUntil = 0L
-
-internal fun markTw4aShortenerRefused() {
-    shortenerRefusedUntil = System.currentTimeMillis() + 90_000L
-}
-
-internal fun tw4aShortenerRefused(): Boolean {
-    return System.currentTimeMillis() < shortenerRefusedUntil
-}
-
-internal fun tw4aNormalizeUrl(url: String): String {
-    return url
-        .replace("https://gdflix.dev/", "https://new4.gdflix.io/")
 }
 
 internal fun tw4aHostOf(url: String): String = try {
@@ -899,6 +214,10 @@ internal fun tw4aSessionHeaders(host: String): Map<String, String> {
     return h
 }
 
+internal fun tw4aNormalizeUrl(url: String): String {
+    return url.replace("https://gdflix.dev/", "https://new4.gdflix.io/")
+}
+
 private fun buildTw4aHeaders(url: String, original: Map<String, String>): Map<String, String> {
     val h = original.toMutableMap()
     if (!h.containsKey("Accept")) h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -908,7 +227,7 @@ private fun buildTw4aHeaders(url: String, original: Map<String, String>): Map<St
         h["User-Agent"] = s.userAgent
         h["Cookie"] = s.cookies
     } else if (!h.containsKey("User-Agent")) {
-        h["User-Agent"] = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        h["User-Agent"] = MOBILE_UA
     }
     return h
 }
@@ -919,8 +238,7 @@ private fun captureSetCookies(url: String, response: NiceResponse) {
         if (host.isEmpty()) return
         val values = response.headers.values("set-cookie")
         if (values.isNullOrEmpty()) return
-        val ua = Tw4aCFStore.getSession(host)?.userAgent
-            ?: "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        val ua = Tw4aCFStore.getSession(host)?.userAgent ?: MOBILE_UA
         Tw4aCFStore.mergeCookies(host, values, ua)
     } catch (e: Exception) {
         Log.d(TAG, "captureSetCookies: ${e.message}")
@@ -997,4 +315,606 @@ internal fun tw4aLooksLikeChallenge(html: String): Boolean {
 
 fun initTw4aCFBypass() {
     Tw4aCFStore.init()
+}
+
+private val cfBypassMutex = Mutex()
+private class CursorPosHolder { var x: Float = 0f; var y: Float = 0f }
+
+private val SHORTENER_CLICKER = """
+    (function () {
+        var h = (location.hostname || "").toLowerCase();
+        if (h.indexOf("gplinks.") !== -1) {
+            if (window.__tw4aGpl) return;
+            window.__tw4aGpl = 1;
+            var waited = 0, posting = false;
+            var t = setInterval(function () {
+                waited += 3;
+                if (waited < 9) return;
+                try {
+                    var form = document.querySelector("form[action]");
+                    if (form && !posting) {
+                        posting = true;
+                        fetch(form.action, {
+                            method: "POST",
+                            credentials: "same-origin",
+                            headers: { "X-Requested-With": "XMLHttpRequest" },
+                            body: new URLSearchParams(new FormData(form))
+                        }).then(function (r) { return r.json(); })
+                          .then(function (res) {
+                              if (res && res.url) location.href = res.url;
+                              else posting = false;
+                          })
+                          .catch(function () { posting = false; });
+                        return;
+                    }
+                    var b = document.querySelector(".get-link, #get-link, .skip-ad, #skip-ad");
+                    if (b && !b.disabled) b.click();
+                } catch (e) { }
+                if (waited > 120) clearInterval(t);
+            }, 3000);
+            return;
+        }
+        if (window.__tw4aClicker) return;
+        window.__tw4aClicker = 1;
+        var clicks = 0;
+        var t = setInterval(function () {
+            clicks++;
+            try {
+                var b;
+                if ((b = document.querySelector('button[data-ref="continue"]')) &&
+                    !b.disabled && b.className.indexOf("disabled") === -1) { b.click(); return; }
+                if ((b = document.querySelector('button[data-ref="captcha"]')) &&
+                    !b.disabled && b.className.indexOf("disabled") === -1) { b.click(); return; }
+                if ((b = document.querySelector('button#invisibleCaptchaShortlink')) &&
+                    !b.disabled) { b.click(); return; }
+                if ((b = document.querySelector('button#submit-button')) &&
+                    !b.disabled) { b.click(); return; }
+                if ((b = document.querySelector('button#VerifyBtn')) &&
+                    !b.disabled) { b.click(); return; }
+                var b2 = document.querySelector('button[data-ref="continue"]');
+                if (b2 && b2.disabled) { b2.click(); }
+                var a = document.querySelector('a.get-link, a#get-link, a.skip-ad, a[href="#getlink"]');
+                if (a) a.click();
+            } catch (e) { }
+            if (clicks > 90) clearInterval(t);
+        }, 1200);
+    })();
+""".trimIndent()
+
+internal class Tw4aShortenerResult(
+    val landings: Map<String, String>,
+    val completed: Boolean
+)
+
+@SuppressLint("InflateParams")
+private class Tw4aWebDialog(
+    private val mode: String,
+    private val targetUrl: String,
+    private val queue: List<String> = emptyList(),
+    private val onDone: ((Any?) -> Unit)? = null
+) {
+    private var dialog: AlertDialog? = null
+    private var webView: WebView? = null
+    private var statusText: TextView? = null
+    private var titleText: TextView? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var pollElapsedMs = 0L
+
+    private val pending = mutableListOf<String>()
+    private val landings = linkedMapOf<String, String>()
+    private var cursor = 0
+    private var queueFinished = false
+
+    private val allowedHosts = listOf(
+        "exe.io", "exeygo.com", "cuty.io", "cuttty.com", "gplinks.co", "gplinks.com",
+        "challenges.cloudflare.com", "cloudflareinsights.com", "toonworld4all.me",
+        "static.cloudflareinsights.com", "fstatic.netpub.media",
+        "live.demand.supply", "a.nel.cloudflare.com", "ay267.com", "luugy.com"
+    )
+
+    private fun isAllowed(url: String): Boolean {
+        if (!url.startsWith("http")) return true
+        if (TW4A_FILE_HOST.containsMatchIn(url) && !tw4aIsShortenerUrl(url)) return true
+        val host = tw4aHostOf(url)
+        if (host.isEmpty()) return true
+        return allowedHosts.any { host == it || host.endsWith(".$it") }
+    }
+
+    private fun isFileLanding(url: String): Boolean {
+        if (!url.startsWith("http")) return false
+        if (tw4aIsShortenerUrl(url)) return false
+        if (tw4aHostOf(url).isEmpty()) return false
+        if (hostInList(url, "challenges.cloudflare.com")) return false
+        if (hostInList(url, "toonworld4all.me")) return false
+        return TW4A_FILE_HOST.containsMatchIn(url)
+    }
+
+    private fun hostInList(url: String, hostName: String): Boolean {
+        val h = tw4aHostOf(url).lowercase()
+        return h == hostName || h.endsWith(".$hostName")
+    }
+
+    private fun harvestCookies(forUrl: String) {
+        try {
+            CookieManager.getInstance().flush()
+            val hosts = mutableListOf("archive.toonworld4all.me", "toonworld4all.me")
+            val landed = tw4aHostOf(forUrl)
+            if (landed.isNotEmpty() && landed !in hosts) hosts.add(landed)
+            if (mode == "cf") {
+                val th = tw4aHostOf(targetUrl)
+                if (th.isNotEmpty()) hosts.add(th)
+            }
+            val ua = webView?.settings?.userAgentString ?: MOBILE_UA
+            for (host in hosts.distinct()) {
+                val c = CookieManager.getInstance().getCookie("https://$host")
+                if (!c.isNullOrBlank()) {
+                    Tw4aCFStore.mergeCookies(host, listOf(c), ua)
+                }
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun finishCf(success: Boolean, cookieStr: String = "", cookieHost: String = "") {
+        if (!resolved.compareAndSet(false, true)) return
+        handler.removeCallbacksAndMessages(null)
+        if (success) {
+            val ua = webView?.settings?.userAgentString ?: MOBILE_UA
+            val host = cookieHost.ifBlank { tw4aHostOf(targetUrl) }
+            Tw4aCFStore.save(host, cookieStr, ua)
+            val targetHost = tw4aHostOf(targetUrl)
+            if (host != targetHost) {
+                try {
+                    val targetCookies = CookieManager.getInstance().getCookie("https://$targetHost")
+                    if (!targetCookies.isNullOrBlank()) {
+                        Tw4aCFStore.mergeCookies(targetHost, listOf(targetCookies), ua)
+                    }
+                } catch (e: Exception) {}
+            }
+        }
+        try { webView?.destroy() } catch (e: Exception) {}
+        try { dialog?.dismiss() } catch (e: Exception) {}
+        try { onDone?.invoke(if (success) java.lang.Boolean.TRUE else java.lang.Boolean.FALSE) } catch (e: Exception) {}
+    }
+
+    private fun tryFinishCfFromCookies(): Boolean {
+        try {
+            CookieManager.getInstance().flush()
+            val targetHost = tw4aHostOf(targetUrl)
+            val cookieStr = CookieManager.getInstance().getCookie("https://$targetHost") ?: ""
+            if (cookieStr.contains("cf_clearance")) {
+                finishCf(true, cookieStr, targetHost)
+                return true
+            }
+            val current = webView?.url
+            if (current != null) {
+                val curHost = tw4aHostOf(current)
+                if (curHost.isNotEmpty() && curHost != targetHost) {
+                    val altCookies = CookieManager.getInstance().getCookie("https://$curHost") ?: ""
+                    if (altCookies.contains("cf_clearance")) {
+                        finishCf(true, altCookies, curHost)
+                        return true
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+        return false
+    }
+
+    private fun finishQueue(userClosed: Boolean) {
+        if (!resolved.compareAndSet(false, true)) return
+        handler.removeCallbacksAndMessages(null)
+        harvestCookies(webView?.url ?: "")
+        try { webView?.destroy() } catch (e: Exception) {}
+        try { dialog?.dismiss() } catch (e: Exception) {}
+        try {
+            onDone?.invoke(Tw4aShortenerResult(landings.toMap(), !userClosed && queueFinished))
+        } catch (e: Exception) {}
+    }
+
+    private fun maybeCapture(url: String) {
+        if (mode != "queue") return
+        if (!isFileLanding(url)) return
+        val key = pending.getOrNull(cursor) ?: return
+        if (landings.containsKey(key)) return
+        landings[key] = url
+        harvestCookies(url)
+        advanceQueue()
+    }
+
+    private fun advanceQueue() {
+        var next = cursor + 1
+        while (next < pending.size && pending[next] in landings) next++
+        pollElapsedMs = 0L
+        if (next >= pending.size) {
+            queueFinished = true
+            statusText?.text = "All links opened (${landings.size}/${pending.size})"
+            handler.postDelayed({ finishQueue(false) }, 1200)
+        } else {
+            cursor = next
+            statusText?.text = "Opened ${landings.size}/${pending.size} - loading next..."
+            handler.postDelayed({
+                if (!resolved.get()) {
+                    try { webView?.loadUrl(pending[cursor]) } catch (e: Exception) {}
+                }
+            }, 900)
+        }
+    }
+
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            if (resolved.get() || dialog == null || dialog?.isShowing != true) return
+            pollElapsedMs += POLL_INTERVAL_MS
+            if (mode == "cf") {
+                if (pollElapsedMs >= SOLVER_TIMEOUT_MS) {
+                    finishCf(false)
+                    return
+                }
+                try {
+                    CookieManager.getInstance().flush()
+                    val targetHost = tw4aHostOf(targetUrl)
+                    val cookieStr = CookieManager.getInstance().getCookie("https://$targetHost") ?: ""
+                    if (cookieStr.contains("cf_clearance")) {
+                        finishCf(true, cookieStr, targetHost)
+                        return
+                    }
+                    val current = webView?.url
+                    if (current != null) {
+                        val curHost = tw4aHostOf(current)
+                        if (curHost.isNotEmpty() && curHost != targetHost) {
+                            val altCookies = CookieManager.getInstance().getCookie("https://$curHost") ?: ""
+                            if (altCookies.contains("cf_clearance")) {
+                                finishCf(true, altCookies, curHost)
+                                return
+                            }
+                        }
+                    }
+                } catch (e: Exception) {}
+                statusText?.text = "Waiting for clearance... (${pollElapsedMs / 1000}s)"
+            } else {
+                if (pollElapsedMs >= SOLVER_TIMEOUT_MS) {
+                    finishQueue(true)
+                    return
+                }
+                val cur = webView?.url ?: ""
+                val label = if (tw4aHostOf(cur).isNotEmpty()) tw4aHostOf(cur) else "loading"
+                statusText?.text = "Solving ${landings.size}/${pending.size} - $label (${pollElapsedMs / 1000}s)"
+            }
+            if (!resolved.get()) handler.postDelayed(this, POLL_INTERVAL_MS)
+        }
+    }
+
+    private fun backOrDismiss() {
+        val wv = webView
+        if (wv != null && wv.canGoBack()) {
+            wv.goBack()
+        } else {
+            if (mode == "cf") finishCf(false) else finishQueue(true)
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    fun show(activity: AppCompatActivity) {
+        val dp = activity.resources.displayMetrics.density
+        val screenH = activity.resources.displayMetrics.heightPixels
+        val dialogW = (activity.resources.displayMetrics.widthPixels * 0.95f).toInt()
+        val dialogH = (screenH * 0.9f).toInt()
+        val webViewHeight = (screenH * 0.6f).toInt()
+
+        if (mode == "queue") {
+            pending.addAll(queue)
+        }
+
+        val container = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((16 * dp).toInt(), (12 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
+        }
+
+        val title = TextView(activity).apply {
+            text = if (mode == "cf") "Cloudflare Bypass" else "Opening Download Links"
+            textSize = 16f; setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, (6 * dp).toInt())
+        }
+        titleText = title
+        container.addView(title)
+
+        val statusView = TextView(activity).apply {
+            text = "Loading..."
+            textSize = 12f; setTextColor(Color.parseColor("#A0A0B0"))
+            setPadding(0, 0, 0, (4 * dp).toInt())
+        }
+        statusText = statusView
+        container.addView(statusView)
+
+        val isTv = try { Globals.isLayout(Globals.TV) } catch (e: Throwable) { false }
+        container.addView(TextView(activity).apply {
+            text = if (mode == "cf") {
+                if (isTv) "Use D-pad to move the cursor and press OK to click."
+                else "Solve the check below. Use Back to navigate, Cancel to close."
+            } else {
+                if (isTv) "Press Continue on each page and verify the captcha when asked."
+                else "Tap Continue on each page and verify the captcha when asked."
+            }
+            textSize = 11f; setTextColor(Color.parseColor("#707080"))
+            setPadding(0, 0, 0, (8 * dp).toInt())
+        })
+
+        container.addView(ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (8 * dp).toInt() }
+        })
+
+        val webContainer = FrameLayout(activity).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, webViewHeight)
+            isFocusable = true; isFocusableInTouchMode = true
+        }
+        webView = buildWebView(activity)
+        webContainer.addView(webView, FrameLayout.LayoutParams(-1, -1))
+
+        if (isTv) {
+            val cursorSize = (22 * dp).toInt()
+            val cursor = View(activity).apply {
+                layoutParams = FrameLayout.LayoutParams(cursorSize, cursorSize)
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.argb(160, 255, 50, 50))
+                    setStroke((2 * dp).toInt(), Color.WHITE)
+                }
+                elevation = 999f
+            }
+            webContainer.addView(cursor)
+
+            val pos = CursorPosHolder()
+            pos.x = webViewHeight / 2f; pos.y = webViewHeight / 2f
+            cursor.translationX = pos.x - cursorSize / 2f
+            cursor.translationY = pos.y - cursorSize / 2f
+
+            webContainer.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+                override fun onGlobalLayout() {
+                    webContainer.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    pos.x = webContainer.width / 2f; pos.y = webContainer.height / 2f
+                    cursor.translationX = pos.x - cursorSize / 2f
+                    cursor.translationY = pos.y - cursorSize / 2f
+                }
+            })
+
+            val step = CURSOR_STEP_DP * dp
+            webContainer.setOnKeyListener { _, keyCode, event ->
+                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> { moveCursor(pos, cursor, cursorSize, webContainer, 0f, -step); true }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> { moveCursor(pos, cursor, cursorSize, webContainer, 0f, step); true }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> { moveCursor(pos, cursor, cursorSize, webContainer, -step, 0f); true }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { moveCursor(pos, cursor, cursorSize, webContainer, step, 0f); true }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { clickAtCursor(pos, webView); true }
+                    else -> false
+                }
+            }
+            webContainer.requestFocus()
+        }
+        container.addView(webContainer)
+
+        val btnContainer = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.topMargin = (8 * dp).toInt() }
+        }
+        btnContainer.addView(Button(activity).apply {
+            text = "Back"
+            setOnClickListener {
+                val wv = webView
+                if (wv != null && wv.canGoBack()) wv.goBack()
+            }
+        })
+        btnContainer.addView(Button(activity).apply {
+            text = "Reload"
+            setOnClickListener { webView?.reload() }
+        })
+        if (mode == "queue") {
+            btnContainer.addView(Button(activity).apply {
+                text = "Skip"
+                setOnClickListener {
+                    if (resolved.get()) return@setOnClickListener
+                    advanceQueue()
+                }
+            })
+        }
+        btnContainer.addView(Button(activity).apply {
+            text = if (mode == "cf") "Done" else "Save & Close"
+            setOnClickListener {
+                if (mode == "cf") {
+                    if (!tryFinishCfFromCookies()) {
+                        statusText?.text = "No cf_clearance found yet."
+                    }
+                } else {
+                    finishQueue(true)
+                }
+            }
+        })
+        btnContainer.addView(Button(activity).apply {
+            text = "Cancel"
+            setOnClickListener {
+                if (mode == "cf") finishCf(false) else finishQueue(true)
+            }
+        })
+        container.addView(btnContainer)
+
+        dialog = AlertDialog.Builder(activity).setView(container).setCancelable(false).create()
+        webView?.setTag(dialog)
+        dialog?.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                backOrDismiss()
+                true
+            } else false
+        }
+        dialog?.setOnDismissListener {
+            handler.removeCallbacksAndMessages(null)
+            if (!resolved.get()) {
+                resolved.set(true)
+                try { webView?.destroy() } catch (e: Exception) {}
+                try {
+                    onDone?.invoke(
+                        if (mode == "cf") java.lang.Boolean.FALSE
+                        else Tw4aShortenerResult(landings.toMap(), false)
+                    )
+                } catch (e: Exception) {}
+            }
+        }
+        dialog?.show()
+        dialog?.window?.apply {
+            setLayout(dialogW, dialogH)
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
+
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(webView, true)
+            flush()
+        }
+
+        val archiveSession = tw4aSessionHeaders("archive.toonworld4all.me")
+        val startUrl = if (mode == "cf") targetUrl else (queue.firstOrNull() ?: targetUrl)
+        if (mode == "queue") {
+            val cm = CookieManager.getInstance()
+            archiveSession["Cookie"]?.split("; ")?.forEach { pair ->
+                if (pair.contains("=")) {
+                    try { cm.setCookie("https://archive.toonworld4all.me", pair) } catch (e: Exception) {}
+                }
+            }
+            cm.flush()
+        }
+        webView?.loadUrl(startUrl)
+        handler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+        if (mode == "cf") {
+            handler.postDelayed({ finishCf(false) }, SOLVER_TIMEOUT_MS)
+        } else {
+            handler.postDelayed({ finishQueue(true) }, QUEUE_TIMEOUT_MS)
+        }
+    }
+
+    private fun moveCursor(pos: CursorPosHolder, cursorView: View, cursorSize: Int, container: View, dx: Float, dy: Float) {
+        pos.x = (pos.x + dx).coerceIn(0f, container.width.toFloat())
+        pos.y = (pos.y + dy).coerceIn(0f, container.height.toFloat())
+        cursorView.translationX = pos.x - cursorSize / 2f
+        cursorView.translationY = pos.y - cursorSize / 2f
+    }
+
+    private fun clickAtCursor(pos: CursorPosHolder, webView: WebView?) {
+        val wv = webView ?: return
+        val t = SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, pos.x, pos.y, 0)
+        val up = MotionEvent.obtain(t, t + 120, MotionEvent.ACTION_UP, pos.x, pos.y, 0)
+        try { wv.dispatchTouchEvent(down); wv.dispatchTouchEvent(up) } catch (e: Exception) {}
+        finally { down.recycle(); up.recycle() }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun buildWebView(context: Context): WebView {
+        return WebView(context).apply {
+            isFocusable = true; isFocusableInTouchMode = true; requestFocus()
+            settings.apply {
+                javaScriptEnabled = true; domStorageEnabled = true
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                allowContentAccess = true; allowFileAccess = true; loadsImagesAutomatically = true
+                userAgentString = MOBILE_UA
+                mediaPlaybackRequiresUserGesture = false
+                setSupportMultipleWindows(true)
+                javaScriptCanOpenWindowsAutomatically = false
+            }
+            webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                    if (!resolved.get()) statusText?.text = "Loading... $newProgress%"
+                }
+                override fun onCreateWindow(
+                    view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?
+                ): Boolean = false
+            }
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    val url = request?.url?.toString() ?: return false
+                    if (mode == "cf") return false
+                    return !isAllowed(url)
+                }
+
+                override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                    url?.let { maybeCapture(it) }
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    if (resolved.get()) return
+                    url?.let { maybeCapture(it) }
+                    if (mode == "queue") {
+                        runCatching { view?.evaluateJavascript(SHORTENER_CLICKER, null) }
+                        val remain = pending.size - landings.size
+                        statusText?.text = "Tap Continue${if (remain > 1) " ($remain links left)" else ""} or verify the captcha..."
+                    } else {
+                        val title = view?.title ?: ""
+                        if (isChallengeTitle(title)) {
+                            statusText?.text = "Challenge active - solve the check"
+                        } else {
+                            statusText?.text = "Page loaded - checking cookies..."
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isChallengeTitle(title: String): Boolean {
+        val lower = title.lowercase()
+        return CF_CHALLENGE_TITLES.any { lower.contains(it) }
+    }
+
+    fun dismiss() {
+        handler.removeCallbacksAndMessages(null)
+        try { webView?.apply { stopLoading(); destroy() } } catch (e: Exception) {}
+        webView = null
+        try { dialog?.dismiss() } catch (e: Exception) {}
+        dialog = null
+    }
+}
+
+internal suspend fun showTw4aCFBypassDialogAndWait(url: String): Boolean = withContext(Dispatchers.Main) {
+    val activity = CommonActivity.activity as? AppCompatActivity
+    if (activity == null || activity.isFinishing || activity.isDestroyed) {
+        return@withContext false
+    }
+    suspendCancellableCoroutine { cont ->
+        val cfDialog = Tw4aWebDialog(mode = "cf", targetUrl = url) { result ->
+            if (cont.isActive) cont.resume(result == java.lang.Boolean.TRUE)
+        }
+        try { cfDialog.show(activity) } catch (e: Exception) {
+            Log.e(TAG, "show dialog: ${e.message}")
+            if (cont.isActive) cont.resume(false)
+        }
+        cont.invokeOnCancellation { cfDialog.dismiss() }
+    }
+}
+
+internal suspend fun showTw4aShortenerSessionAndWait(links: List<String>): Tw4aShortenerResult =
+    withContext(Dispatchers.Main) {
+        val activity = CommonActivity.activity as? AppCompatActivity
+        if (activity == null || activity.isFinishing || activity.isDestroyed) {
+            return@withContext Tw4aShortenerResult(emptyMap(), false)
+        }
+        suspendCancellableCoroutine { cont ->
+            val sDialog = Tw4aWebDialog(mode = "queue", targetUrl = links.firstOrNull() ?: "", queue = links) { result ->
+                if (cont.isActive) cont.resume(result as? Tw4aShortenerResult ?: Tw4aShortenerResult(emptyMap(), false))
+            }
+            try { sDialog.show(activity) } catch (e: Exception) {
+                Log.e(TAG, "show shortener dialog: ${e.message}")
+                if (cont.isActive) cont.resume(Tw4aShortenerResult(emptyMap(), false))
+            }
+            cont.invokeOnCancellation { sDialog.dismiss() }
+        }
+    }
+
+@Volatile private var shortenerRefusedUntil = 0L
+
+internal fun markTw4aShortenerRefused() {
+    shortenerRefusedUntil = System.currentTimeMillis() + 90_000L
+}
+
+internal fun tw4aShortenerRefused(): Boolean {
+    return System.currentTimeMillis() < shortenerRefusedUntil
 }
