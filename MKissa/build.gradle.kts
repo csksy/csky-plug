@@ -6,6 +6,10 @@ android {
     }
 }
 
+dependencies {
+    implementation("com.google.android.material:material:1.12.0")
+}
+
 cloudstream {
     description = "MKissa - anime with sub and dub tracks, real episode titles and multi server playback from the site's own CDN, Ok, StreamSB, Mp4Upload and Filemoon"
     authors = listOf("csksy")

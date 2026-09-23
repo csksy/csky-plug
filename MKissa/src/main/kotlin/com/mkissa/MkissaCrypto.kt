@@ -67,7 +67,7 @@ internal object MkissaCrypto {
         if (partb.size < 32) throw IllegalArgumentException("partB too short")
         val key = ByteArray(32)
         for (i in 0 until 32) {
-            key[i] = (partb[i] xor mask[i % 32])
+            key[i] = ((partb[i].toInt() and 0xFF) xor (mask[i % 32].toInt() and 0xFF)).toByte()
         }
         return key
     }

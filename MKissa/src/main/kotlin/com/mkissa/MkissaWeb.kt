@@ -110,22 +110,23 @@ internal object MkissaWeb {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun buildWebView(context: Context, client: WebViewClient, chrome: WebChromeClient): WebView {
-        return WebView(context).apply {
-            isFocusable = true; isFocusableInTouchMode = true; requestFocus()
-            settings.apply {
-                javaScriptEnabled = true; domStorageEnabled = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                allowContentAccess = true; allowFileAccess = true; loadsImagesAutomatically = true
-                userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-                mediaPlaybackRequiresUserGesture = false
-            }
-            CookieManager.getInstance().apply {
-                setAcceptCookie(true)
-                setAcceptThirdPartyCookies(this@apply, true)
-            }
-            webViewClient = client
-            webChromeClient = chrome
+        val wv = WebView(context)
+        wv.isFocusable = true
+        wv.isFocusableInTouchMode = true
+        wv.requestFocus()
+        wv.settings.apply {
+            javaScriptEnabled = true; domStorageEnabled = true
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            allowContentAccess = true; allowFileAccess = true; loadsImagesAutomatically = true
+            userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            mediaPlaybackRequiresUserGesture = false
         }
+        val cm = CookieManager.getInstance()
+        cm.setAcceptCookie(true)
+        cm.setAcceptThirdPartyCookies(wv, true)
+        wv.webViewClient = client
+        wv.webChromeClient = chrome
+        return wv
     }
 
     private fun buildChrome(onProgress: (Int) -> Unit): WebChromeClient = object : WebChromeClient() {
