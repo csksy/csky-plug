@@ -247,7 +247,7 @@ class CloudMoviezProvider : MainAPI() {
                     val se = parseSeasonEpisode(row.n)
                     val season = se?.first ?: seasonFromTitle
                     val epNum = se?.second ?: (episodes.size + 1)
-                    episodes.add(newEpisode(toJson(CmzRowList(listOf(row)))) {
+                    episodes.add(newEpisode(CmzRowList(listOf(row)).toJson()) {
                         this.season = season
                         this.episode = epNum
                         this.name = row.n
@@ -258,7 +258,7 @@ class CloudMoviezProvider : MainAPI() {
                     val c = (nameCount[label] ?: 0) + 1
                     nameCount[label] = c
                     val displayName = if (c > 1) "$label (${linkUrl.trimEnd('/').substringAfterLast('/')})" else label
-                    episodes.add(newEpisode(toJson(CmzRowList(listOf(CmzRow(n = label, q = label, at = null, t = "l", u = linkUrl, srv = emptyList()))))) {
+                    episodes.add(newEpisode(CmzRowList(listOf(CmzRow(n = label, q = label, at = null, t = "l", u = linkUrl, srv = emptyList()))).toJson()) {
                         this.season = seasonFromTitle
                         this.episode = episodes.size + 1
                         this.name = displayName
@@ -278,7 +278,7 @@ class CloudMoviezProvider : MainAPI() {
                 val extraRows = linksPages.map { (linkUrl, label) ->
                     CmzRow(n = label, q = label, at = null, t = "l", u = linkUrl, srv = emptyList())
                 }
-                return newMovieLoadResponse(title, url, TvType.Movie, toJson(CmzRowList(rows + extraRows))) {
+                return newMovieLoadResponse(title, url, TvType.Movie, CmzRowList(rows + extraRows).toJson()) {
                     this.posterUrl = poster
                     this.backgroundPosterUrl = backdrop
                     this.plot = plot
@@ -351,7 +351,7 @@ class CloudMoviezProvider : MainAPI() {
         return if (base.isBlank()) kind else "$kind · $base"
     }
 
-    private fun emitLink(kind: String, url: String, row: CmzRow, callback: (ExtractorLink) -> Unit) {
+    private suspend fun emitLink(kind: String, url: String, row: CmzRow, callback: (ExtractorLink) -> Unit) {
         if (url.isBlank()) return
         callback.invoke(newExtractorLink("CloudMoviez", linkLabel(kind, row), url, ExtractorLinkType.VIDEO) {
             this.quality = qualityValue(row.q ?: row.n)

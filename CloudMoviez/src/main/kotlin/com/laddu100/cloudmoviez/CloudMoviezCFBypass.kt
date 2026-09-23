@@ -124,7 +124,7 @@ internal object CMZCFStore {
 
     private fun persist() {
         try {
-            CloudStreamApp.setKey(STORE_KEY, toJson(CMZCFStoreData(sessions)))
+            CloudStreamApp.setKey(STORE_KEY, CMZCFStoreData(sessions).toJson())
         } catch (e: Exception) {
             Log.e(TAG, "persist: ${e.message}")
         }
