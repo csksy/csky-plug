@@ -52,7 +52,7 @@ private val CF_CHALLENGE_TITLES = listOf(
 
 private const val COOKIE_TTL_MS = 15L * 60 * 60 * 1000
 private const val SOLVER_TIMEOUT_MS = 90_000L
-private const val QUEUE_TIMEOUT_MS = 300_000L
+private const val QUEUE_TIMEOUT_MS = 270_000L
 private const val POLL_INTERVAL_MS = 1000L
 private const val CURSOR_STEP_DP = 10f
 private const val BYPASS_COOLDOWN_MS = 60_000L
@@ -77,6 +77,12 @@ internal object Tw4aCFStore {
     @Volatile private var sessions: MutableMap<String, Tw4aCFSession> = mutableMapOf()
     @Volatile private var initialized = false
 
+    private val families = listOf(
+        "filepress", "gdflix", "hubcloud", "toonworld4all", "exeygo", "gplinks", "cutty"
+    )
+
+    private fun familyOf(host: String): String? = families.firstOrNull { host.contains(it) }
+
     fun init() {
         if (initialized) return
         initialized = true
@@ -92,13 +98,26 @@ internal object Tw4aCFStore {
     }
 
     fun getSession(host: String): Tw4aCFSession? {
-        val s = sessions[host] ?: return null
-        if (s.cookies.isBlank()) return null
+        val s = sessions[host] ?: return familySession(host)
+        if (s.cookies.isBlank()) return familySession(host)
         if (System.currentTimeMillis() - s.timestamp > COOKIE_TTL_MS) {
             clear(host)
-            return null
+            return familySession(host)
         }
         return s
+    }
+
+    private fun familySession(host: String): Tw4aCFSession? {
+        val family = familyOf(host.lowercase()) ?: return null
+        var best: Tw4aCFSession? = null
+        for ((other, s) in sessions) {
+            if (!other.lowercase().contains(family)) continue
+            if (s.cookies.isBlank()) continue
+            if (System.currentTimeMillis() - s.timestamp > COOKIE_TTL_MS) continue
+            if (s.cookies.contains("cf_clearance")) return s
+            if (best == null || s.timestamp > best.timestamp) best = s
+        }
+        return best
     }
 
     fun save(host: String, cookies: String, userAgent: String) {
@@ -107,6 +126,18 @@ internal object Tw4aCFStore {
         s.userAgent = userAgent
         s.timestamp = System.currentTimeMillis()
         sessions[host] = s
+        val family = familyOf(host.lowercase())
+        if (family != null && cookies.contains("cf_clearance")) {
+            for ((other, existing) in sessions) {
+                if (other.lowercase().contains(family) && !existing.cookies.contains("cf_clearance")) {
+                    val shared = Tw4aCFSession()
+                    shared.cookies = cookies
+                    shared.userAgent = userAgent
+                    shared.timestamp = System.currentTimeMillis()
+                    sessions[other] = shared
+                }
+            }
+        }
         lastBypassHostTime[host] = System.currentTimeMillis()
         persist()
     }
@@ -186,7 +217,8 @@ internal fun isTw4aCloudflareBlocked(response: NiceResponse): Boolean {
 internal val TW4A_FILE_HOST = Regex(
     """(?i)(hubcloud\.|gdflix|filepress|filebee|gdtot|appdrive|gdrive\.|pixeldrain""" +
             """|gofile\.io|drive\.google\.com|googleusercontent|mega\.nz|mega\.co\.nz""" +
-            """|\.mp4|\.mkv|\.m3u8|\.ts(?![a-z])|workers\.dev|busycdn|fastdl)"""
+            """|\.mp4|\.mkv|\.m3u8|\.ts(?![a-z])|workers\.dev|busycdn|fastdl""" +
+            """|flapdoodle|\.r2\.dev)"""
 )
 
 internal val TW4A_SHORTENER_HOST = listOf(
@@ -331,14 +363,17 @@ private val SHORTENER_CLICKER = """
                 waited += 3;
                 if (waited < 9) return;
                 try {
-                    var form = document.querySelector("form[action]");
+                    var form = document.querySelector('form[action*="links/go"]') ||
+                               document.querySelector('form[action]');
                     if (form && !posting) {
+                        var fd = new FormData(form);
+                        if (!fd.get("_csrfToken") && !fd.get("cf-turnstile-response")) return;
                         posting = true;
                         fetch(form.action, {
                             method: "POST",
                             credentials: "same-origin",
                             headers: { "X-Requested-With": "XMLHttpRequest" },
-                            body: new URLSearchParams(new FormData(form))
+                            body: new URLSearchParams(fd)
                         }).then(function (r) { return r.json(); })
                           .then(function (res) {
                               if (res && res.url) location.href = res.url;
@@ -347,10 +382,10 @@ private val SHORTENER_CLICKER = """
                           .catch(function () { posting = false; });
                         return;
                     }
-                    var b = document.querySelector(".get-link, #get-link, .skip-ad, #skip-ad");
-                    if (b && !b.disabled) b.click();
+                    var b = document.querySelector("#go-link, .btn-success, .get-link, #get-link, .skip-ad, #skip-ad");
+                    if (b && !b.disabled && !posting) b.click();
                 } catch (e) { }
-                if (waited > 120) clearInterval(t);
+                if (waited > 150) clearInterval(t);
             }, 3000);
             return;
         }
@@ -371,9 +406,9 @@ private val SHORTENER_CLICKER = """
                     !b.disabled) { b.click(); return; }
                 if ((b = document.querySelector('button#VerifyBtn')) &&
                     !b.disabled) { b.click(); return; }
-                var b2 = document.querySelector('button[data-ref="continue"]');
-                if (b2 && b2.disabled) { b2.click(); }
-                var a = document.querySelector('a.get-link, a#get-link, a.skip-ad, a[href="#getlink"]');
+                if ((b = document.querySelector('#go-link, #get-link, .btn-success[data-clipboard-text]')) &&
+                    !b.disabled) { b.click(); return; }
+                var a = document.querySelector('a.get-link, a#get-link, a.skip-ad, a[href="#getlink"], a#go-link');
                 if (a) a.click();
             } catch (e) { }
             if (clicks > 90) clearInterval(t);
@@ -405,6 +440,8 @@ private class Tw4aWebDialog(
     private val landings = linkedMapOf<String, String>()
     private var cursor = 0
     private var queueFinished = false
+    private var candidateUrl: String? = null
+    private var candidateAt = 0L
 
     private val allowedHosts = listOf(
         "exe.io", "exeygo.com", "cuty.io", "cuttty.com", "gplinks.co", "gplinks.com",
@@ -512,11 +549,31 @@ private class Tw4aWebDialog(
         } catch (e: Exception) {}
     }
 
-    private fun maybeCapture(url: String) {
+    private fun maybeCapture(url: String, finished: Boolean = false) {
         if (mode != "queue") return
         if (!isFileLanding(url)) return
         val key = pending.getOrNull(cursor) ?: return
         if (landings.containsKey(key)) return
+        if (finished) {
+            candidateUrl = null
+            landings[key] = url
+            harvestCookies(url)
+            advanceQueue()
+        } else {
+            candidateUrl = url
+            candidateAt = SystemClock.elapsedRealtime()
+        }
+    }
+
+    private fun settleCandidate() {
+        val url = candidateUrl ?: return
+        if (SystemClock.elapsedRealtime() - candidateAt < 8000L) return
+        val key = pending.getOrNull(cursor) ?: return
+        if (landings.containsKey(key)) {
+            candidateUrl = null
+            return
+        }
+        candidateUrl = null
         landings[key] = url
         harvestCookies(url)
         advanceQueue()
@@ -572,10 +629,17 @@ private class Tw4aWebDialog(
                 } catch (e: Exception) {}
                 statusText?.text = "Waiting for clearance... (${pollElapsedMs / 1000}s)"
             } else {
-                if (pollElapsedMs >= SOLVER_TIMEOUT_MS) {
+                if (pollElapsedMs >= QUEUE_TIMEOUT_MS) {
                     finishQueue(true)
                     return
                 }
+                if (pollElapsedMs >= SOLVER_TIMEOUT_MS) {
+                    pollElapsedMs = 0L
+                    statusText?.text = "Skipped a slow link - opening next..."
+                    advanceQueue()
+                    return
+                }
+                settleCandidate()
                 val cur = webView?.url ?: ""
                 val label = if (tw4aHostOf(cur).isNotEmpty()) tw4aHostOf(cur) else "loading"
                 statusText?.text = "Solving ${landings.size}/${pending.size} - $label (${pollElapsedMs / 1000}s)"
@@ -842,7 +906,13 @@ private class Tw4aWebDialog(
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (resolved.get()) return
-                    url?.let { maybeCapture(it) }
+                    if (url != null && mode == "queue") {
+                        val title = view?.title ?: ""
+                        if (!isChallengeTitle(title)) {
+                            maybeCapture(url, finished = true)
+                        }
+                    }
+                    if (resolved.get()) return
                     if (mode == "queue") {
                         runCatching { view?.evaluateJavascript(SHORTENER_CLICKER, null) }
                         val remain = pending.size - landings.size

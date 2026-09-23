@@ -478,6 +478,27 @@ class ToonWorld4All : MainAPI() {
         }
         classify(redirectInfos)
 
+        val gplinkRerolled = mutableMapOf<String, Tw4aArchive.RedirectInfo>()
+        val rerollPaths = shortenerFiles
+            .filter { it.second.contains("gplinks") }
+            .map { it.first.redirectPath }
+            .distinct()
+        if (rerollPaths.isNotEmpty()) {
+            val rerolledInfos = Tw4aArchive.resolveRedirects(rerollPaths)
+            for ((path, info) in rerolledInfos) {
+                val newDest = info.destination
+                if (newDest.startsWith("http") && !newDest.contains("gplinks")) {
+                    gplinkRerolled[path] = info
+                }
+            }
+            if (gplinkRerolled.isNotEmpty()) {
+                val merged = redirectInfos.toMutableMap()
+                merged.putAll(gplinkRerolled)
+                redirectInfos = merged
+                classify(redirectInfos)
+            }
+        }
+
         for ((file, dest) in directFiles) {
             resolvedCache[file.cacheKey] = dest
         }
@@ -491,7 +512,11 @@ class ToonWorld4All : MainAPI() {
                     bestPerHost[hostLower] = dest
                 }
             }
-            val firstWave = bestPerHost.values.distinct().take(4)
+            val firstWave = bestPerHost.entries
+                .sortedBy { it.value.contains("gplinks") }
+                .map { it.value }
+                .distinct()
+                .take(4)
             if (firstWave.isNotEmpty()) {
                 val session = showTw4aShortenerSessionAndWait(firstWave)
                 session.landings.forEach { (dest, landing) ->
@@ -602,16 +627,22 @@ class ToonWorld4All : MainAPI() {
             callback(link)
         }
         val hostLower = file.host.lowercase()
+        val directFile = realUrl.contains("flapdoodle") || realUrl.contains(".r2.dev") ||
+                realUrl.contains("googleusercontent") ||
+                Regex("""\.(mp4|mkv|m3u8)(\?|$)""").containsMatchIn(realUrl)
         when {
+            directFile ->
+                Tw4aExtractors.emitDirect(realUrl, file.quality, file.label, capturing)
+
             hostLower.contains("hubcloud") || realUrl.contains("hubcloud") ->
                 Tw4aExtractors.extractHubCloud(realUrl, file.quality, file.label, capturing)
 
             hostLower.contains("gdflix") || realUrl.contains("gdflix") ->
-                Tw4aExtractors.extractDriveFamily(realUrl, file.quality, file.label, "GDFlix", capturing)
+                Tw4aExtractors.extractGdflix(realUrl, file.quality, file.label, capturing)
 
             hostLower.contains("filepress") || realUrl.contains("filepress") ||
-                    realUrl.contains("filebee") ->
-                Tw4aExtractors.extractDriveFamily(realUrl, file.quality, file.label, "Filepress", capturing)
+                    realUrl.contains("filebee") || realUrl.contains("flapdoodle") ->
+                Tw4aExtractors.extractFilepress(realUrl, file.quality, file.label, capturing)
 
             hostLower.contains("mega") || realUrl.contains("mega.nz") || realUrl.contains("mega.co.nz") ->
                 Tw4aExtractors.emitMega(realUrl, file.quality, file.label, capturing)
