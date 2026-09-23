@@ -162,10 +162,12 @@ internal object MkissaWeb {
 
             fun finish(result: T?) {
                 if (hooks.resolved.getAndSet(true)) return
-                handler.removeCallbacksAndMessages(null)
-                try { webView?.stopLoading() } catch (e: Exception) {}
-                try { webView?.destroy() } catch (e: Exception) {}
-                try { dialog?.dismiss() } catch (e: Exception) {}
+                handler.post {
+                    handler.removeCallbacksAndMessages(null)
+                    try { webView?.stopLoading() } catch (e: Exception) {}
+                    try { webView?.destroy() } catch (e: Exception) {}
+                    try { dialog?.dismiss() } catch (e: Exception) {}
+                }
                 if (cont.isActive) cont.resume(result)
             }
 

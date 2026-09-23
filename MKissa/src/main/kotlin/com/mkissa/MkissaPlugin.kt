@@ -179,7 +179,6 @@ class Mkissa : MainAPI() {
             "Releasing" -> ShowStatus.Ongoing
             else -> null
         }
-
         val detail = show.optJSONObject("availableEpisodesDetail")
         val subList = episodeNumbers(detail?.optJSONArray("sub"))
         val dubList = episodeNumbers(detail?.optJSONArray("dub"))
@@ -223,7 +222,7 @@ class Mkissa : MainAPI() {
             this.year = year
             this.plot = plot
             this.tags = genres
-            this.score = score
+            this.score = score?.let { Score.from10(it.toString()) }
             this.showStatus = status
             if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
             if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)

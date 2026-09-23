@@ -2,10 +2,13 @@ package com.mkissa
 
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.lagradost.nicehttp.RequestBodyTypes
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 
 internal object MkissaApi {
@@ -111,7 +114,8 @@ internal object MkissaApi {
             payload.put("variables", variables)
             val h = headers.toMutableMap()
             h["Content-Type"] = "application/json"
-            val body = app.post(API, headers = h, data = payload.toString(), timeout = 25_000L).text
+            val requestBody = payload.toString().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+            val body = app.post(API, headers = h, requestBody = requestBody, timeout = 25_000L).text
             JSONObject(body)
         } catch (e: Exception) {
             Log.d(TAG, "queryByText failed: ${e.message}")
@@ -131,7 +135,7 @@ internal object MkissaApi {
 
         var s = currentSession() ?: return null
 
-        fun run(aaReq: String?, captchaToken: String?): Pair<Int, String> {
+        suspend fun run(aaReq: String?, captchaToken: String?): Pair<Int, String> {
             val ext = JSONObject()
             val pq = JSONObject()
             pq.put("version", 1)
