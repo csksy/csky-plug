@@ -128,26 +128,6 @@ object GoTakuApi {
     class EmbedResponse(val data: EmbedData? = null)
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    class EpisodeInfo(
-        val id: String? = null,
-        val number: Int? = null,
-        val label: String? = null,
-        val hard_sub: Boolean? = null,
-        val soft_sub: Boolean? = null,
-        val dub: Boolean? = null
-    ) {
-        fun trackAvailable(type: String): Boolean? = when (type) {
-            "soft_sub" -> soft_sub
-            "hard_sub" -> hard_sub
-            "dub" -> dub
-            else -> null
-        }
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    class EpisodeInfoResponse(val data: EpisodeInfo? = null)
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
     class EpisodeEntry(
         val id: String? = null,
         val number: Int? = null,
@@ -217,17 +197,6 @@ object GoTakuApi {
             null
         }
         return parsed?.data?.url?.takeIf { it.isNotBlank() }
-    }
-
-    suspend fun fetchEpisodeInfo(episodeId: String): EpisodeInfo? {
-        val text = fetchText("$API/episodes/$episodeId", k = true) ?: return null
-        val parsed = try {
-            parseJson<EpisodeInfoResponse>(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "episode info parse failed: ${e.message}")
-            null
-        }
-        return parsed?.data
     }
 
     suspend fun fetchEpisodes(titleId: String): List<EpisodeEntry> {

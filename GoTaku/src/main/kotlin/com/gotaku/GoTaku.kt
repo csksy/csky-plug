@@ -19,8 +19,6 @@ class GoTaku : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
-        TvType.Movie,
-        TvType.TvSeries,
         TvType.OVA
     )
 
@@ -65,6 +63,7 @@ class GoTaku : MainAPI() {
         val detail = GoTakuApi.fetchTitleDetail(titleId) ?: return null
         val title = detail.name ?: return null
         val episodes = GoTakuApi.fetchEpisodes(titleId)
+        if (episodes.isEmpty()) return null
 
         val poster = detail.poster_url
         val backdrop = detail.backdrop_url
@@ -74,60 +73,60 @@ class GoTaku : MainAPI() {
         val duration = detail.duration_minutes?.takeIf { it > 0 }
         val rating = detail.age_rating
 
-        val isMovie = detail.format == "MOVIE"
+        // movies stay plain anime on purpose, the player hides the sub dub
+        // selector on movie types and always plays the first entry which would
+        // pin every movie to a single track
         val tvType = when (detail.format) {
-            "MOVIE" -> if (detail.is_adult == true) TvType.Movie else TvType.AnimeMovie
-            "OVA" -> TvType.OVA
-            "SPECIAL" -> TvType.OVA
+            "OVA", "ONA", "SPECIAL" -> TvType.OVA
             else -> TvType.Anime
         }
 
-        return if (isMovie || episodes.size <= 1) {
-            val episode = episodes.firstOrNull()
-            val data = GoTakuEpisodeData(titleId, episode?.id ?: "", episode?.name)
-            newMovieLoadResponse(title, url, tvType, data.toJson()) {
-                this.posterUrl = poster ?: backdrop
-                this.backgroundPosterUrl = backdrop
-                this.plot = plot
-                this.tags = tags
-                this.year = year
-                this.duration = duration
-                this.contentRating = rating
+        val subEpisodes = mutableListOf<Episode>()
+        val dubEpisodes = mutableListOf<Episode>()
+        for (entry in episodes) {
+            val id = entry.id ?: continue
+            val builder: (Episode).() -> Unit = {
+                this.name = episodeDisplayName(entry)
+                this.episode = entry.number
+                this.posterUrl = entry.thumbnail_url
+                this.description = buildString {
+                    entry.is_filler?.let { if (it) append("Filler episode") }
+                    entry.aired_at?.let {
+                        if (isNotEmpty()) append(" | ")
+                        append("Aired ${it.substringBefore("T")}")
+                    }
+                }.takeIf { it.isNotBlank() }
             }
-        } else {
-            val episodeList = episodes.mapNotNull { entry ->
-                val id = entry.id ?: return@mapNotNull null
-                val data = GoTakuEpisodeData(titleId, id, entry.name)
-                newEpisode(data.toJson()) {
-                    this.name = entry.name?.takeIf { it.isNotBlank() && it != entry.label }
-                        ?: "Episode ${entry.number ?: entry.label}"
-                    this.episode = entry.number
-                    this.posterUrl = entry.thumbnail_url
-                    this.description = buildString {
-                        entry.is_filler?.let { if (it) append("Filler episode") }
-                        entry.aired_at?.let {
-                            if (isNotEmpty()) append(" | ")
-                            append("Aired ${it.substringBefore("T")}")
-                        }
-                    }.takeIf { it.isNotBlank() }
-                }
+            if (entry.sub == true) {
+                subEpisodes.add(newEpisode(GoTakuEpisodeData(titleId, id, "hard_sub").toJson(), builder))
             }
-            newTvSeriesLoadResponse(title, url, tvType, episodeList) {
-                this.posterUrl = poster ?: backdrop
-                this.backgroundPosterUrl = backdrop
-                this.plot = plot
-                this.tags = tags
-                this.year = year
-                this.duration = duration
-                this.contentRating = rating
+            if (entry.dub == true) {
+                dubEpisodes.add(newEpisode(GoTakuEpisodeData(titleId, id, "dub").toJson(), builder))
             }
+        }
+        if (subEpisodes.isEmpty() && dubEpisodes.isEmpty()) return null
+
+        return newAnimeLoadResponse(title, url, tvType) {
+            this.posterUrl = poster ?: backdrop
+            this.backgroundPosterUrl = backdrop
+            this.plot = plot
+            this.tags = tags
+            this.year = year
+            this.duration = duration
+            this.contentRating = rating
+            if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
+            if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
         }
     }
 
-    private data class TrackLinks(
-        val label: String,
-        val embedUrl: String
-    )
+    // numeric labels are plain episode numbers, anything else like CAM marks
+    // a different cut of the same episode so it stays visible in the name
+    private fun episodeDisplayName(entry: GoTakuApi.EpisodeEntry): String {
+        val base = entry.name?.takeIf { it.isNotBlank() }
+            ?: return "Episode ${entry.number ?: entry.label ?: ""}".trim()
+        val label = entry.label ?: return base
+        return if (base != label && !label.matches(Regex("""\d+"""))) "$base ($label)" else base
+    }
 
     override suspend fun loadLinks(
         data: String,
@@ -143,48 +142,38 @@ class GoTaku : MainAPI() {
         }
         if (epData.episodeId.isBlank()) return false
 
-        // availability comes from the episode itself so freshly added dubs show
-        // up without reloading the info page, the raw embed probe covers the
-        // case where that lookup fails
-        val info = GoTakuApi.fetchEpisodeInfo(epData.episodeId)
-        val tracks = mutableListOf<TrackLinks>()
-        for ((type, label) in listOf("soft_sub" to "Sub", "hard_sub" to "Sub Hardsub", "dub" to "Dub")) {
-            if (info != null && info.trackAvailable(type) != true) continue
-            GoTakuApi.fetchEmbed(epData.episodeId, type)?.let { tracks.add(TrackLinks(label, it)) }
-        }
-        if (tracks.isEmpty()) return false
+        // each episode belongs to one sub or dub tab, the tab carries the
+        // track so only that track is fetched and labeled here, the site's
+        // sub side is hardsub only
+        val trackLabel = if (epData.track == "dub") "Dub" else "Hardsub"
+        val embedUrl = GoTakuApi.fetchEmbed(epData.episodeId, epData.track) ?: return false
+        val stream = resolveStream(embedUrl) ?: return false
 
-        var found = false
-        for (track in tracks) {
-            val stream = resolveStream(track.embedUrl) ?: continue
-            val qualities = parseQualities(stream.masterPlaylist)
-            if (qualities.isEmpty()) {
-                callback.invoke(
-                    newExtractorLink(
-                        source = name,
-                        name = track.label,
-                        url = "${stream.proxyUrl}/m/0/master.m3u8",
-                        type = ExtractorLinkType.M3U8
-                    )
+        val qualities = parseQualities(stream.masterPlaylist)
+        if (qualities.isEmpty()) {
+            callback.invoke(
+                newExtractorLink(
+                    source = name,
+                    name = trackLabel,
+                    url = "${stream.proxyUrl}/m/0/master.m3u8",
+                    type = ExtractorLinkType.M3U8
                 )
-                found = true
-            } else {
-                qualities.forEach { (label, quality, index) ->
-                    callback.invoke(
-                        newExtractorLink(
-                            source = name,
-                            name = "${track.label} $label",
-                            url = "${stream.proxyUrl}/m/$index/master.m3u8",
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.quality = quality
-                        }
-                    )
-                }
-                found = true
-            }
+            )
+            return true
         }
-        return found
+        qualities.forEach { (label, quality, index) ->
+            callback.invoke(
+                newExtractorLink(
+                    source = name,
+                    name = "$trackLabel $label",
+                    url = "${stream.proxyUrl}/m/$index/master.m3u8",
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.quality = quality
+                }
+            )
+        }
+        return true
     }
 
     class ResolvedStream(
@@ -280,18 +269,22 @@ class GoTaku : MainAPI() {
     private fun GoTakuApi.TitleEntry.toSearchResponse(): SearchResponse? {
         val name = this.name ?: return null
         val id = this.id ?: return null
-        val isMovie = this.format == "MOVIE"
         val poster = this.poster_url ?: this.backdrop_url
-        return if (isMovie) {
-            newMovieSearchResponse(name, "$mainUrl/title/$id", TvType.AnimeMovie) {
-                this.posterUrl = poster
-                this.year = this@toSearchResponse.year
-            }
-        } else {
-            newTvSeriesSearchResponse(name, "$mainUrl/title/$id", TvType.Anime) {
-                this.posterUrl = poster
-                this.year = this@toSearchResponse.year
-            }
+        val tvType = when (this.format) {
+            "OVA", "ONA", "SPECIAL" -> TvType.OVA
+            else -> TvType.Anime
+        }
+        return newAnimeSearchResponse(name, "$mainUrl/title/$id", tvType) {
+            this.posterUrl = poster
+            this.year = this@toSearchResponse.year
+            val subCount = this@toSearchResponse.episodes?.latest_sub
+            val dubCount = this@toSearchResponse.episodes?.latest_dub
+            addDubStatus(
+                dubExist = (dubCount ?: 0) > 0,
+                subExist = (subCount ?: 0) > 0,
+                dubEpisodes = dubCount,
+                subEpisodes = subCount
+            )
         }
     }
 }
@@ -300,5 +293,5 @@ class GoTaku : MainAPI() {
 data class GoTakuEpisodeData(
     val titleId: String,
     val episodeId: String,
-    val episodeName: String? = null
+    val track: String
 )
