@@ -919,8 +919,7 @@ private fun captureSetCookies(url: String, response: NiceResponse) {
         if (host.isEmpty()) return
         val values = response.headers.values("set-cookie")
         if (values.isNullOrEmpty()) return
-        val ua = (response.request.headers["User-Agent"] as? String)
-            ?: Tw4aCFStore.getSession(host)?.userAgent
+        val ua = Tw4aCFStore.getSession(host)?.userAgent
             ?: "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
         Tw4aCFStore.mergeCookies(host, values, ua)
     } catch (e: Exception) {
