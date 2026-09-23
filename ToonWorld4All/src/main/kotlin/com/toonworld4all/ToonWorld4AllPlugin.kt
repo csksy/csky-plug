@@ -384,7 +384,8 @@ class ToonWorld4All : MainAPI() {
         var emittedAny = false
 
         archive.streams.forEach { stream ->
-            stream.optString("play").takeIf { it.startsWith("http") }?.let { playUrl ->
+            val playUrl = stream.optString("play").takeIf { it.startsWith("http") } ?: return@forEach
+            if (Regex("""\.(m3u8|mp4|mkv|webm)(\?|#|$)""").containsMatchIn(playUrl)) {
                 callback(
                     newExtractorLink(
                         "ToonWorld4All Watch",
@@ -415,6 +416,7 @@ class ToonWorld4All : MainAPI() {
                 else -> 6
             }
             encode.files.forEach { file ->
+                if (!tw4aHostEnabled(file.host)) return@forEach
                 val hostLower = file.host.lowercase()
                 val hostPriority = when {
                     hostLower.contains("hubcloud") -> 0
@@ -451,96 +453,73 @@ class ToonWorld4All : MainAPI() {
         }
         if (toResolve.isEmpty()) return emittedAny
 
-        val paths = toResolve.map { it.redirectPath }.distinct()
-        var redirectInfos = Tw4aArchive.resolveRedirects(paths)
+        fun isDirectFileUrl(dest: String): Boolean =
+            dest.startsWith("http") && TW4A_FILE_HOST.containsMatchIn(dest) && !tw4aIsShortenerUrl(dest)
 
-        val directFiles = mutableListOf<Pair<PendingFile, String>>()
-        var shortenerFiles = mutableListOf<Pair<PendingFile, String>>()
-        fun classify(infos: Map<String, Tw4aArchive.RedirectInfo>) {
-            directFiles.clear()
-            shortenerFiles.clear()
-            for (file in toResolve) {
-                if (resolvedCache[file.cacheKey] != null) continue
-                val info = infos[file.redirectPath]
-                if (info == null) {
-                    if (!isFreshFail(file.cacheKey)) cacheFail(file.cacheKey)
-                    continue
+        val paths = toResolve.map { it.redirectPath }.distinct()
+        val redirectInfos = Tw4aArchive.resolveRedirects(paths)
+
+        val shortenerFiles = mutableListOf<Pair<PendingFile, String>>()
+        for (file in toResolve) {
+            if (resolvedCache[file.cacheKey] != null) continue
+            val info = redirectInfos[file.redirectPath]
+            if (info == null) {
+                if (!isFreshFail(file.cacheKey)) cacheFail(file.cacheKey)
+                continue
+            }
+            val dest = info.destination
+            when {
+                isDirectFileUrl(dest) -> {
+                    resolvedCache[file.cacheKey] = dest
                 }
-                val dest = info.destination
-                if (TW4A_FILE_HOST.containsMatchIn(dest) && !tw4aIsShortenerUrl(dest)) {
-                    directFiles.add(file to dest)
-                } else if (dest.startsWith("http")) {
+                dest.startsWith("http") -> {
                     shortenerFiles.add(file to dest)
-                } else {
+                }
+                else -> {
                     cacheFail(file.cacheKey)
                 }
             }
         }
-        classify(redirectInfos)
 
-        val gplinkRerolled = mutableMapOf<String, Tw4aArchive.RedirectInfo>()
-        val rerollPaths = shortenerFiles
-            .filter { it.second.contains("gplinks") }
-            .map { it.first.redirectPath }
-            .distinct()
-        if (rerollPaths.isNotEmpty()) {
-            val rerolledInfos = Tw4aArchive.resolveRedirects(rerollPaths)
-            for ((path, info) in rerolledInfos) {
-                val newDest = info.destination
-                if (newDest.startsWith("http") && !newDest.contains("gplinks")) {
-                    gplinkRerolled[path] = info
-                }
-            }
-            if (gplinkRerolled.isNotEmpty()) {
-                val merged = redirectInfos.toMutableMap()
-                merged.putAll(gplinkRerolled)
-                redirectInfos = merged
-                classify(redirectInfos)
-            }
-        }
-
-        for ((file, dest) in directFiles) {
-            resolvedCache[file.cacheKey] = dest
-        }
-
-        val landings = mutableMapOf<String, String>()
         if (shortenerFiles.isNotEmpty() && !tw4aShortenerRefused()) {
-            val bestPerHost = mutableMapOf<String, String>()
-            for ((file, dest) in shortenerFiles.sortedBy { it.first.priority }) {
-                val hostLower = file.host.lowercase()
-                if (!bestPerHost.containsKey(hostLower) && !landings.containsKey(dest)) {
-                    bestPerHost[hostLower] = dest
+            tw4aSetSystem24Hour()
+            val probeEntry = shortenerFiles.minByOrNull { it.first.priority } ?: return emittedAny
+            val probeFile = probeEntry.first
+            val probeDest = probeEntry.second
+            val seenDomains = java.util.Collections.synchronizedSet(HashSet<String>())
+            tw4aShortenerDomainKey(probeDest)?.let { seenDomains.add(it) }
+            val nextProvider: suspend () -> String? = {
+                val info = Tw4aArchive.resolveRedirect(probeFile.redirectPath)
+                val dest = info?.destination.orEmpty()
+                when {
+                    dest.isBlank() -> null
+                    isDirectFileUrl(dest) -> null
+                    else -> if (tw4aShortenerDomainKey(dest)?.let { seenDomains.add(it) } == true) dest else null
                 }
             }
-            val firstWave = bestPerHost.entries
-                .sortedBy { it.value.contains("gplinks") }
-                .map { it.value }
-                .distinct()
-                .take(4)
-            if (firstWave.isNotEmpty()) {
-                val session = showTw4aShortenerSessionAndWait(firstWave)
-                session.landings.forEach { (dest, landing) ->
-                    landings[dest] = landing
+            val session = showTw4aShortenerSessionAndWait(listOf(probeDest), nextProvider)
+            if (session.landings.isEmpty()) {
+                markTw4aShortenerRefused()
+            } else {
+                val landing = session.landings.values.first()
+                for (file in toResolve) {
+                    if (file.redirectPath == probeFile.redirectPath) {
+                        resolvedCache[file.cacheKey] = landing
+                    }
                 }
-                if (session.landings.isEmpty()) {
-                    markTw4aShortenerRefused()
-                }
-            }
-            for ((file, dest) in shortenerFiles) {
-                val landing = landings[dest]
-                if (landing != null) {
-                    resolvedCache[file.cacheKey] = landing
-                }
-            }
-
-            val solvedAny = landings.isNotEmpty()
-            val unsolved = shortenerFiles.filter { resolvedCache[it.first.cacheKey] == null }
-            if (solvedAny && unsolved.isNotEmpty()) {
-                val retryPaths = unsolved.map { it.first.redirectPath }.distinct()
-                redirectInfos = Tw4aArchive.resolveRedirects(retryPaths)
-                classify(redirectInfos)
-                for ((file, dest) in directFiles) {
-                    resolvedCache[file.cacheKey] = dest
+                val remaining = toResolve
+                    .filter { it.redirectPath != probeFile.redirectPath && resolvedCache[it.cacheKey] == null }
+                    .map { it.redirectPath }
+                    .distinct()
+                if (remaining.isNotEmpty()) {
+                    val reinfos = Tw4aArchive.resolveRedirects(remaining)
+                    for (file in toResolve) {
+                        if (resolvedCache[file.cacheKey] != null) continue
+                        val info = reinfos[file.redirectPath] ?: continue
+                        if (isDirectFileUrl(info.destination)) {
+                            resolvedCache[file.cacheKey] = info.destination
+                        }
+                    }
                 }
             }
         }

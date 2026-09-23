@@ -37,6 +37,8 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -51,8 +53,9 @@ private val CF_CHALLENGE_TITLES = listOf(
 )
 
 private const val COOKIE_TTL_MS = 15L * 60 * 60 * 1000
+private const val ARCHIVE_COOKIE_TTL_MS = 25L * 60 * 60 * 1000
 private const val SOLVER_TIMEOUT_MS = 90_000L
-private const val QUEUE_TIMEOUT_MS = 270_000L
+private const val QUEUE_TIMEOUT_MS = 300_000L
 private const val POLL_INTERVAL_MS = 1000L
 private const val CURSOR_STEP_DP = 10f
 private const val BYPASS_COOLDOWN_MS = 60_000L
@@ -97,10 +100,13 @@ internal object Tw4aCFStore {
         }
     }
 
+    private fun ttlFor(host: String): Long =
+        if (host.lowercase().contains("toonworld4all")) ARCHIVE_COOKIE_TTL_MS else COOKIE_TTL_MS
+
     fun getSession(host: String): Tw4aCFSession? {
         val s = sessions[host] ?: return familySession(host)
         if (s.cookies.isBlank()) return familySession(host)
-        if (System.currentTimeMillis() - s.timestamp > COOKIE_TTL_MS) {
+        if (System.currentTimeMillis() - s.timestamp > ttlFor(host)) {
             clear(host)
             return familySession(host)
         }
@@ -113,7 +119,7 @@ internal object Tw4aCFStore {
         for ((other, s) in sessions) {
             if (!other.lowercase().contains(family)) continue
             if (s.cookies.isBlank()) continue
-            if (System.currentTimeMillis() - s.timestamp > COOKIE_TTL_MS) continue
+            if (System.currentTimeMillis() - s.timestamp > ttlFor(other)) continue
             if (s.cookies.contains("cf_clearance")) return s
             if (best == null || s.timestamp > best.timestamp) best = s
         }
@@ -232,6 +238,51 @@ internal fun tw4aIsShortenerUrl(url: String): Boolean {
     return TW4A_SHORTENER_HOST.any { host == it || host.endsWith(".$it") }
 }
 
+internal fun tw4aShortenerDomainKey(url: String): String? {
+    val host = tw4aHostOf(url).lowercase()
+    if (host.isEmpty()) return null
+    return when {
+        host.contains("gplinks") -> "gplinks"
+        host.contains("exe.io") || host.contains("exeygo") -> "exe"
+        host.contains("cuty") || host.contains("cuttty") -> "cuty"
+        else -> host
+    }
+}
+
+internal fun tw4aHostEnabled(host: String): Boolean {
+    val h = host.lowercase()
+    val key = when {
+        h.contains("hubcloud") -> "TW4A_HOST_HUBCLOUD"
+        h.contains("gdflix") -> "TW4A_HOST_GDFLIX"
+        h.contains("filepress") || h.contains("filebee") -> "TW4A_HOST_FILEPRESS"
+        h.contains("mega") -> "TW4A_HOST_MEGA"
+        else -> return true
+    }
+    val def = key == "TW4A_HOST_HUBCLOUD"
+    return try {
+        CloudStreamApp.getKey<Boolean>(key) ?: def
+    } catch (e: Exception) {
+        def
+    }
+}
+
+internal fun tw4aSetHostEnabled(key: String, value: Boolean) {
+    try {
+        CloudStreamApp.setKey(key, value)
+    } catch (e: Exception) {
+        Log.e(TAG, "set host: ${e.message}")
+    }
+}
+
+internal fun tw4aHostToggleState(key: String): Boolean {
+    val def = key == "TW4A_HOST_HUBCLOUD"
+    return try {
+        CloudStreamApp.getKey<Boolean>(key) ?: def
+    } catch (e: Exception) {
+        def
+    }
+}
+
 internal fun tw4aHostOf(url: String): String = try {
     Uri.parse(url).host ?: ""
 } catch (e: Exception) { "" }
@@ -248,6 +299,24 @@ internal fun tw4aSessionHeaders(host: String): Map<String, String> {
 
 internal fun tw4aNormalizeUrl(url: String): String {
     return url.replace("https://gdflix.dev/", "https://new4.gdflix.io/")
+}
+
+internal suspend fun tw4aSetSystem24Hour() {
+    try {
+        val url = "https://archive.toonworld4all.me/api/user/preference/system?id=24hour"
+        val h = buildTw4aHeaders(
+            url,
+            mapOf(
+                "Referer" to "https://archive.toonworld4all.me/",
+                "Origin" to "https://archive.toonworld4all.me"
+            )
+        ).toMutableMap()
+        h["Accept"] = "*/*"
+        val response = app.post(url, headers = h, timeout = 15_000L)
+        captureSetCookies(url, response)
+    } catch (e: Exception) {
+        Log.d(TAG, "system pref failed: ${e.message}")
+    }
 }
 
 private fun buildTw4aHeaders(url: String, original: Map<String, String>): Map<String, String> {
@@ -394,6 +463,16 @@ private val SHORTENER_CLICKER = """
         var clicks = 0;
         var t = setInterval(function () {
             clicks++;
+            if (clicks === 12 || clicks === 17) {
+                try {
+                    var fb = document.querySelector('button[data-ref="continue"]');
+                    if (fb && (fb.disabled || fb.className.indexOf("disabled") !== -1)) {
+                        fb.disabled = false;
+                        fb.className = fb.className.replace(/\bdisabled\b/g, "").trim();
+                        fb.click();
+                    }
+                } catch (e) { }
+            }
             try {
                 var b;
                 if ((b = document.querySelector('button[data-ref="continue"]')) &&
@@ -426,6 +505,7 @@ private class Tw4aWebDialog(
     private val mode: String,
     private val targetUrl: String,
     private val queue: List<String> = emptyList(),
+    private val nextItem: (suspend () -> String?)? = null,
     private val onDone: ((Any?) -> Unit)? = null
 ) {
     private var dialog: AlertDialog? = null
@@ -435,6 +515,11 @@ private class Tw4aWebDialog(
     private val handler = Handler(Looper.getMainLooper())
     private val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
     private var pollElapsedMs = 0L
+    private val sessionScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob()
+    )
+    private var fetchingNext = false
+    private var fetchAttempts = 0
 
     private val pending = mutableListOf<String>()
     private val landings = linkedMapOf<String, String>()
@@ -495,6 +580,7 @@ private class Tw4aWebDialog(
     private fun finishCf(success: Boolean, cookieStr: String = "", cookieHost: String = "") {
         if (!resolved.compareAndSet(false, true)) return
         handler.removeCallbacksAndMessages(null)
+        sessionScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         if (success) {
             val ua = webView?.settings?.userAgentString ?: MOBILE_UA
             val host = cookieHost.ifBlank { tw4aHostOf(targetUrl) }
@@ -541,6 +627,7 @@ private class Tw4aWebDialog(
     private fun finishQueue(userClosed: Boolean) {
         if (!resolved.compareAndSet(false, true)) return
         handler.removeCallbacksAndMessages(null)
+        sessionScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         harvestCookies(webView?.url ?: "")
         try { webView?.destroy() } catch (e: Exception) {}
         try { dialog?.dismiss() } catch (e: Exception) {}
@@ -584,6 +671,37 @@ private class Tw4aWebDialog(
         while (next < pending.size && pending[next] in landings) next++
         pollElapsedMs = 0L
         if (next >= pending.size) {
+            if (fetchingNext) return
+            if (nextItem != null && fetchAttempts < 6) {
+                fetchingNext = true
+                fetchAttempts++
+                statusText?.text = "Checking for the next shortener..."
+                sessionScope.launch {
+                    val nxt = try {
+                        nextItem?.invoke()
+                    } catch (e: Exception) {
+                        null
+                    }
+                    handler.post {
+                        fetchingNext = false
+                        if (resolved.get()) return@post
+                        if (nxt.isNullOrBlank()) {
+                            queueFinished = true
+                            statusText?.text = "All links opened (${landings.size} solved)"
+                            handler.postDelayed({ finishQueue(false) }, 900)
+                        } else {
+                            pending.add(nxt)
+                            cursor = pending.size - 1
+                            statusText?.text = "Opening next shortener (${landings.size} solved)..."
+                            try {
+                                webView?.loadUrl(nxt)
+                            } catch (e: Exception) {
+                            }
+                        }
+                    }
+                }
+                return
+            }
             queueFinished = true
             statusText?.text = "All links opened (${landings.size}/${pending.size})"
             handler.postDelayed({ finishQueue(false) }, 1200)
@@ -897,6 +1015,7 @@ private class Tw4aWebDialog(
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                     val url = request?.url?.toString() ?: return false
                     if (mode == "cf") return false
+                    if (!request.isForMainFrame) return false
                     return !isAllowed(url)
                 }
 
@@ -937,6 +1056,7 @@ private class Tw4aWebDialog(
 
     fun dismiss() {
         handler.removeCallbacksAndMessages(null)
+        sessionScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         try { webView?.apply { stopLoading(); destroy() } } catch (e: Exception) {}
         webView = null
         try { dialog?.dismiss() } catch (e: Exception) {}
@@ -961,14 +1081,17 @@ internal suspend fun showTw4aCFBypassDialogAndWait(url: String): Boolean = withC
     }
 }
 
-internal suspend fun showTw4aShortenerSessionAndWait(links: List<String>): Tw4aShortenerResult =
+internal suspend fun showTw4aShortenerSessionAndWait(
+    links: List<String>,
+    nextItem: (suspend () -> String?)? = null
+): Tw4aShortenerResult =
     withContext(Dispatchers.Main) {
         val activity = CommonActivity.activity as? AppCompatActivity
         if (activity == null || activity.isFinishing || activity.isDestroyed) {
             return@withContext Tw4aShortenerResult(emptyMap(), false)
         }
         suspendCancellableCoroutine { cont ->
-            val sDialog = Tw4aWebDialog(mode = "queue", targetUrl = links.firstOrNull() ?: "", queue = links) { result ->
+            val sDialog = Tw4aWebDialog(mode = "queue", targetUrl = links.firstOrNull() ?: "", queue = links, nextItem = nextItem) { result ->
                 if (cont.isActive) cont.resume(result as? Tw4aShortenerResult ?: Tw4aShortenerResult(emptyMap(), false))
             }
             try { sDialog.show(activity) } catch (e: Exception) {

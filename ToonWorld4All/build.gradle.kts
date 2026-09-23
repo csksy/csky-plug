@@ -1,4 +1,4 @@
-version = 7
+version = 8
 
 android {
     buildFeatures {
@@ -11,7 +11,7 @@ dependencies {
 }
 
 cloudstream {
-    description = "cartoons anime and movies from toonworld4all with hubcloud gdflix filepress and mega downloads"
+    description = "cartoons anime and movies from toonworld4all with hubcloud pixeldrain and optional gdflix filepress mega downloads"
     authors = listOf("csksy")
 
     status = 1

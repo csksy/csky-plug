@@ -48,9 +48,43 @@ class ToonWorld4AllSettingsFragment(private val plugin: Plugin) : BottomSheetDia
         })
 
         root.addView(TextView(ctx).apply {
-            text = "If the site shows a \"Just a moment\" screen, tap Bypass Cloudflare to solve the challenge. Cookies are saved for 15 hours for each site that needs them."
+            text = "Enabled download sources. HubCloud gives the PixelDrain and 10Gbps direct links. After you solve the 3 shortener ads once, downloads stay direct for 24 hours."
             textSize = 13f; setTextColor(Color.parseColor("#B0B0C0"))
             setPadding(0, 0, 0, smallPad)
+        })
+
+        val hostToggles = listOf(
+            Triple("TW4A_HOST_HUBCLOUD", "HubCloud (PixelDrain)", "HubCloud"),
+            Triple("TW4A_HOST_GDFLIX", "GDFlix", "GDFlix"),
+            Triple("TW4A_HOST_FILEPRESS", "Filepress", "Filepress"),
+            Triple("TW4A_HOST_MEGA", "MEGA (external app only)", "MEGA")
+        )
+        val toggleButtons = mutableMapOf<String, Button>()
+        for ((key, label, short) in hostToggles) {
+            val btn = Button(ctx).apply {
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                background = makeBg(0xFF2C2C3A.toInt())
+                layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = smallPad / 2 }
+                setOnClickListener {
+                    val now = !tw4aHostToggleState(key)
+                    tw4aSetHostEnabled(key, now)
+                    text = "$label: " + if (now) "ON" else "OFF"
+                    background = makeBg(if (now) 0xFF2E7D32.toInt() else 0xFF2C2C3A.toInt())
+                    Toast.makeText(ctx, "$short " + if (now) "enabled" else "disabled", Toast.LENGTH_SHORT).show()
+                }
+            }
+            val on = tw4aHostToggleState(key)
+            btn.text = "$label: " + if (on) "ON" else "OFF"
+            btn.background = makeBg(if (on) 0xFF2E7D32.toInt() else 0xFF2C2C3A.toInt())
+            toggleButtons[key] = btn
+            root.addView(btn)
+        }
+
+        root.addView(TextView(ctx).apply {
+            text = "If the site shows a \"Just a moment\" screen, tap Bypass Cloudflare to solve the challenge. Cookies are saved for 15 hours for each site that needs them."
+            textSize = 13f; setTextColor(Color.parseColor("#B0B0C0"))
+            setPadding(0, smallPad, 0, smallPad)
         })
 
         val bypassBtn = Button(ctx).apply {
