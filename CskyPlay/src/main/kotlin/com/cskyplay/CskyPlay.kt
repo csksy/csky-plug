@@ -1,0 +1,356 @@
+package com.cskyplay
+
+import android.net.Uri
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.api.Log
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import org.json.JSONObject
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CskyLinkData(
+    val id: Int? = null,
+    val imdbId: String? = null,
+    val type: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val title: String? = null,
+    val orgTitle: String? = null,
+    val year: Int? = null,
+    val isMovie: Boolean = false
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class TmdbData(
+    val id: Int? = null,
+    val type: String? = null
+)
+
+class CskyPlay : MainAPI() {
+    override var mainUrl = "https://www.themoviedb.org"
+    override var name = "CskyPlay"
+    override val hasMainPage = true
+    override val hasDownloadSupport = true
+    override val instantLinkLoading = true
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override var lang = "en"
+
+    companion object {
+        private const val TAG = "CskyPlay"
+        private const val TMDB = "https://api.themoviedb.org/3"
+        private const val TMDB_KEY = "1865f43a0549ca50d341dd9ab8b29f49"
+        private const val TMDB_KEY_ALT = "98ae14df2b8d8f8f8136499daf79f0e0"
+
+        fun tmdbImageUrl(path: String?): String? {
+            if (path.isNullOrBlank()) return null
+            return if (path.startsWith("http")) path else "https://image.tmdb.org/t/p/original$path"
+        }
+
+        fun siteEnabled(id: String): Boolean = try {
+            CloudStreamApp.getKey<Boolean>("CSKYPLAY_SITE_$id") ?: true
+        } catch (e: Exception) {
+            true
+        }
+    }
+
+    private suspend fun tmdbGet(path: String, params: Map<String, String> = emptyMap()): JSONObject? {
+        val query = params.entries.joinToString("&") { "${it.key}=${Uri.encode(it.value)}" }
+        return try {
+            JSONObject(app.get("$TMDB$path?api_key=$TMDB_KEY&$query", timeout = 12000L).text)
+        } catch (e: Exception) {
+            try {
+                JSONObject(app.get("$TMDB$path?api_key=$TMDB_KEY_ALT&$query", timeout = 12000L).text)
+            } catch (e2: Exception) {
+                null
+            }
+        }
+    }
+
+    override val mainPage = mainPageOf(
+        Pair("/trending/all/day", "Trending Now"),
+        Pair("/movie/popular", "Popular Movies"),
+        Pair("/tv/popular", "Popular TV Shows"),
+        Pair("/movie/top_rated", "Top Rated Movies"),
+        Pair("/tv/top_rated", "Top Rated TV Shows"),
+        Pair("/tv/airing_today", "Airing Today"),
+        Pair("/discover/tv&with_networks=213", "Netflix"),
+        Pair("/discover/tv&with_networks=1024", "Amazon Prime"),
+        Pair("/discover/movie&with_origin_country=IN&sort_by=popularity.desc", "Indian Movies"),
+        Pair("/discover/tv&with_origin_country=IN&sort_by=popularity.desc", "Indian Web Series"),
+        Pair("/discover/tv&with_original_language=ko&sort_by=popularity.desc", "Korean Shows"),
+        Pair("/discover/tv&with_genres=16&with_original_language=ja&sort_by=popularity.desc", "Anime Series")
+    )
+
+    private fun toSearchResponse(item: JSONObject, fallbackType: String): SearchResponse? {
+        val id = item.optInt("id", 0)
+        if (id == 0) return null
+        val mediaType = item.optString("media_type").ifBlank { fallbackType }
+        if (mediaType != "movie" && mediaType != "tv") return null
+        val title = item.optString("title").ifBlank { item.optString("name") }
+        if (title.isBlank()) return null
+        val poster = tmdbImageUrl(item.optString("poster_path"))
+        val year = item.optString("release_date").ifBlank { item.optString("first_air_date") }.take(4).toIntOrNull()
+        val type = if (mediaType == "movie") TvType.Movie else TvType.TvSeries
+        return newMovieSearchResponse(title, TmdbData(id, mediaType).toJson(), type) {
+            this.posterUrl = poster
+            this.year = year
+            score = Score.from10(item.optDouble("vote_average", 0.0))
+        }
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val parts = request.data.split("&", limit = 2)
+        val path = parts[0]
+        val extra = parts.getOrNull(1)?.split("&")?.mapNotNull {
+            val kv = it.split("=", limit = 2)
+            if (kv.size == 2) kv[0] to kv[1] else null
+        } ?: emptyList()
+        val type = if (request.data.contains("/movie")) "movie" else "tv"
+        val params = (extra + listOf("language" to "en-US", "page" to "$page")).toMap()
+        val json = tmdbGet(path, params)
+        val results = json?.optJSONArray("results")
+        val home = mutableListOf<SearchResponse>()
+        if (results != null) {
+            for (i in 0 until results.length()) {
+                val item = results.optJSONObject(i) ?: continue
+                toSearchResponse(item, if (path.contains("trending")) "" else type)?.let { home.add(it) }
+            }
+        }
+        val hasNext = (json?.optInt("page", 1) ?: 1) < (json?.optInt("total_pages", 1) ?: 1)
+        return newHomePageResponse(request.name, home, hasNext = hasNext)
+    }
+
+    override suspend fun search(query: String): List<SearchResponse>? {
+        if (query.isBlank()) return null
+        val json = tmdbGet(
+            "/search/multi",
+            mapOf("query" to query, "include_adult" to "false", "page" to "1", "language" to "en-US")
+        )
+        val results = json?.optJSONArray("results") ?: return null
+        val items = mutableListOf<SearchResponse>()
+        for (i in 0 until results.length()) {
+            val item = results.optJSONObject(i) ?: continue
+            toSearchResponse(item, "")?.let { items.add(it) }
+        }
+        return items
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        val data = try {
+            parseJson<TmdbData>(url)
+        } catch (e: Exception) {
+            return null
+        }
+        val id = data.id ?: return null
+        val type = data.type ?: return null
+        val isMovie = type == "movie"
+
+        val detail = tmdbGet(
+            "/$type/$id",
+            mapOf(
+                "language" to "en-US",
+                "append_to_response" to "external_ids,credits,videos,recommendations"
+            )
+        ) ?: return null
+
+        val title = detail.optString("title").ifBlank { detail.optString("name") }
+        if (title.isBlank()) return null
+        val orgTitle = detail.optString("original_title").ifBlank { detail.optString("original_name") }
+        val releaseDate = detail.optString("release_date").ifBlank { detail.optString("first_air_date") }
+        val year = releaseDate.take(4).toIntOrNull()
+        val poster = tmdbImageUrl(detail.optString("poster_path"))
+        val backdrop = tmdbImageUrl(detail.optString("backdrop_path"))
+        val overview = detail.optString("overview")
+        val runtime = detail.optInt("runtime", 0).takeIf { it > 0 }
+        val imdbId = detail.optJSONObject("external_ids")?.optString("imdb_id")?.takeIf { it.isNotBlank() }
+
+        val genres = mutableListOf<String>()
+        detail.optJSONArray("genres")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }?.let { genres.add(it) }
+            }
+        }
+
+        val actors = mutableListOf<ActorData>()
+        detail.optJSONObject("credits")?.optJSONArray("cast")?.let { arr ->
+            for (i in 0 until minOf(arr.length(), 12)) {
+                val c = arr.optJSONObject(i) ?: continue
+                val name = c.optString("name").takeIf { it.isNotBlank() } ?: continue
+                actors.add(ActorData(Actor(name, tmdbImageUrl(c.optString("profile_path")))))
+            }
+        }
+
+        val trailers = mutableListOf<TrailerData>()
+        detail.optJSONObject("videos")?.optJSONArray("results")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val v = arr.optJSONObject(i) ?: continue
+                if (v.optString("type") == "Trailer" && v.optString("site") == "YouTube") {
+                    trailers.add(TrailerData("https://www.youtube.com/watch?v=${v.optString("key")}", null, false))
+                }
+            }
+        }
+
+        val recommendations = mutableListOf<SearchResponse>()
+        detail.optJSONObject("recommendations")?.optJSONArray("results")?.let { arr ->
+            for (i in 0 until minOf(arr.length(), 12)) {
+                val item = arr.optJSONObject(i) ?: continue
+                toSearchResponse(item, type)?.let { recommendations.add(it) }
+            }
+        }
+
+        val rating = detail.optDouble("vote_average", 0.0)
+
+        if (isMovie) {
+            val linkData = CskyLinkData(
+                id = id,
+                imdbId = imdbId,
+                type = type,
+                title = title,
+                orgTitle = orgTitle.ifBlank { null },
+                year = year,
+                isMovie = true
+            )
+            return newMovieLoadResponse(title, url, TvType.Movie, linkData.toJson()) {
+                this.posterUrl = poster
+                this.backgroundPosterUrl = backdrop
+                this.year = year
+                this.plot = overview
+                this.duration = runtime
+                this.score = Score.from10(rating)
+                this.tags = genres
+                this.actors = actors
+                this.recommendations = recommendations
+                this.trailers = trailers
+            }
+        }
+
+        val seasonsArr = detail.optJSONArray("seasons")
+        val episodes = mutableListOf<Episode>()
+        val seasons = mutableListOf<Pair<Int, String>>()
+        if (seasonsArr != null) {
+            for (i in 0 until seasonsArr.length()) {
+                val s = seasonsArr.optJSONObject(i) ?: continue
+                val num = s.optInt("season_number", -1)
+                if (num < 0) continue
+                seasons.add(num to s.optString("air_date"))
+            }
+        }
+        if (seasons.isEmpty()) seasons.add(1 to "")
+
+        coroutineScope {
+            val semaphore = Semaphore(8)
+            val deferred = seasons.map { (seasonNum, airDate) ->
+                async(Dispatchers.IO) {
+                    semaphore.withPermit {
+                        try {
+                            val seasonJson = tmdbGet(
+                                "/tv/$id/season/$seasonNum",
+                                mapOf("language" to "en-US")
+                            ) ?: return@withPermit emptyList()
+                            val epsArr = seasonJson.optJSONArray("episodes") ?: return@withPermit emptyList()
+                            (0 until epsArr.length()).mapNotNull { i ->
+                                val ep = epsArr.optJSONObject(i) ?: return@mapNotNull null
+                                val epNum = ep.optInt("episode_number", 0)
+                                if (epNum <= 0) return@mapNotNull null
+                                val linkData = CskyLinkData(
+                                    id = id,
+                                    imdbId = imdbId,
+                                    type = type,
+                                    season = seasonNum,
+                                    episode = epNum,
+                                    title = title,
+                                    orgTitle = orgTitle.ifBlank { null },
+                                    year = airDate.take(4).toIntOrNull() ?: year,
+                                    isMovie = false
+                                )
+                                newEpisode(linkData.toJson()) {
+                                    this.name = ep.optString("name").ifBlank { "Episode $epNum" }
+                                    this.season = seasonNum
+                                    this.episode = epNum
+                                    this.posterUrl = tmdbImageUrl(ep.optString("still_path"))
+                                    this.description = ep.optString("overview")
+                                    score = Score.from10(ep.optDouble("vote_average", 0.0))
+                                    ep.optString("air_date").takeIf { it.isNotBlank() }?.let { addDate(it) }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            emptyList()
+                        }
+                    }
+                }
+            }
+            deferred.forEach { d ->
+                runCatching { episodes.addAll(d.await()) }
+            }
+        }
+
+        episodes.sortBy { (it.season ?: 0) * 10000 + (it.episode ?: 0) }
+
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            this.posterUrl = poster
+            this.backgroundPosterUrl = backdrop
+            this.year = year
+            this.plot = overview
+            this.score = Score.from10(rating)
+            this.tags = genres
+            this.actors = actors
+            this.recommendations = recommendations
+            this.trailers = trailers
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val res = try {
+            parseJson<CskyLinkData>(data)
+        } catch (e: Exception) {
+            return false
+        }
+
+        data class SiteEntry(
+            val id: String,
+            val label: String,
+            val invoke: suspend (CskyLinkData, (SubtitleFile) -> Unit, (ExtractorLink) -> Unit) -> Unit
+        )
+
+        val allSites = listOf(
+            SiteEntry("netnaija", "NetNaija") { r, s, c -> NetNaijaSite.invoke(r, s, c) },
+            SiteEntry("moviebox", "MovieBox") { r, s, c -> MovieBoxSite.invoke(r, s, c) },
+            SiteEntry("vegamovies", "VegaMovies") { r, s, c -> VegaMoviesSite.invoke(r, s, c) },
+            SiteEntry("hdhub4u", "HDHub4u") { r, s, c -> HdHub4uSite.invoke(r, s, c) },
+            SiteEntry("4khdhub", "4KHDHub") { r, s, c -> FourKhdHubSite.invoke(r, s, c) },
+            SiteEntry("themoviesflix", "TheMoviesFlix") { r, s, c -> TmfSite.invoke(r, s, c) },
+            SiteEntry("multimovies", "Multimovies") { r, s, c -> MultimoviesSite.invoke(r, s, c) },
+            SiteEntry("movies4u", "Movies4u") { r, s, c -> Movies4uSite.invoke(r, s, c) }
+        )
+
+        val active = allSites.filter { siteEnabled(it.id) }
+        if (active.isEmpty()) return false
+
+        coroutineScope {
+            active.forEach { site ->
+                async(Dispatchers.IO) {
+                    try {
+                        site.invoke(res, subtitleCallback, callback)
+                    } catch (e: Exception) {
+                        Log.d(TAG, "${site.label} failed: ${e.message}")
+                    }
+                }
+            }
+        }
+        return true
+    }
+}
