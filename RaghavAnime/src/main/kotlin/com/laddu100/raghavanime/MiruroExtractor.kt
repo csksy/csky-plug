@@ -50,7 +50,7 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
                 "Referer" to "$mainUrl/"
             )
-            val m3u8 = app.get(url, referer = mainUrl, interceptor = resolver).url
+            val m3u8 = RaghavPerf.withWebView { app.get(url, referer = mainUrl, interceptor = resolver).url }
             if (m3u8.contains(".m3u8")) {
                 generateM3u8(name, m3u8, mainUrl, headers = headers).forEach(callback)
             }
@@ -79,7 +79,7 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 useOkhttp = false,
                 timeout = 30_000L
             )
-            val resolved = app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url
+            val resolved = RaghavPerf.withWebView { app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url }
             val headers = mapOf("Referer" to url)
             when {
                 resolved.contains(".m3u8", ignoreCase = true) -> {

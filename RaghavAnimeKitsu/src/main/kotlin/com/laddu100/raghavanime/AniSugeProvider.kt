@@ -522,7 +522,7 @@ class AniSugeProvider : MainAPI() {
                     useOkhttp = false,
                     timeout = 30_000L
                 )
-                val resolved = app.get(playerUrl, referer = "$baseUrl/", interceptor = resolver).url
+                val resolved = RaghavPerf.withWebView { app.get(playerUrl, referer = "$baseUrl/", interceptor = resolver).url }
                 when {
                     resolved.contains(".m3u8", ignoreCase = true) -> {
                         M3u8Helper.generateM3u8(

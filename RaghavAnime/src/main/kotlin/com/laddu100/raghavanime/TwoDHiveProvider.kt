@@ -472,7 +472,7 @@ class RaghavTwoDHive : MainAPI() {
                 // the cap pow solve alone can take half a minute on slow hardware
                 useOkhttp = false, timeout = 120_000L
             )
-            val resolved = app.get(embedUrl, referer = epUrl, interceptor = resolver).url
+            val resolved = RaghavPerf.withWebView { app.get(embedUrl, referer = epUrl, interceptor = resolver).url }
             if (resolved.contains(".m3u8") || resolved.contains(".mp4")) {
                 val linkType = if (resolved.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 callback(

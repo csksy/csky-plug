@@ -377,9 +377,11 @@ private suspend fun miruroPipeRequestForDomain(
         Log.e("RaghavAnime", "[Miruro] pipeForDomain: direct GET failed for /$path on $domain: ${e.message}")
     }
 
-    val webBody = MiruroCloudflare.fetchPipeViaWebView(
-        Miruro.context, domain, pipeUrl
-    )
+    val webBody = RaghavPerf.withWebView {
+        MiruroCloudflare.fetchPipeViaWebView(
+            Miruro.context, domain, pipeUrl
+        )
+    }
     if (webBody != null && webBody.isNotEmpty()) {
         try {
             return decodePipeResponseAuto(webBody)

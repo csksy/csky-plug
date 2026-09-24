@@ -37,7 +37,7 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
 
         // the megaplay family occasionally hides the playlist behind a player
         // only a real browser can drive, so fall back to interception
-        Log.e("RaghavAnimeKitsu", "[Miruro][${name}] direct extraction failed, trying WebViewResolver fallback")
+        Log.e("RaghavAnime", "[Miruro][${name}] direct extraction failed, trying WebViewResolver fallback")
         runCatching {
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""\.m3u8"""),
@@ -50,12 +50,12 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
                 "Referer" to "$mainUrl/"
             )
-            val m3u8 = app.get(url, referer = mainUrl, interceptor = resolver).url
+            val m3u8 = RaghavPerf.withWebView { app.get(url, referer = mainUrl, interceptor = resolver).url }
             if (m3u8.contains(".m3u8")) {
                 generateM3u8(name, m3u8, mainUrl, headers = headers).forEach(callback)
             }
         }.onFailure { error ->
-            Log.e("RaghavAnimeKitsu", "[Miruro][${name}] WebViewResolver fallback failed: ${error.message}")
+            Log.e("RaghavAnime", "[Miruro][${name}] WebViewResolver fallback failed: ${error.message}")
         }
     }
 }
@@ -79,7 +79,7 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 useOkhttp = false,
                 timeout = 30_000L
             )
-            val resolved = app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url
+            val resolved = RaghavPerf.withWebView { app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url }
             val headers = mapOf("Referer" to url)
             when {
                 resolved.contains(".m3u8", ignoreCase = true) -> {
@@ -100,7 +100,7 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 }
             }
         }.onFailure { error ->
-            Log.e("RaghavAnimeKitsu", "[Miruro][WebView] getUrl failed: ${error.message}")
+            Log.e("RaghavAnime", "[Miruro][WebView] getUrl failed: ${error.message}")
         }
     }
 }

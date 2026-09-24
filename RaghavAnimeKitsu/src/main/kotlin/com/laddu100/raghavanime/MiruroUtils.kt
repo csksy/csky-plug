@@ -112,14 +112,14 @@ fun decodePipeResponseAuto(responseBody: String): String {
 
     try {
         return decompress(decoded)
-    } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "Miruro: ${e.message}") }
+    } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
 
     try {
         val xored = xorDecrypt(decoded)
         return decompress(xored)
-    } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "Miruro: ${e.message}") }
+    } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
 
-    Log.e("RaghavAnimeKitsu", "[Miruro] decodeAuto: all decode strategies failed (bodyLen=${responseBody.length})")
+    Log.e("RaghavAnime", "[Miruro] decodeAuto: all decode strategies failed (bodyLen=${responseBody.length})")
     throw Exception("Cannot decode pipe response (tried JSON, decompress, XOR+decompress)")
 }
 
@@ -190,8 +190,8 @@ object MiruroCloudflare {
                             if (cookies.isNotEmpty()) {
                                 setCookies(domain, cookies)
                             }
-                        } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "Miruro: ${e.message}") }
-                        try { webView?.destroy() } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "Miruro: ${e.message}") }
+                        } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
+                        try { webView?.destroy() } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
                         cont.resume(result)
                     }
                 }
@@ -239,7 +239,7 @@ object MiruroCloudflare {
                                         .replace("\\\"", "\"")
                                         .replace("\\\\", "\\")
                                     if (text.startsWith("ERROR:")) {
-                                        Log.e("RaghavAnimeKitsu", "[Miruro] WebView: pipe fetch JS error: ${text.take(120)}")
+                                        Log.e("RaghavAnime", "[Miruro] WebView: pipe fetch JS error: ${text.take(120)}")
                                         finish(null)
                                     } else if (text.isNotEmpty() && text.length > 10) {
                                         finish(text)
@@ -298,11 +298,11 @@ object MiruroCloudflare {
                     }
 
                     Handler(Looper.getMainLooper()).postDelayed({
-                        Log.w("RaghavAnimeKitsu", "[Miruro] WebView: 30s timeout reached without pipe result")
+                        Log.w("RaghavAnime", "[Miruro] WebView: 30s timeout reached without pipe result")
                         finish(null)
                     }, 30000)
                 } catch (e: Exception) {
-                    Log.e("RaghavAnimeKitsu", "[Miruro] WebView: init failed: ${e.message}")
+                    Log.e("RaghavAnime", "[Miruro] WebView: init failed: ${e.message}")
                     finish(null)
                 }
             }
@@ -338,11 +338,11 @@ suspend fun miruroPipeRequest(path: String, query: Map<String, Any>): String {
             MiruroCloudflare.setWorkingDomain(domain)
             return result
         } catch (e: Exception) {
-            Log.e("RaghavAnimeKitsu", "[Miruro] pipeRequest: $domain failed for /$path: ${e.message}")
+            Log.e("RaghavAnime", "[Miruro] pipeRequest: $domain failed for /$path: ${e.message}")
             lastError = e
         }
     }
-    Log.e("RaghavAnimeKitsu", "[Miruro] pipeRequest: all domains failed for /$path")
+    Log.e("RaghavAnime", "[Miruro] pipeRequest: all domains failed for /$path")
     throw lastError ?: Exception("All Miruro domains failed for /$path")
 }
 
@@ -369,28 +369,30 @@ private suspend fun miruroPipeRequestForDomain(
                 try {
                     return decodePipeResponseWithHeader(body, obfHeader)
                 } catch (_: Exception) {
-                    try { return decodePipeResponseAuto(body) } catch (e: Exception) { Log.e("RaghavAnimeKitsu", "Miruro: ${e.message}") }
+                    try { return decodePipeResponseAuto(body) } catch (e: Exception) { Log.e("RaghavAnime", "Miruro: ${e.message}") }
                 }
             }
         }
     } catch (e: Exception) {
-        Log.e("RaghavAnimeKitsu", "[Miruro] pipeForDomain: direct GET failed for /$path on $domain: ${e.message}")
+        Log.e("RaghavAnime", "[Miruro] pipeForDomain: direct GET failed for /$path on $domain: ${e.message}")
     }
 
-    val webBody = MiruroCloudflare.fetchPipeViaWebView(
-        Miruro.context, domain, pipeUrl
-    )
+    val webBody = RaghavPerf.withWebView {
+        MiruroCloudflare.fetchPipeViaWebView(
+            Miruro.context, domain, pipeUrl
+        )
+    }
     if (webBody != null && webBody.isNotEmpty()) {
         try {
             return decodePipeResponseAuto(webBody)
         } catch (e: Exception) {
-            Log.e("RaghavAnimeKitsu", "[Miruro] pipeForDomain: WebView body decode failed for /$path: ${e.message}")
+            Log.e("RaghavAnime", "[Miruro] pipeForDomain: WebView body decode failed for /$path: ${e.message}")
         }
     } else {
-        Log.w("RaghavAnimeKitsu", "[Miruro] pipeForDomain: WebView returned empty body for /$path on $domain")
+        Log.w("RaghavAnime", "[Miruro] pipeForDomain: WebView returned empty body for /$path on $domain")
     }
 
-    Log.e("RaghavAnimeKitsu", "[Miruro] pipeForDomain: failed on $domain for /$path")
+    Log.e("RaghavAnime", "[Miruro] pipeForDomain: failed on $domain for /$path")
     throw Exception("Failed on $domain for /$path")
 }
 
@@ -583,13 +585,13 @@ suspend fun anilistQuery(query: String, variables: Map<String, Any?>): String {
             anilistCache[cacheKey] = text to now
             return text
         }
-        Log.w("RaghavAnimeKitsu", "[Miruro] anilistQuery: response blank or contained errors, discarding")
+        Log.w("RaghavAnime", "[Miruro] anilistQuery: response blank or contained errors, discarding")
     } catch (e: Exception) {
-        Log.e("RaghavAnimeKitsu", "[Miruro] anilistQuery: request failed: ${e.message}")
+        Log.e("RaghavAnime", "[Miruro] anilistQuery: request failed: ${e.message}")
     }
 
     anilistCache[cacheKey]?.let { (cached, _) -> return cached }
-    Log.e("RaghavAnimeKitsu", "[Miruro] anilistQuery: failed with no cache available")
+    Log.e("RaghavAnime", "[Miruro] anilistQuery: failed with no cache available")
     throw Exception("AniList query failed")
 }
 

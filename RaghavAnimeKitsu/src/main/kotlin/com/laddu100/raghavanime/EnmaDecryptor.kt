@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
@@ -32,6 +34,11 @@ object EnmaDecryptor {
     @Volatile private var readySignal: CompletableDeferred<Unit>? = null
 
     private val initScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // the shared decrypt WebView keeps per-call state (window._pendingEnc),
+    // so concurrent decrypts corrupt each other; this lock serializes them
+    // and keeps main thread WebView traffic bounded
+    private val decryptMutex = Mutex()
 
     fun setContext(context: Context) {
         appContext = context
@@ -147,7 +154,8 @@ object EnmaDecryptor {
         val wv = webView ?: return ""
         if (!initialized) return ""
 
-        return withContext(Dispatchers.Main) {
+        return decryptMutex.withLock {
+            withContext(Dispatchers.Main) {
             wv.evaluateJavascript(
                 "window._pendingEnc=${jsonEncode(encrypted)};window._decryptResult=null;window._doDecrypt();",
                 null
@@ -173,6 +181,7 @@ object EnmaDecryptor {
                 mapper.readValue(result, String::class.java)
             } catch (e: Exception) {
                 ""
+            }
             }
         }
     }

@@ -32,7 +32,7 @@ class AniWavesWebView(private val sourceName: String, private val baseUrl: Strin
                 useOkhttp = false,
                 timeout = 30_000L
             )
-            val resolved = app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url
+            val resolved = RaghavPerf.withWebView { app.get(url, referer = referer ?: mainUrl, interceptor = resolver).url }
             val headers = mapOf("Referer" to url)
             when {
                 resolved.contains(".m3u8", ignoreCase = true) -> {
