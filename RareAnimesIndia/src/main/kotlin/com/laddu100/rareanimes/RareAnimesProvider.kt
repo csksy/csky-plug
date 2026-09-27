@@ -25,6 +25,9 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import com.lagradost.nicehttp.NiceResponse
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
 import java.util.UUID
 
@@ -395,7 +398,17 @@ class RareAnimesProvider : MainAPI() {
             val m = Regex("""const\s+relatedData\s*=\s*(\{.*?\})\s*;""", RegexOption.DOT_MATCHES_ALL)
                 .find(html) ?: return emptyMap()
             val parsed = parseJson<Map<String, RelatedSeason>>(m.groupValues[1])
-            parsed.filterValues { it.episodes.orEmpty().isNotEmpty() }
+            // A season page's relatedData often carries the whole show including
+            // its movies under MOV_ keys; those movies live on their own pages,
+            // so drop them whenever real seasons are present.
+            val hasSeasons = parsed.keys.any { it.startsWith("SEA", ignoreCase = true) }
+            val hasMovies = parsed.keys.any { it.startsWith("MOV", ignoreCase = true) }
+            val filtered = if (hasSeasons && hasMovies) {
+                parsed.filterKeys { !it.startsWith("MOV", ignoreCase = true) }
+            } else {
+                parsed
+            }
+            filtered.filterValues { it.episodes.orEmpty().isNotEmpty() }
         } catch (e: Exception) {
             emptyMap()
         }
@@ -432,10 +445,12 @@ class RareAnimesProvider : MainAPI() {
                     emptyMap()
                 }
                 val relatedEps = related.values.flatMap { season ->
-                    season.episodes.orEmpty().mapNotNull { ep ->
-                        val id = ep.id ?: return@mapNotNull null
+                    season.episodes.orEmpty().mapIndexedNotNull { idx, ep ->
+                        val id = ep.id ?: return@mapIndexedNotNull null
                         ArchiveEpisode(
-                            name = ep.epName?.takeIf { it.isNotBlank() } ?: id,
+                            name = ep.epName?.takeIf { it.isNotBlank() }
+                                ?: ep.e?.let { "Episode $it" }
+                                ?: "Episode ${idx + 1}",
                             variants = listOf(
                                 RAIVariant("WatchMultiQuality", "https://$ARGON_HOST/embed/$id", dubKey),
                                 RAIVariant("DLBeta", "https://$ARGON_HOST/downlead/$id/", dubKey)
@@ -549,40 +564,354 @@ class RareAnimesProvider : MainAPI() {
         return map
     }
 
-    override suspend fun load(url: String): LoadResponse? {
+    private data class HubLink(
+        val kind: String,
+        val number: Int?,
+        val name: String,
+        val url: String
+    )
+
+    private data class HubEpisode(
+        val season: Int,
+        val epNum: Int,
+        val name: String,
+        val variants: MutableList<RAIVariant>
+    )
+
+    private data class PageContent(
+        val sources: List<SourceRef>,
+        val direct: DirectParse,
+        val archives: List<ArchiveResult>,
+        val defaultSeason: Int
+    )
+
+    private val HUB_SEASON_NUMBER =
+        Regex("""\bSeasons?\s*[-\u2013:.]?\s*(\d{1,2})\b""", RegexOption.IGNORE_CASE)
+    private val HUB_MOVIE_NUMBER =
+        Regex("""\bMovie\s*[-\u2013:.]?\s*(\d{1,3})\b""", RegexOption.IGNORE_CASE)
+    private val HUB_SELF_SLUG = Regex("""\ball-(?:movies|seasons?|series|episodes?)-""")
+
+    private fun isInternalPostLink(href: String): Boolean {
+        if (href.isBlank() || !href.contains(mainUrl)) return false
+        if (href.contains("discord") || href.contains("?s=") || href.contains("#")) return false
         return try {
-            val response = raiGet(url)
-            val doc = Jsoup.parse(response.text)
+            val uri = android.net.Uri.parse(href)
+            val path = uri.path ?: return false
+            if (path.isBlank() || path == "/") return false
+            if (path.startsWith("/hindi/category/") || path.startsWith("/category/") ||
+                path.startsWith("/tag/") || path.startsWith("/author/") ||
+                path.startsWith("/page/") || path.startsWith("/home")
+            ) return false
+            if (HUB_SELF_SLUG.containsMatchIn(path)) return false
+            path.length > 8
+        } catch (e: Exception) {
+            false
+        }
+    }
 
-            val title = doc.selectFirst("h1.entry-title, h1")?.text()?.trim() ?: return null
-            val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
-                ?: doc.selectFirst(".herald-post-thumbnail img, img.wp-post-image")?.attr("abs:src")
-
-            val meta = extractMeta(doc)
-            val year = meta["year"]?.toIntOrNull()
-            val defaultSeason = meta["season"]?.toIntOrNull() ?: 1
-
-            val plot = doc.select("div.entry-content p").map { it.text().trim() }
-                .firstOrNull {
-                    it.startsWith("Synopsis", true) || it.startsWith("Storyline", true) ||
-                            it.startsWith("Story:", true)
-                }
-                ?.substringAfter(":")?.trim()
-                ?: doc.select("div.entry-content p").map { it.text().trim() }
-                    .filter { it.length > 120 }
-                    .maxByOrNull { it.length }
-
-            val genres = doc.select(".meta-category a, .herald-meta a[href*=category]").map {
-                it.text().trim()
-            }.filter { it.isNotBlank() }.distinct().take(8)
-
-            val sources = extractSources(doc)
-            val direct = parseDirectEpisodes(doc, defaultSeason)
-
-            val archiveResults = mutableListOf<ArchiveResult>()
-            for (src in sources.filter { it.kind == "archive" }) {
-                loadArchive(src.url, src.label, src.contextKey, 0)?.let { archiveResults.add(it) }
+    private fun parseHubHeadings(doc: Document): List<HubLink> {
+        val content = doc.selectFirst("div.entry-content") ?: return emptyList()
+        val out = mutableListOf<HubLink>()
+        val seen = mutableSetOf<String>()
+        for (h in content.select("h2, h3, h4")) {
+            val candidates = h.select("a[href]").mapNotNull { a ->
+                val href = a.attr("abs:href")
+                if (isInternalPostLink(href)) a else null
             }
+            if (candidates.isEmpty()) continue
+            val link = candidates.firstOrNull { it.text().isNotBlank() } ?: candidates.first()
+            val href = link.attr("abs:href")
+            if (!seen.add(href)) continue
+            val headingText = h.text().trim()
+            val text = link.text().trim().ifBlank { headingText }
+            if (text.isBlank()) continue
+            val seasonNumber = HUB_SEASON_NUMBER.find(text)?.groupValues?.get(1)?.toIntOrNull()
+                ?: HUB_SEASON_NUMBER.find(headingText)?.groupValues?.get(1)?.toIntOrNull()
+            val movieNumber = if (seasonNumber == null) {
+                HUB_MOVIE_NUMBER.find(text)?.groupValues?.get(1)?.toIntOrNull()
+                    ?: HUB_MOVIE_NUMBER.find(headingText)?.groupValues?.get(1)?.toIntOrNull()
+            } else null
+            val kind = when {
+                seasonNumber != null -> "season"
+                movieNumber != null -> "movie"
+                else -> "extra"
+            }
+            out.add(HubLink(kind, seasonNumber ?: movieNumber, text, href))
+        }
+        return out
+    }
+
+    private suspend fun parsePageContent(doc: Document, defaultSeason: Int): PageContent {
+        val sources = extractSources(doc)
+        val direct = parseDirectEpisodes(doc, defaultSeason)
+        val archives = mutableListOf<ArchiveResult>()
+        for (src in sources.filter { it.kind == "archive" }) {
+            loadArchive(src.url, src.label, src.contextKey, 0)?.let { archives.add(it) }
+        }
+        return PageContent(sources, direct, archives, defaultSeason)
+    }
+
+    private fun buildSubPageEpisodes(content: PageContent): List<HubEpisode> {
+        val out = LinkedHashMap<String, HubEpisode>()
+        val dubKeys = mutableSetOf<String>()
+        content.archives.forEach { if (it.dubKey.isNotBlank()) dubKeys.add(it.dubKey) }
+        content.direct.episodes.forEach { ep -> ep.variants.forEach { if (it.k.isNotBlank()) dubKeys.add(it.k) } }
+        val multiDub = dubKeys.size >= 2
+
+        fun add(season: Int, epNum: Int, name: String, variant: RAIVariant) {
+            val key = "$season:$epNum"
+            val entry = out.getOrPut(key) { HubEpisode(season, epNum, name, mutableListOf()) }
+            if (entry.variants.none { it.u == variant.u }) entry.variants.add(variant)
+        }
+
+        for (ep in content.direct.episodes) {
+            val parsed = parseEpisodeNumber(ep.name)
+            val season = parsed?.first ?: ep.season
+            val epNum = parsed?.second ?: ep.epNum
+            for (v in ep.variants) {
+                val name = if (multiDub && v.k.isNotBlank()) "${v.n} ${dubLabel(v.k)}" else v.n
+                add(season, epNum, ep.name, RAIVariant(name, v.u, v.k))
+            }
+        }
+
+        for (archive in content.archives) {
+            val suffix = if (multiDub && archive.dubKey.isNotBlank()) " ${dubLabel(archive.dubKey)}" else ""
+            archive.episodes.forEachIndexed { idx, ep ->
+                val parsed = parseEpisodeNumber(ep.name)
+                val season = ep.s ?: parsed?.first ?: content.defaultSeason
+                val epNum = ep.e ?: parsed?.second ?: (idx + 1)
+                val used = mutableSetOf<String>()
+                for (v in ep.variants) {
+                    var name = "${v.n}$suffix"
+                    if (!used.add(name)) {
+                        var i = 2
+                        while (!used.add("$name $i")) i++
+                        name = "$name $i"
+                    }
+                    add(season, epNum, ep.name, RAIVariant(name, v.u, archive.dubKey))
+                }
+            }
+        }
+
+        val attachedUrls = out.values.flatMap { it.variants.map { v -> v.u } }.toHashSet()
+        val orphans = content.direct.orphans.filter { !attachedUrls.contains(it.u) }
+        if (orphans.isNotEmpty() && out.isNotEmpty()) {
+            val maxEntry = out.values.maxByOrNull { it.epNum }
+            val baseSeason = maxEntry?.season ?: content.defaultSeason
+            var num = maxEntry?.epNum ?: 0
+            val used = mutableSetOf<String>()
+            for (o in orphans) {
+                num += 1
+                var name = if (multiDub && o.k.isNotBlank()) "ZIP Batch ${dubLabel(o.k)}" else "ZIP Batch"
+                if (!used.add(name)) {
+                    var i = 2
+                    while (!used.add("$name $i")) i++
+                    name = "$name $i"
+                }
+                add(baseSeason, num, "ZIP Batch (Full Season)", RAIVariant(name, o.u, o.k))
+            }
+        }
+        return out.values.toList()
+    }
+
+    private fun buildSubPageVariants(content: PageContent): List<RAIVariant> {
+        val variants = mutableListOf<RAIVariant>()
+        val dubKeys = mutableSetOf<String>()
+        content.archives.forEach { if (it.dubKey.isNotBlank()) dubKeys.add(it.dubKey) }
+        content.direct.orphans.forEach { if (it.k.isNotBlank()) dubKeys.add(it.k) }
+        content.direct.episodes.forEach { ep -> ep.variants.forEach { if (it.k.isNotBlank()) dubKeys.add(it.k) } }
+        val multiDub = dubKeys.size >= 2
+        for (archive in content.archives) {
+            val suffix = if (multiDub && archive.dubKey.isNotBlank()) " ${dubLabel(archive.dubKey)}" else ""
+            archive.episodes.forEach { ep ->
+                ep.variants.forEach { v ->
+                    if (variants.none { it.u == v.u }) {
+                        val label = if (archive.episodes.size > 1) "${v.n}$suffix ${ep.name}" else "${v.n}$suffix"
+                        variants.add(RAIVariant(label.trim(), v.u, archive.dubKey))
+                    }
+                }
+            }
+        }
+        content.direct.orphans.forEach { v ->
+            if (variants.none { it.u == v.u }) {
+                val label = if (multiDub && v.k.isNotBlank()) "${v.n} ${dubLabel(v.k)}" else v.n
+                variants.add(RAIVariant(label, v.u, v.k))
+            }
+        }
+        content.sources.filter { it.kind != "archive" }.forEach { src ->
+            if (variants.none { it.u == src.url }) {
+                variants.add(RAIVariant(src.label, src.url, src.contextKey))
+            }
+        }
+        if (content.archives.isEmpty()) {
+            content.sources.filter { it.kind == "archive" }.forEach { src ->
+                if (variants.none { it.u == src.url }) {
+                    variants.add(RAIVariant(src.label, src.url, src.contextKey))
+                }
+            }
+        }
+        return variants
+    }
+
+    private suspend fun loadHubSubPage(link: HubLink): PageContent? {
+        return try {
+            val response = raiGet(link.url)
+            val doc = Jsoup.parse(response.text)
+            if (parseHubHeadings(doc).count { it.kind == "season" || it.kind == "movie" } >= 2) {
+                null
+            } else {
+                val subMeta = extractMeta(doc)
+                val subDefault = subMeta["season"]?.toIntOrNull() ?: 1
+                parsePageContent(doc, subDefault)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "hub page ${link.url}: ${e.message}")
+            null
+        }
+    }
+
+    private fun seasonEpisodesForLink(link: HubLink, content: PageContent): List<HubEpisode> {
+        val episodes = buildSubPageEpisodes(content)
+        val target = link.number ?: return episodes
+        val present = episodes.map { it.season }.toSet()
+        if (present.isEmpty() || present.contains(target)) return episodes
+        // The sub page numbers its own seasons from one (for example a direct
+        // episode list with no season meta), while the hub heading tells us
+        // which season this page really is - shift the internal numbering so
+        // episodes of different shows never merge into the same season.
+        val offset = target - (present.minOrNull() ?: target)
+        return episodes.map { HubEpisode(it.season + offset, it.epNum, it.name, it.variants) }
+    }
+
+    private suspend fun buildHubResponse(
+        title: String,
+        url: String,
+        poster: String?,
+        year: Int?,
+        plot: String?,
+        genres: List<String>,
+        links: List<HubLink>
+    ): LoadResponse? {
+        val capped = links.take(40)
+        val results = HashMap<Int, PageContent>(capped.size)
+        val coveredSeasons = mutableSetOf<Int>()
+
+        for (chunkStart in capped.indices step 6) {
+            val chunk = capped.withIndex().filter { it.index >= chunkStart && it.index < chunkStart + 6 }
+            coroutineScope {
+                chunk.mapNotNull { (index, link) ->
+                    val covered = link.kind == "season" && link.number != null &&
+                        coveredSeasons.contains(link.number)
+                    if (covered) null else async { index to loadHubSubPage(link) }
+                }.awaitAll()
+            }.forEach { (index, content) ->
+                if (content != null) {
+                    results[index] = content
+                    if (capped[index].kind == "season") {
+                        seasonEpisodesForLink(capped[index], content).forEach { coveredSeasons.add(it.season) }
+                    }
+                }
+            }
+        }
+
+        val epMap = LinkedHashMap<String, HubEpisode>()
+        fun addEp(season: Int, epNum: Int, name: String, variant: RAIVariant) {
+            val key = "$season:$epNum"
+            val entry = epMap.getOrPut(key) { HubEpisode(season, epNum, name, mutableListOf()) }
+            if (entry.variants.none { it.u == variant.u }) entry.variants.add(variant)
+        }
+
+        val seasonNames = sortedMapOf<Int, String>()
+        val movieEntries = mutableListOf<Pair<String, List<RAIVariant>>>()
+        val extraSeries = mutableListOf<Pair<String, List<HubEpisode>>>()
+
+        for ((index, link) in capped.withIndex()) {
+            val content = results[index] ?: continue
+            val episodes = if (link.kind == "season") {
+                seasonEpisodesForLink(link, content)
+            } else {
+                buildSubPageEpisodes(content)
+            }
+            when {
+                link.kind == "season" -> {
+                    episodes.forEach { e ->
+                        e.variants.forEach { v -> addEp(e.season, e.epNum, e.name, v) }
+                    }
+                    if (link.number != null && episodes.isNotEmpty()) {
+                        seasonNames[link.number] = link.name
+                    }
+                    if (episodes.isEmpty()) {
+                        val variants = buildSubPageVariants(content)
+                        if (variants.isNotEmpty()) movieEntries.add(link.name to variants)
+                    }
+                }
+                episodes.size > 1 -> extraSeries.add(link.name to episodes)
+                else -> {
+                    val variants = buildSubPageVariants(content)
+                    if (variants.isNotEmpty()) movieEntries.add(link.name to variants)
+                }
+            }
+        }
+
+        val realSeasons = epMap.values.map { it.season }.toSortedSet()
+        var nextSeason = realSeasons.maxOrNull() ?: 0
+        val moviesSeason = if (movieEntries.isNotEmpty()) {
+            nextSeason += 1
+            nextSeason
+        } else 0
+
+        val finalEpisodes = epMap.values.toMutableList()
+        movieEntries.forEachIndexed { idx, entry ->
+            finalEpisodes.add(HubEpisode(moviesSeason, idx + 1, entry.first, entry.second.toMutableList()))
+        }
+        extraSeries.forEach { entry ->
+            nextSeason += 1
+            seasonNames[nextSeason] = entry.first
+            entry.second.forEach { e ->
+                finalEpisodes.add(HubEpisode(nextSeason, e.epNum, e.name, e.variants))
+            }
+        }
+
+        if (finalEpisodes.isEmpty()) return null
+
+        finalEpisodes.sortWith(compareBy({ it.season }, { it.epNum }))
+        val seasonData = seasonNames.entries.map { (season, name) ->
+            com.lagradost.cloudstream3.SeasonData(season, name)
+        }.toMutableList()
+        if (movieEntries.isNotEmpty()) {
+            seasonData.add(com.lagradost.cloudstream3.SeasonData(moviesSeason, "Movies"))
+        }
+
+        val episodes = finalEpisodes.map { e ->
+            newEpisode(variantsJson(e.variants)) {
+                this.season = e.season
+                this.episode = e.epNum
+                this.name = e.name
+            }
+        }.toMutableList()
+
+        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+            this.posterUrl = poster
+            this.year = year
+            this.plot = plot
+            this.tags = genres
+            this.seasonNames = seasonData
+        }
+    }
+
+    private suspend fun buildNormalResponse(
+        title: String,
+        url: String,
+        poster: String?,
+        year: Int?,
+        plot: String?,
+        genres: List<String>,
+        content: PageContent
+    ): LoadResponse? {
+        val sources = content.sources
+        val direct = content.direct
+        val archiveResults = content.archives
+        val defaultSeason = content.defaultSeason
 
             data class EpEntry(
                 val seasonIdx: Int,
@@ -644,7 +973,7 @@ class RareAnimesProvider : MainAPI() {
 
             val isMovie = !anyNumbered
 
-            if (isMovie) {
+            return if (isMovie) {
                 val variants = mutableListOf<RAIVariant>()
                 for (archive in archiveResults) {
                     archive.episodes.forEach { ep ->
@@ -721,6 +1050,48 @@ class RareAnimesProvider : MainAPI() {
                     }
                 }
             }
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        return try {
+            val response = raiGet(url)
+            val doc = Jsoup.parse(response.text)
+
+            val title = doc.selectFirst("h1.entry-title, h1")?.text()?.trim() ?: return null
+            val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
+                ?: doc.selectFirst(".herald-post-thumbnail img, img.wp-post-image")?.attr("abs:src")
+
+            val meta = extractMeta(doc)
+            val year = meta["year"]?.toIntOrNull()
+            val defaultSeason = meta["season"]?.toIntOrNull() ?: 1
+
+            val plot = doc.select("div.entry-content p").map { it.text().trim() }
+                .firstOrNull {
+                    it.startsWith("Synopsis", true) || it.startsWith("Storyline", true) ||
+                            it.startsWith("Story:", true)
+                }
+                ?.substringAfter(":")?.trim()
+                ?: doc.select("div.entry-content p").map { it.text().trim() }
+                    .filter { it.length > 120 }
+                    .maxByOrNull { it.length }
+
+            val genres = doc.select(".meta-category a, .herald-meta a[href*=category]").map {
+                it.text().trim()
+            }.filter { it.isNotBlank() }.distinct().take(8)
+
+            val hubLinks = parseHubHeadings(doc)
+            if (hubLinks.count { it.kind == "season" || it.kind == "movie" } >= 2) {
+                val hub = try {
+                    buildHubResponse(title, url, poster, year, plot, genres, hubLinks)
+                } catch (e: Exception) {
+                    Log.e(TAG, "hub: ${e.message}")
+                    null
+                }
+                if (hub != null) return hub
+            }
+
+            val content = parsePageContent(doc, defaultSeason)
+            buildNormalResponse(title, url, poster, year, plot, genres, content)
         } catch (e: Exception) {
             Log.e(TAG, "load: ${e.message}")
             null
@@ -745,7 +1116,15 @@ class RareAnimesProvider : MainAPI() {
     ): Boolean {
         var found = false
         try {
-            val embed = raiGet("https://$ARGON_HOST/embed/$code")
+            val embed = raiGet(
+                "https://$ARGON_HOST/embed/$code",
+                headers = mapOf(
+                    "User-Agent" to RAI_UA,
+                    "Accept-Language" to ARGON_AL,
+                    "Accept" to "text/html,*/*;q=0.8",
+                    "Referer" to "https://$CODEDEW_HOST/"
+                )
+            )
             val config = JuicyCodes.decodeFromHtml(embed.text)
             val m3u8 = config?.let {
                 Regex(""""file"\s*:\s*"([^"]*\.m3u8)"""").find(it)?.groupValues?.get(1)
@@ -810,9 +1189,10 @@ class RareAnimesProvider : MainAPI() {
             val embed = raiGet(
                 embedUrl,
                 headers = mapOf(
+                    "User-Agent" to RAI_UA,
+                    "Accept-Language" to ARGON_AL,
                     "Referer" to "https://$CODEDEW_HOST/",
-                    "Accept" to "text/html,*/*;q=0.8",
-                    "Accept-Language" to "en-US,en;q=0.5"
+                    "Accept" to "text/html,*/*;q=0.8"
                 )
             )
             absorbSetCookies(jar, embed)
@@ -829,10 +1209,11 @@ class RareAnimesProvider : MainAPI() {
                     "https://$ARGON_HOST$pingRoute",
                     """{"_token":"$pingToken","__type":"dawn","pingID":"$pingId"}""",
                     headers = mapOf(
+                        "User-Agent" to RAI_UA,
+                        "Accept-Language" to ARGON_AL,
                         "Accept" to "*/*",
                         "Referer" to embedUrl,
                         "Origin" to "https://$ARGON_HOST",
-                        "Accept-Language" to "en-US,en;q=0.5",
                         "Cookie" to cookieHeaderValue(jar)
                     )
                 )
@@ -843,9 +1224,10 @@ class RareAnimesProvider : MainAPI() {
             val dl = raiGet(
                 dlUrl,
                 headers = mapOf(
+                    "User-Agent" to RAI_UA,
+                    "Accept-Language" to ARGON_AL,
                     "Accept" to "text/html,*/*;q=0.8",
                     "Referer" to embedUrl,
-                    "Accept-Language" to "en-US,en;q=0.5",
                     "Cookie" to cookieHeaderValue(jar)
                 )
             )
@@ -862,11 +1244,12 @@ class RareAnimesProvider : MainAPI() {
                 "https://$ARGON_HOST$route",
                 """{"captcha":null,"_token":"$token"}""",
                 headers = mapOf(
+                    "User-Agent" to RAI_UA,
+                    "Accept-Language" to ARGON_AL,
                     "Accept" to "application/json",
                     "Referer" to dlUrl,
                     "Origin" to "https://$ARGON_HOST",
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Accept-Language" to "en-US,en;q=0.5",
                     "Cookie" to cookieHeaderValue(jar)
                 )
             )
@@ -1249,21 +1632,37 @@ class RareAnimesProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         when (resolved.kind) {
-            "hls" -> callback(
-                newExtractorLink(
-                    SOURCE,
-                    "MultiQuality [WebView]",
-                    resolved.url,
-                    ExtractorLinkType.VIDEO
-                ) {
-                    this.quality = Qualities.Unknown.value
-                    this.referer = "https://$ARGON_HOST/"
-                    this.headers = mapOf(
-                        "User-Agent" to RAI_UA,
-                        "Origin" to "https://$ARGON_HOST"
-                    )
+            "hls" -> {
+                // The argon CDN signs the m3u8 against the User-Agent and
+                // Accept-Language of the request that generated it, and the
+                // WebView sends its own locale header, so a link captured by
+                // the popup would 403 in the player. When the popup was on an
+                // argon embed page, re-sign through the fixed-header path.
+                val embedCode = resolved.pageUrl
+                    ?.takeIf { it.contains("$ARGON_HOST/embed/") }
+                    ?.substringAfter("/embed/")
+                    ?.substringBefore("?")
+                    ?.substringBefore("/")
+                if (!embedCode.isNullOrBlank() && resolveArgon(embedCode, "WebView", callback)) {
+                    return
                 }
-            )
+                callback(
+                    newExtractorLink(
+                        SOURCE,
+                        "MultiQuality [WebView]",
+                        resolved.url,
+                        ExtractorLinkType.VIDEO
+                    ) {
+                        this.quality = Qualities.Unknown.value
+                        this.referer = "https://$ARGON_HOST/"
+                        this.headers = mapOf(
+                            "User-Agent" to RAI_UA,
+                            "Accept-Language" to ARGON_AL,
+                            "Origin" to "https://$ARGON_HOST"
+                        )
+                    }
+                )
+            }
             "pixeldrain" -> callback(
                 newExtractorLink(
                     SOURCE,

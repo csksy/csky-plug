@@ -40,7 +40,8 @@ private const val TAG = "RareAnimes_Resolver"
 
 internal class RAIResolvedLink(
     val url: String,
-    val kind: String
+    val kind: String,
+    val pageUrl: String? = null
 )
 
 private val ALLOWED_HOSTS = listOf(
@@ -120,11 +121,12 @@ private class RAIResolverDialog(
     private val handler = Handler(Looper.getMainLooper())
     private val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
     private var captured: RAIResolvedLink? = null
+    private var lastPageUrl: String? = null
 
     private fun tryCapture(url: String): Boolean {
         val kind = classifyVideoUrl(url) ?: return false
         if (captured == null) {
-            captured = RAIResolvedLink(url.substringBefore("#"), kind)
+            captured = RAIResolvedLink(url.substringBefore("#"), kind, lastPageUrl)
             statusText?.text = "Link captured - finishing..."
             handler.postDelayed({ finishWithCapture() }, 600)
             return true
@@ -436,6 +438,7 @@ private class RAIResolverDialog(
                         }
                         return true
                     }
+                    lastPageUrl = url
                     urlText?.text = url.substringBefore("?").takeLast(52)
                     return false
                 }
@@ -453,6 +456,7 @@ private class RAIResolverDialog(
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (resolved.get()) return
+                    if (!url.isNullOrBlank()) lastPageUrl = url
                     statusText?.text = "Page loaded - waiting for the video link..."
                     url?.let { tryCapture(it) }
                 }

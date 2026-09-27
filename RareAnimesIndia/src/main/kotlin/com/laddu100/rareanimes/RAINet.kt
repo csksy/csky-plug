@@ -15,6 +15,11 @@ internal const val MAIN_HOST = "www.rareanimes.mov"
 internal const val STORE_HOST = "store.animetoonhindi.com"
 internal const val CODEDEW_HOST = "codedew.com"
 internal const val ARGON_HOST = "argon.razorshell.space"
+
+// The argon CDN signs every stream and download URL against the exact
+// User-Agent and Accept-Language of the request that generated it, so every
+// hop of an argon session and the player link itself must carry these two.
+internal const val ARGON_AL = "en-US,en;q=0.9"
 internal const val HUBCLOUD_HOST = "hubcloud.ist"
 internal const val PIXELDRAIN_HOST = "pixeldrain.net"
 
@@ -34,7 +39,9 @@ private fun buildHeaders(url: String, extra: Map<String, String> = emptyMap()): 
     if (!h.containsKey("Accept")) {
         h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }
-    h["User-Agent"] = RAICFStore.getUserAgent(host) ?: RAI_UA
+    if (!h.containsKey("User-Agent")) {
+        h["User-Agent"] = RAICFStore.getUserAgent(host) ?: RAI_UA
+    }
     if (!h.containsKey("Cookie")) {
         RAICFStore.getCookies(host)?.let { h["Cookie"] = it }
     }
