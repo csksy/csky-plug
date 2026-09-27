@@ -24,7 +24,9 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import com.lagradost.nicehttp.NiceResponse
 import java.net.URLEncoder
+import java.util.UUID
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class RAIVariant(
@@ -46,7 +48,8 @@ data class JuicyDataInner(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class JuicyRoutes(
-    @JsonProperty("links") val links: String? = null
+    @JsonProperty("links") val links: String? = null,
+    @JsonProperty("ping") val ping: String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -661,6 +664,13 @@ class RareAnimesProvider : MainAPI() {
                         variants.add(RAIVariant(src.label, src.url, src.contextKey))
                     }
                 }
+                if (archiveResults.isEmpty()) {
+                    sources.filter { it.kind == "archive" }.forEach { src ->
+                        if (variants.none { it.u == src.url }) {
+                            variants.add(RAIVariant(src.label, src.url, src.contextKey))
+                        }
+                    }
+                }
                 if (variants.isEmpty()) return null
                 newMovieLoadResponse(title, url, TvType.Movie, variantsJson(variants)) {
                     this.posterUrl = poster
@@ -746,7 +756,7 @@ class RareAnimesProvider : MainAPI() {
                         SOURCE,
                         "MultiQuality [$suffix]",
                         m3u8,
-                        ExtractorLinkType.M3U8
+                        ExtractorLinkType.VIDEO
                     ) {
                         this.quality = Qualities.Unknown.value
                         this.referer = "https://$ARGON_HOST/"
@@ -769,6 +779,18 @@ class RareAnimesProvider : MainAPI() {
         return found
     }
 
+    private fun absorbSetCookies(jar: MutableMap<String, String>, response: NiceResponse) {
+        for (raw in response.headers.values("set-cookie")) {
+            val pair = raw.substringBefore(";").trim()
+            val idx = pair.indexOf('=')
+            if (idx > 0) jar[pair.substring(0, idx)] = pair.substring(idx + 1)
+        }
+    }
+
+    private fun cookieHeaderValue(jar: Map<String, String>): String {
+        return jar.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
     private suspend fun resolveArgonDownload(
         code: String,
         suffix: String,
@@ -776,30 +798,77 @@ class RareAnimesProvider : MainAPI() {
     ): Boolean {
         var found = false
         try {
-            val dl = raiGet("https://$ARGON_HOST/downlead/$code/")
-            val cookieHeader = dl.headers.values("set-cookie")
-                .mapNotNull { it.substringBefore(";").takeIf { c -> c.contains("=") } }
-                .joinToString("; ")
-            val juicy = Regex(
+            val jar = mutableMapOf<String, String>()
+            RAICFStore.getCookies(ARGON_HOST)?.let { stored ->
+                for (pair in stored.split("; ")) {
+                    val idx = pair.indexOf('=')
+                    if (idx > 0) jar[pair.substring(0, idx)] = pair.substring(idx + 1)
+                }
+            }
+
+            val embedUrl = "https://$ARGON_HOST/embed/$code"
+            val embed = raiGet(
+                embedUrl,
+                headers = mapOf(
+                    "Referer" to "https://$CODEDEW_HOST/",
+                    "Accept" to "text/html,*/*;q=0.8",
+                    "Accept-Language" to "en-US,en;q=0.5"
+                )
+            )
+            absorbSetCookies(jar, embed)
+            val embedJuicy = Regex(
+                """window\.juicyData\s*=\s*(\{.*?\})\s*</script>""",
+                RegexOption.DOT_MATCHES_ALL
+            ).find(embed.text)?.groupValues?.get(1)
+                ?.let { runCatching { parseJson<JuicyDataWrapper>(it) }.getOrNull() }
+            val pingToken = embedJuicy?.data?.token
+            val pingRoute = embedJuicy?.data?.routes?.ping
+            if (!pingRoute.isNullOrBlank() && !pingToken.isNullOrBlank()) {
+                val pingId = UUID.randomUUID().toString().replace("-", "")
+                val ping = raiPostJson(
+                    "https://$ARGON_HOST$pingRoute",
+                    """{"_token":"$pingToken","__type":"dawn","pingID":"$pingId"}""",
+                    headers = mapOf(
+                        "Accept" to "*/*",
+                        "Referer" to embedUrl,
+                        "Origin" to "https://$ARGON_HOST",
+                        "Accept-Language" to "en-US,en;q=0.5",
+                        "Cookie" to cookieHeaderValue(jar)
+                    )
+                )
+                absorbSetCookies(jar, ping)
+            }
+
+            val dlUrl = "https://$ARGON_HOST/downlead/$code/"
+            val dl = raiGet(
+                dlUrl,
+                headers = mapOf(
+                    "Accept" to "text/html,*/*;q=0.8",
+                    "Referer" to embedUrl,
+                    "Accept-Language" to "en-US,en;q=0.5",
+                    "Cookie" to cookieHeaderValue(jar)
+                )
+            )
+            absorbSetCookies(jar, dl)
+            val wrapper = Regex(
                 """window\.juicyData\s*=\s*(\{.*?\})\s*</script>""",
                 RegexOption.DOT_MATCHES_ALL
             ).find(dl.text)?.groupValues?.get(1)
-            val wrapper = juicy?.let { parseJson<JuicyDataWrapper>(it) }
+                ?.let { runCatching { parseJson<JuicyDataWrapper>(it) }.getOrNull() }
             val token = wrapper?.data?.token
             val route = wrapper?.data?.routes?.links
             if (token.isNullOrBlank() || route.isNullOrBlank()) return false
-            val headers = mutableMapOf(
-                "Accept" to "application/json",
-                "Accept-Language" to "en-US,en;q=0.9",
-                "Referer" to "https://$ARGON_HOST/downlead/$code/",
-                "Origin" to "https://$ARGON_HOST",
-                "X-Requested-With" to "XMLHttpRequest"
-            )
-            if (cookieHeader.isNotBlank()) headers["Cookie"] = cookieHeader
             val api = raiPostJson(
                 "https://$ARGON_HOST$route",
                 """{"captcha":null,"_token":"$token"}""",
-                headers
+                headers = mapOf(
+                    "Accept" to "application/json",
+                    "Referer" to dlUrl,
+                    "Origin" to "https://$ARGON_HOST",
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Accept-Language" to "en-US,en;q=0.5",
+                    "Cookie" to cookieHeaderValue(jar)
+                )
             )
             if (api.code != 200) {
                 Log.e(TAG, "argon dl api: ${api.code}")
@@ -1185,7 +1254,7 @@ class RareAnimesProvider : MainAPI() {
                     SOURCE,
                     "MultiQuality [WebView]",
                     resolved.url,
-                    ExtractorLinkType.M3U8
+                    ExtractorLinkType.VIDEO
                 ) {
                     this.quality = Qualities.Unknown.value
                     this.referer = "https://$ARGON_HOST/"
