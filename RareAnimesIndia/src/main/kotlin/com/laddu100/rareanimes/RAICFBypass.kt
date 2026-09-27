@@ -333,6 +333,18 @@ private class RAICFDialog(
             layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.topMargin = (8 * dp).toInt() }
         }
         btnContainer.addView(Button(activity).apply {
+            text = "Back"
+            setOnClickListener {
+                try { webView?.goBack() } catch (e: Exception) {}
+            }
+        })
+        btnContainer.addView(Button(activity).apply {
+            text = "Reload"
+            setOnClickListener {
+                try { webView?.reload() } catch (e: Exception) {}
+            }
+        })
+        btnContainer.addView(Button(activity).apply {
             text = "Done"
             setOnClickListener {
                 CookieManager.getInstance().flush()
@@ -348,6 +360,14 @@ private class RAICFDialog(
 
         dialog = AlertDialog.Builder(activity).setView(container).setCancelable(false).create()
         webView?.setTag(dialog)
+        dialog?.setOnKeyListener { _, keyCode, _ ->
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                try { webView?.goBack() } catch (e: Exception) {}
+                true
+            } else {
+                false
+            }
+        }
         dialog?.setOnDismissListener {
             handler.removeCallbacksAndMessages(null)
             if (!resolved.get()) {

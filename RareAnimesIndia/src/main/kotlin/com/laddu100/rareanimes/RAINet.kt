@@ -35,7 +35,9 @@ private fun buildHeaders(url: String, extra: Map<String, String> = emptyMap()): 
         h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }
     h["User-Agent"] = RAICFStore.getUserAgent(host) ?: RAI_UA
-    RAICFStore.getCookies(host)?.let { h["Cookie"] = it }
+    if (!h.containsKey("Cookie")) {
+        RAICFStore.getCookies(host)?.let { h["Cookie"] = it }
+    }
     return h
 }
 
@@ -82,18 +84,18 @@ internal suspend fun raiGet(
     return response
 }
 
-internal suspend fun raiPostJson(
+internal suspend fun raiPostBody(
     url: String,
-    json: String,
+    body: String,
+    contentType: String,
     headers: Map<String, String> = emptyMap()
 ): NiceResponse {
     val requestHeaders = buildHeaders(url, headers).toMutableMap().apply {
-        put("Content-Type", "application/json")
+        put("Content-Type", contentType)
     }
-    val body = json.toRequestBody("application/json".toMediaType())
     var response = app.post(
         url,
-        requestBody = body,
+        requestBody = body.toRequestBody(contentType.toMediaType()),
         headers = requestHeaders,
         timeout = 30_000L
     )
@@ -107,7 +109,7 @@ internal suspend fun raiPostJson(
         if (cachedCookies != null) {
             response = app.post(
                 url,
-                requestBody = body,
+                requestBody = body.toRequestBody(contentType.toMediaType()),
                 headers = requestHeaders,
                 timeout = 30_000L
             )
@@ -119,7 +121,7 @@ internal suspend fun raiPostJson(
         for (attempt in 1..2) {
             response = app.post(
                 url,
-                requestBody = body,
+                requestBody = body.toRequestBody(contentType.toMediaType()),
                 headers = requestHeaders,
                 timeout = 30_000L
             )
@@ -129,18 +131,36 @@ internal suspend fun raiPostJson(
     return response
 }
 
+internal suspend fun raiPostJson(
+    url: String,
+    json: String,
+    headers: Map<String, String> = emptyMap()
+): NiceResponse = raiPostBody(url, json, "application/json", headers)
+
 internal sealed class ResolvedTarget {
     data class Argon(val code: String) : ResolvedTarget()
+    data class ArgonDownload(val code: String) : ResolvedTarget()
     data class PixelDrain(val id: String) : ResolvedTarget()
     data class HubCloud(val id: String) : ResolvedTarget()
     data class Archive(val url: String) : ResolvedTarget()
     data class Direct(val url: String) : ResolvedTarget()
     data class StreamBeta(val id: String) : ResolvedTarget()
     data class GoFile(val code: String) : ResolvedTarget()
+    data class MediaFire(val url: String) : ResolvedTarget()
     data class Mega(val url: String) : ResolvedTarget()
 }
 
 private class CodedewChainException(message: String) : Exception(message)
+
+internal fun htmlUnescape(s: String): String {
+    return if (!s.contains('&')) s else s
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#039;", "'")
+}
 
 internal class CodedewResolver {
 
@@ -160,7 +180,7 @@ internal class CodedewResolver {
     }
 
     private fun classifyUrl(url: String): ResolvedTarget? {
-        val u = url.substringBefore("#")
+        val u = htmlUnescape(url.substringBefore("#"))
         return when {
             u.contains("$CODEDEW_HOST/streambeta/") -> {
                 val id = Uri.parse(u).getQueryParameter("url")
@@ -175,13 +195,10 @@ internal class CodedewResolver {
                 val code = Uri.parse(u).getQueryParameter("url")
                 if (code.isNullOrBlank()) null else ResolvedTarget.Argon(code)
             }
-            u.contains("$CODEDEW_HOST/ziptron.php/") -> {
-                val idx = u.indexOf("ziptron.php/?")
-                if (idx == -1) null
-                else {
-                    val code = u.substring(idx + 13).substringBefore("&").substringBefore("/")
-                    if (code.isBlank()) null else ResolvedTarget.Argon(code)
-                }
+            u.contains("$CODEDEW_HOST/cdn/ziptron.php/") || u.contains("$CODEDEW_HOST/ziptron.php/") -> {
+                val afterQ = u.substringAfter("?")
+                val code = afterQ.substringBefore("&").substringBefore("/").substringBefore("#")
+                if (code.isBlank()) null else ResolvedTarget.ArgonDownload(code)
             }
             u.contains("$CODEDEW_HOST/watchbeta/") -> {
                 val id = Uri.parse(u).getQueryParameter("url")
@@ -191,12 +208,22 @@ internal class CodedewResolver {
                 val id = u.substringAfter("$HUBCLOUD_HOST/drive/").substringBefore("?").substringBefore("/")
                 if (id.isBlank()) null else ResolvedTarget.HubCloud(id)
             }
-            u.contains("$PIXELDRAIN_HOST/u/") || u.contains("pixeldrain.dev/u/") -> {
+            u.contains("pixeldrain.net/u/") || u.contains("pixeldrain.dev/u/") ||
+                u.contains("pixeldra.in/u/") -> {
                 val id = u.substringAfter("/u/").substringBefore("?").substringBefore("/")
                 if (id.isBlank()) null else ResolvedTarget.PixelDrain(id)
             }
+            u.contains("$ARGON_HOST/embed/") -> {
+                val code = u.substringAfter("/embed/").substringBefore("?").substringBefore("/")
+                if (code.isBlank()) null else ResolvedTarget.Argon(code)
+            }
+            u.contains("$ARGON_HOST/downlead/") -> {
+                val code = u.substringAfter("/downlead/").substringBefore("?")
+                    .substringBefore("/").substringBefore("#")
+                if (code.isBlank()) null else ResolvedTarget.ArgonDownload(code)
+            }
+            u.contains("mediafire.com/file/") -> ResolvedTarget.MediaFire(u)
             u.contains("$STORE_HOST/archives/") -> ResolvedTarget.Archive(u)
-            u.contains("$CODEDEW_HOST/cdn/liptron.php") -> null
             u.contains("$CODEDEW_HOST/") -> null
             else -> null
         }
@@ -205,7 +232,7 @@ internal class CodedewResolver {
     private suspend fun chaseDataHrefs(startUrl: String, referer: String): String {
         var current = startUrl
         var ref = referer
-        for (hop in 0 until 4) {
+        for (hop in 0 until 8) {
             val resp = raiGet(
                 current,
                 headers = mapOf("Referer" to ref),
@@ -213,7 +240,7 @@ internal class CodedewResolver {
             )
             if (resp.code in 300..399) {
                 val loc = resp.headers["location"] ?: return current
-                current = absolutize(current, loc)
+                current = absolutize(current, htmlUnescape(loc))
                 ref = current
                 classifyUrl(current)?.let { return current }
                 continue
@@ -221,7 +248,7 @@ internal class CodedewResolver {
             if (resp.code != 200) throw CodedewChainException("codedew hop $hop returned ${resp.code}")
             val body = resp.text
             val m = DATA_HREF.find(body) ?: return current
-            current = absolutize(current, m.groupValues[1])
+            current = absolutize(current, htmlUnescape(m.groupValues[1]))
             ref = current
             classifyUrl(current)?.let { return current }
         }
@@ -235,7 +262,8 @@ internal class CodedewResolver {
                 url.contains("$CODEDEW_HOST/watchbeta/") ||
                 url.contains("$CODEDEW_HOST/streambeta/") -> url
             url.contains("$CODEDEW_HOST/zipcloud/") -> {
-                val id = url.substringAfter("zipcloud/?").substringBefore("&").substringBefore("/")
+                val afterQ = url.substringAfter("zipcloud/", "").substringAfter("?")
+                val id = afterQ.substringBefore("&").substringBefore("/")
                 if (id.isBlank()) throw CodedewChainException("empty zipcloud id")
                 return ResolvedTarget.HubCloud(id)
             }
@@ -243,11 +271,6 @@ internal class CodedewResolver {
                 ?: ResolvedTarget.HubCloud(
                     url.substringAfter("$HUBCLOUD_HOST/drive/").substringBefore("?").substringBefore("/")
                 )
-            url.contains("$ARGON_HOST/embed/") || url.contains("$ARGON_HOST/downlead/") -> {
-                val code = url.substringAfter("/embed/").substringAfter("/downlead/")
-                    .substringBefore("?").substringBefore("/")
-                return ResolvedTarget.Argon(code)
-            }
             url.contains("pixeldrain") && url.contains("/u/") -> return classifyUrl(url)
                 ?: throw CodedewChainException("bad pixeldrain url")
             url.contains("$STORE_HOST/archives/") -> return ResolvedTarget.Archive(url)
@@ -257,12 +280,12 @@ internal class CodedewResolver {
         var target = current
         var referer = "https://$CODEDEW_HOST/"
 
-        for (hop in 0 until 4) {
+        for (hop in 0 until 8) {
             val resp = raiGet(target, headers = mapOf("Referer" to referer), allowRedirects = false)
 
             if (resp.code in 300..399) {
                 val loc = resp.headers["location"] ?: throw CodedewChainException("redirect without location")
-                target = absolutize(target, loc)
+                target = absolutize(target, htmlUnescape(loc))
                 referer = "https://$CODEDEW_HOST/"
                 classifyUrl(target)?.let { return it }
                 continue
@@ -274,17 +297,9 @@ internal class CodedewResolver {
 
             val body = resp.text
             val dh = DATA_HREF.find(body) ?: throw CodedewChainException("no data-href on codedew page")
-            target = absolutize(target, dh.groupValues[1])
+            target = absolutize(target, htmlUnescape(dh.groupValues[1]))
             referer = target
             classifyUrl(target)?.let { return it }
-
-            if (target.contains("ziptron.php") || target.contains("watchbeta") ||
-                target.contains("multiquality") || target.contains(HUBCLOUD_HOST)
-            ) {
-                val finished = chaseDataHrefs(target, referer)
-                classifyUrl(finished)?.let { return it }
-                target = finished
-            }
         }
         throw CodedewChainException("codedew chain too deep")
     }

@@ -1,7 +1,6 @@
 package com.laddu100.rareanimes
 
 import android.annotation.SuppressLint
-import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -59,10 +58,10 @@ private val ALLOWED_HOSTS = listOf(
     "cloudflarestorage.com",
     "googleusercontent.com",
     "hbplay.pages.dev",
-    "flashzipper.workers.dev",
-    "yisehin453.workers.dev",
+    "workers.dev",
     "gofile.io",
     "api.gofile.io",
+    "mediafire.com",
     "mega.nz",
     "jwpcdn.com",
     "cloudflare.com",
@@ -75,9 +74,15 @@ private val ALLOWED_HOSTS = listOf(
     "pages.dev"
 )
 
+private val AD_URL_HINTS = listOf(
+    "bonuscaf.com", "rm358.com", "/sftouch", "/cuid/", "adsterra", "propellerads",
+    "popads", "popunder", "/sw.js", "onesignal", "pushnami", "/ads/", "doubleclick"
+)
+
 private fun isAllowedHost(url: String): Boolean {
     return try {
         val host = Uri.parse(url).host ?: return false
+        if (AD_URL_HINTS.any { url.contains(it, ignoreCase = true) }) return false
         ALLOWED_HOSTS.any { host == it || host.endsWith(".$it") }
     } catch (e: Exception) {
         false
@@ -88,6 +93,8 @@ internal fun classifyVideoUrl(url: String): String? {
     val u = url.substringBefore("#")
     return when {
         u.contains("groovy.monster") && u.contains(".m3u8") -> "hls"
+        u.endsWith(".m3u8") || u.contains(".m3u8?") -> "hls"
+        u.contains("mediafire.com") && u.contains("/download") -> "mediafire"
         u.contains(".workers.dev/") -> "worker"
         u.contains("cloudflarestorage.com/") && u.contains("X-Amz-") -> "r2"
         u.contains("pixeldrain.net/api/file/") || u.contains("pixeldrain.dev/api/file/") -> "pixeldrain"
@@ -160,24 +167,39 @@ private class RAIResolverDialog(
     private fun smartBack() {
         val wv = webView ?: return
         try {
-            val list = wv.copyBackForwardList()
-            var target = -1
-            val currentUrl = wv.url ?: ""
-            for (i in list.currentIndex - 1 downTo 0) {
-                val itemUrl = list.getItemAtIndex(i)?.url ?: continue
-                if (itemUrl != currentUrl) {
-                    target = i - list.currentIndex
-                    break
-                }
-            }
-            if (target == -1) {
-                statusText?.text = "Already at the first page"
-            } else {
+            if (wv.canGoBack()) {
                 statusText?.text = "Going back..."
-                wv.goBackOrForward(target)
+                wv.goBack()
+            } else {
+                statusText?.text = "Already at the first page"
             }
         } catch (e: Exception) {
-            if (wv.canGoBack()) wv.goBack()
+            Log.e(TAG, "back: ${e.message}")
+        }
+    }
+
+    private fun reloadPage() {
+        statusText?.text = "Reloading..."
+        try { webView?.reload() } catch (e: Exception) {}
+    }
+
+    private fun navButton(
+        activity: AppCompatActivity,
+        label: String,
+        color: Int,
+        onClick: () -> Unit
+    ): Button {
+        return Button(activity).apply {
+            text = label
+            textSize = 13f
+            background = GradientDrawable().apply {
+                cornerRadius = 14f
+                setColor(color)
+            }
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(0, (42 * activity.resources.displayMetrics.density).toInt(), 1f)
+            setOnClickListener { onClick() }
         }
     }
 
@@ -185,49 +207,75 @@ private class RAIResolverDialog(
     fun show(activity: AppCompatActivity) {
         val dp = activity.resources.displayMetrics.density
         val screenH = activity.resources.displayMetrics.heightPixels
-        val dialogW = (activity.resources.displayMetrics.widthPixels * 0.95f).toInt()
-        val dialogH = (screenH * 0.9f).toInt()
-        val webViewHeight = (screenH * 0.6f).toInt()
+        val screenW = activity.resources.displayMetrics.widthPixels
+        val portraitW = (screenH * 0.60f).toInt()
+        val dialogW = minOf((screenW * 0.95f).toInt(), portraitW)
+        val dialogH = (screenH * 0.92f).toInt()
+        val chromeH = (54 * dp).toInt() + (30 * dp).toInt() + (46 * dp).toInt() + (34 * dp).toInt()
+        val webViewHeight = (dialogH - chromeH).coerceAtLeast((screenH * 0.45f).toInt())
 
         val container = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((14 * dp).toInt(), (12 * dp).toInt(), (14 * dp).toInt(), (8 * dp).toInt())
+            setPadding((10 * dp).toInt(), (8 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt()
+            )
         }
 
-        container.addView(TextView(activity).apply {
+        val topBar = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, (4 * dp).toInt())
+        }
+        topBar.addView(TextView(activity).apply {
             text = "Resolving Link"
-            textSize = 16f; setTextColor(Color.WHITE)
+            textSize = 14f
+            setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(0, 0, 0, (6 * dp).toInt())
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         })
+        val closeTop = Button(activity).apply {
+            text = "X"
+            textSize = 15f
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFFE5484D.toInt())
+            }
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams((38 * dp).toInt(), (38 * dp).toInt())
+            setOnClickListener { finishCancel() }
+        }
+        topBar.addView(closeTop)
+        container.addView(topBar)
 
         val statusView = TextView(activity).apply {
             text = "Loading the link page..."
-            textSize = 12f; setTextColor(Color.parseColor("#A0A0B0"))
+            textSize = 11f
+            setTextColor(Color.parseColor("#A0A0B0"))
             setPadding(0, 0, 0, (2 * dp).toInt())
         }
         statusText = statusView
         container.addView(statusView)
 
         val urlView = TextView(activity).apply {
-            text = startUrl.substringBefore("?").takeLast(60)
-            textSize = 10f; setTextColor(Color.parseColor("#707080"))
-            setPadding(0, 0, 0, (6 * dp).toInt())
+            text = startUrl.substringBefore("?").takeLast(52)
+            textSize = 9f
+            setTextColor(Color.parseColor("#707080"))
+            setPadding(0, 0, 0, (4 * dp).toInt())
             maxLines = 1
         }
         urlText = urlView
         container.addView(urlView)
 
-        val isTv = try { Globals.isLayout(Globals.TV) } catch (e: Throwable) { false }
-
         container.addView(ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
-            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (6 * dp).toInt() }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = (4 * dp).toInt() }
         })
+
+        val isTv = try { Globals.isLayout(Globals.TV) } catch (e: Throwable) { false }
 
         val webContainer = FrameLayout(activity).apply {
             layoutParams = LinearLayout.LayoutParams(-1, webViewHeight)
-            isFocusable = true; isFocusableInTouchMode = true
+            isFocusable = true
+            isFocusableInTouchMode = true
         }
         webView = buildWebView(activity)
         webContainer.addView(webView, FrameLayout.LayoutParams(-1, -1))
@@ -246,14 +294,16 @@ private class RAIResolverDialog(
             webContainer.addView(cursor)
 
             val pos = CursorPos()
-            pos.x = webViewHeight / 2f; pos.y = webViewHeight / 2f
+            pos.x = webViewHeight / 2f
+            pos.y = webContainer.width / 2f
             cursor.translationX = pos.x - cursorSize / 2f
             cursor.translationY = pos.y - cursorSize / 2f
 
             webContainer.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
                 override fun onGlobalLayout() {
                     webContainer.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                    pos.x = webContainer.width / 2f; pos.y = webContainer.height / 2f
+                    pos.x = webContainer.width / 2f
+                    pos.y = webContainer.height / 2f
                     cursor.translationX = pos.x - cursorSize / 2f
                     cursor.translationY = pos.y - cursorSize / 2f
                 }
@@ -278,70 +328,38 @@ private class RAIResolverDialog(
 
         val navRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.topMargin = (8 * dp).toInt() }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).also { it.topMargin = (6 * dp).toInt() }
         }
-
-        val backBtn = Button(activity).apply {
-            text = "Back"
-            background = GradientDrawable().apply {
-                cornerRadius = 12f
-                setColor(0xFF2E7D32.toInt())
-            }
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        }
-        backBtn.setOnClickListener { smartBack() }
-        navRow.addView(backBtn)
-
-        val reloadBtn = Button(activity).apply {
-            text = "Reload"
-            background = GradientDrawable().apply {
-                cornerRadius = 12f
-                setColor(0xFF6D5ACF.toInt())
-            }
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).also { it.marginStart = (6 * dp).toInt() }
-        }
-        reloadBtn.setOnClickListener {
-            statusText?.text = "Reloading..."
-            try { webView?.reload() } catch (e: Exception) {}
-        }
-        navRow.addView(reloadBtn)
-
-        val doneBtn = Button(activity).apply {
-            text = "Done"
-            background = GradientDrawable().apply {
-                cornerRadius = 12f
-                setColor(0xFF0B57D0.toInt())
-            }
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).also { it.marginStart = (6 * dp).toInt() }
-        }
-        doneBtn.setOnClickListener { finishManual() }
-        navRow.addView(doneBtn)
-
-        val cancelBtn = Button(activity).apply {
-            text = "Cancel"
-            background = GradientDrawable().apply {
-                cornerRadius = 12f
-                setColor(0xFFE5484D.toInt())
-            }
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).also { it.marginStart = (6 * dp).toInt() }
-        }
-        cancelBtn.setOnClickListener { finishCancel() }
-        navRow.addView(cancelBtn)
-
+        navRow.addView(navButton(activity, "Back", 0xFF2E7D32.toInt()) { smartBack() })
+        navRow.addView(navButton(activity, "Reload", 0xFF6D5ACF.toInt()) { reloadPage() }.apply {
+            layoutParams = (layoutParams as LinearLayout.LayoutParams).also { it.marginStart = (5 * dp).toInt() }
+        })
+        navRow.addView(navButton(activity, "Done", 0xFF0B57D0.toInt()) { finishManual() }.apply {
+            layoutParams = (layoutParams as LinearLayout.LayoutParams).also { it.marginStart = (5 * dp).toInt() }
+        })
         container.addView(navRow)
 
         container.addView(TextView(activity).apply {
-            text = "Popup ads are blocked automatically. If one still opens, press Back to return to the link page."
-            textSize = 11f; setTextColor(Color.parseColor("#707080"))
-            setPadding(0, (6 * dp).toInt(), 0, 0)
+            text = "Popup ads are blocked automatically. Back closes an ad page, X closes this window."
+            textSize = 10f
+            setTextColor(Color.parseColor("#707080"))
+            setPadding(0, (5 * dp).toInt(), 0, 0)
         })
 
         dialog = AlertDialog.Builder(activity).setView(container).setCancelable(false).create()
         webView?.setTag(dialog)
+        dialog?.setOnKeyListener { _, keyCode, _ ->
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                if (webView?.canGoBack() == true) {
+                    smartBack()
+                } else {
+                    finishCancel()
+                }
+                true
+            } else {
+                false
+            }
+        }
         dialog?.setOnDismissListener {
             handler.removeCallbacksAndMessages(null)
             if (!resolved.get()) {
@@ -384,15 +402,21 @@ private class RAIResolverDialog(
     @SuppressLint("SetJavaScriptEnabled")
     private fun buildWebView(context: Context): WebView {
         return WebView(context).apply {
-            isFocusable = true; isFocusableInTouchMode = true; requestFocus()
+            isFocusable = true
+            isFocusableInTouchMode = true
+            requestFocus()
             settings.apply {
-                javaScriptEnabled = true; domStorageEnabled = true
+                javaScriptEnabled = true
+                domStorageEnabled = true
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                allowContentAccess = true; allowFileAccess = true
+                allowContentAccess = true
+                allowFileAccess = true
                 userAgentString = RAI_UA
                 mediaPlaybackRequiresUserGesture = false
                 setSupportMultipleWindows(false)
                 javaScriptCanOpenWindowsAutomatically = false
+                useWideViewPort = true
+                loadWithOverviewMode = true
                 blockNetworkImage = true
                 loadsImagesAutomatically = false
             }
@@ -407,10 +431,12 @@ private class RAIResolverDialog(
                     if (tryCapture(url)) return true
                     if (!isAllowedHost(url)) {
                         statusText?.text = "Blocked a popup ad"
-                        handler.post { smartBack() }
+                        handler.post {
+                            if (webView?.canGoBack() == true) smartBack()
+                        }
                         return true
                     }
-                    urlText?.text = url.substringBefore("?").takeLast(60)
+                    urlText?.text = url.substringBefore("?").takeLast(52)
                     return false
                 }
 
@@ -428,13 +454,6 @@ private class RAIResolverDialog(
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (resolved.get()) return
                     statusText?.text = "Page loaded - waiting for the video link..."
-                    try {
-                        view?.evaluateJavascript(
-                            "try{window.onpopstate=function(){};history.replaceState&&null;}catch(e){}"
-                        ) { _ -> }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "popstate reset: ${e.message}")
-                    }
                     url?.let { tryCapture(it) }
                 }
             }
