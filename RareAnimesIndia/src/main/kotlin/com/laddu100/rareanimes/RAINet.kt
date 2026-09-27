@@ -5,6 +5,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
 internal const val RAI_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
@@ -85,12 +87,14 @@ internal suspend fun raiPostJson(
     json: String,
     headers: Map<String, String> = emptyMap()
 ): NiceResponse {
+    val requestHeaders = buildHeaders(url, headers).toMutableMap().apply {
+        put("Content-Type", "application/json")
+    }
+    val body = json.toRequestBody("application/json".toMediaType())
     var response = app.post(
         url,
-        data = mapOf("" to json),
-        headers = buildHeaders(url, headers).toMutableMap().apply {
-            put("Content-Type", "application/json")
-        },
+        requestBody = body,
+        headers = requestHeaders,
         timeout = 30_000L
     )
 
@@ -103,10 +107,8 @@ internal suspend fun raiPostJson(
         if (cachedCookies != null) {
             response = app.post(
                 url,
-                data = mapOf("" to json),
-                headers = buildHeaders(url, headers).toMutableMap().apply {
-                    put("Content-Type", "application/json")
-                },
+                requestBody = body,
+                headers = requestHeaders,
                 timeout = 30_000L
             )
             if (!isRAICloudflareBlocked(response)) return response
@@ -117,10 +119,8 @@ internal suspend fun raiPostJson(
         for (attempt in 1..2) {
             response = app.post(
                 url,
-                data = mapOf("" to json),
-                headers = buildHeaders(url, headers).toMutableMap().apply {
-                    put("Content-Type", "application/json")
-                },
+                requestBody = body,
+                headers = requestHeaders,
                 timeout = 30_000L
             )
             if (!isRAICloudflareBlocked(response)) return response
@@ -135,6 +135,9 @@ internal sealed class ResolvedTarget {
     data class HubCloud(val id: String) : ResolvedTarget()
     data class Archive(val url: String) : ResolvedTarget()
     data class Direct(val url: String) : ResolvedTarget()
+    data class StreamBeta(val id: String) : ResolvedTarget()
+    data class GoFile(val code: String) : ResolvedTarget()
+    data class Mega(val url: String) : ResolvedTarget()
 }
 
 private class CodedewChainException(message: String) : Exception(message)
@@ -159,6 +162,15 @@ internal class CodedewResolver {
     private fun classifyUrl(url: String): ResolvedTarget? {
         val u = url.substringBefore("#")
         return when {
+            u.contains("$CODEDEW_HOST/streambeta/") -> {
+                val id = Uri.parse(u).getQueryParameter("url")
+                if (id.isNullOrBlank()) null else ResolvedTarget.StreamBeta(id)
+            }
+            u.contains("gofile.io/") -> {
+                val code = u.substringAfter("/d/").substringBefore("?").substringBefore("#")
+                if (code.isBlank()) null else ResolvedTarget.GoFile(code)
+            }
+            u.contains("mega.nz/") || u.contains("mega.io/") -> ResolvedTarget.Mega(u)
             u.contains("$CODEDEW_HOST/multiquality/") -> {
                 val code = Uri.parse(u).getQueryParameter("url")
                 if (code.isNullOrBlank()) null else ResolvedTarget.Argon(code)
@@ -217,8 +229,11 @@ internal class CodedewResolver {
     }
 
     suspend fun resolve(url: String): ResolvedTarget {
+        classifyUrl(url)?.let { return it }
         val current = when {
-            url.contains("$CODEDEW_HOST/zipper/") || url.contains("$CODEDEW_HOST/watchbeta/") -> url
+            url.contains("$CODEDEW_HOST/zipper/") ||
+                url.contains("$CODEDEW_HOST/watchbeta/") ||
+                url.contains("$CODEDEW_HOST/streambeta/") -> url
             url.contains("$CODEDEW_HOST/zipcloud/") -> {
                 val id = url.substringAfter("zipcloud/?").substringBefore("&").substringBefore("/")
                 if (id.isBlank()) throw CodedewChainException("empty zipcloud id")
@@ -254,6 +269,8 @@ internal class CodedewResolver {
             }
 
             if (resp.code != 200) throw CodedewChainException("codedew returned ${resp.code}")
+
+            classifyUrl(target)?.let { return it }
 
             val body = resp.text
             val dh = DATA_HREF.find(body) ?: throw CodedewChainException("no data-href on codedew page")

@@ -1,4 +1,4 @@
-version = 6
+version = 7
 
 android {
     buildFeatures {
@@ -12,7 +12,7 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "Rare Toons India - Hindi, Tamil & Telugu anime/cartoons. All sources: MultiQuality HLS, PixelDrain, HubCloud with multi-audio support"
+    description = "Rare Toons India - Hindi, Tamil & Telugu anime/cartoons. All sources: WatchMultiQuality HLS, HubCloud, WatchNow, DLBeta PixelDrain, Mega, GOFILE-ZIP, ZIP-CLOUD with multi-audio support"
     authors = listOf("raghav,phisher,csksy")
     status = 1
     tvTypes = listOf("Anime", "Cartoon", "TvSeries", "Movie")

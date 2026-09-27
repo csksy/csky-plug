@@ -55,9 +55,15 @@ private val ALLOWED_HOSTS = listOf(
     "gamerxyt.com",
     "pixeldrain.net",
     "pixeldrain.dev",
+    "pixeldra.in",
     "cloudflarestorage.com",
     "googleusercontent.com",
     "hbplay.pages.dev",
+    "flashzipper.workers.dev",
+    "yisehin453.workers.dev",
+    "gofile.io",
+    "api.gofile.io",
+    "mega.nz",
     "jwpcdn.com",
     "cloudflare.com",
     "cloudflareinsights.com",
@@ -82,9 +88,12 @@ internal fun classifyVideoUrl(url: String): String? {
     val u = url.substringBefore("#")
     return when {
         u.contains("groovy.monster") && u.contains(".m3u8") -> "hls"
+        u.contains(".workers.dev/") -> "worker"
         u.contains("cloudflarestorage.com/") && u.contains("X-Amz-") -> "r2"
         u.contains("pixeldrain.net/api/file/") || u.contains("pixeldrain.dev/api/file/") -> "pixeldrain"
+        u.contains("pixeldra.in/api/file/") -> "pixeldrain"
         u.contains("pixeldrain.net/u/") || u.contains("pixeldrain.dev/u/") -> "pixeldrain_page"
+        u.contains("pixeldra.in/u/") -> "pixeldrain_page"
         u.contains("googleusercontent.com/") && !u.contains("lh3.") -> "gvideo"
         else -> null
     }

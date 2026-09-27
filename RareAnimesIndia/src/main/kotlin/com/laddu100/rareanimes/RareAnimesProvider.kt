@@ -65,6 +65,48 @@ data class ArgonLinks(
     @JsonProperty("qualities") val qualities: List<ArgonQuality>? = null
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class StreamBetaLink(
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("stream_url") val streamUrl: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class StreamBetaApi(
+    @JsonProperty("success") val success: Boolean? = null,
+    @JsonProperty("servers") val servers: List<StreamBetaLink>? = null,
+    @JsonProperty("player_sources") val playerSources: List<StreamBetaLink>? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class GoFileAccountData(
+    @JsonProperty("token") val token: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class GoFileAccount(
+    @JsonProperty("data") val data: GoFileAccountData? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class GoFileChild(
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("size") val size: Long? = null,
+    @JsonProperty("link") val link: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class GoFileContentData(
+    @JsonProperty("children") val children: Map<String, GoFileChild>? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class GoFileContent(
+    @JsonProperty("status") val status: String? = null,
+    @JsonProperty("data") val data: GoFileContentData? = null
+)
+
 class RareAnimesProvider : MainAPI() {
     override var mainUrl = "https://www.rareanimes.mov"
     override var name = "Rare Toons India"
@@ -75,6 +117,8 @@ class RareAnimesProvider : MainAPI() {
 
     private val TAG = "RareAnimes"
     private val SOURCE = "Rare Toons India"
+    private val EPISODE_HEADER = Regex("""^(?:Episode|EP)\s*[.\-]?\s*(\d{1,3})\b""", RegexOption.IGNORE_CASE)
+    private val GOFILE_WT_SECRET = "12af056dacea0b"
 
     override val mainPage = mainPageOf(
         "hindi-dub" to "Hindi Dub",
@@ -155,6 +199,18 @@ class RareAnimesProvider : MainAPI() {
         val episodes: List<Pair<String, String>>
     )
 
+    private data class DirectEpisode(
+        val season: Int,
+        val epNum: Int,
+        val name: String,
+        val variants: MutableList<RAIVariant>
+    )
+
+    private data class DirectParse(
+        val episodes: List<DirectEpisode>,
+        val orphans: List<RAIVariant>
+    )
+
     private fun extractSources(doc: Document): List<SourceRef> {
         val content = doc.selectFirst("div.entry-content") ?: return emptyList()
         val sources = mutableListOf<SourceRef>()
@@ -212,6 +268,81 @@ class RareAnimesProvider : MainAPI() {
                     href.contains("$CODEDEW_HOST/zipcloud/")
             if (isCodedew && text.isNotBlank()) text to href else null
         }.distinctBy { it.second }
+    }
+
+    private fun languageFromText(text: String): String {
+        val t = text.lowercase()
+        return when {
+            t.contains("telugu") -> "Telugu"
+            t.contains("tamil") -> "Tamil"
+            t.contains("bengali") -> "Bengali"
+            t.contains("english") -> "English"
+            t.contains("hindi") -> "Hindi"
+            else -> ""
+        }
+    }
+
+    private fun parseDirectEpisodes(
+        doc: Document,
+        defaultSeason: Int
+    ): DirectParse {
+        val content = doc.selectFirst("div.entry-content") ?: return DirectParse(emptyList(), emptyList())
+        val episodes = mutableListOf<DirectEpisode>()
+        val orphans = mutableListOf<RAIVariant>()
+        var current: DirectEpisode? = null
+        var sectionContext = ""
+        val usedOrphanNames = mutableSetOf<String>()
+        for (el in content.children()) {
+            val tag = el.tagName().lowercase()
+            if (tag == "hr") continue
+            val text = el.text().trim()
+            if (text.isBlank()) continue
+            val links = el.select(
+                "a[href*=codedew.com/zipper/], a[href*=codedew.com/zipcloud/]"
+            )
+
+            val headerMatch = EPISODE_HEADER.find(text)
+            var startedEpisode = false
+            if (headerMatch != null) {
+                val epNum = headerMatch.groupValues[1].toIntOrNull()
+                if (epNum != null) {
+                    current = DirectEpisode(defaultSeason, epNum, text, mutableListOf())
+                    episodes.add(current)
+                    startedEpisode = true
+                    if (links.isEmpty()) continue
+                }
+            }
+
+            if (links.isEmpty()) {
+                if (tag.startsWith("h") && el.select("a").isEmpty()) {
+                    sectionContext = text
+                    if (!startedEpisode) current = null
+                }
+                continue
+            }
+
+            val langSpan = el.selectFirst("span:not(.ra-serv-txt)")?.text()
+            val lang = languageFromText(langSpan ?: text.substringBefore("["))
+            for (a in links) {
+                val href = a.attr("abs:href")
+                if (href.isBlank()) continue
+                val label = a.text().trim()
+                if (label.isBlank()) continue
+                val target = current
+                if (target != null) {
+                    val variantName = if (lang.isBlank()) label else "$lang $label"
+                    target.variants.add(RAIVariant(variantName, href))
+                } else {
+                    val effectiveLang = if (lang.isBlank()) languageFromText(sectionContext) else lang
+                    val base = if (effectiveLang.isBlank()) label else "$effectiveLang $label"
+                    val variantName = if (usedOrphanNames.add(base)) base
+                    else if (sectionContext.isBlank()) base
+                    else "$sectionContext $base"
+                    orphans.add(RAIVariant(variantName, href))
+                }
+            }
+        }
+        return DirectParse(episodes, orphans)
     }
 
     private suspend fun loadArchive(
@@ -343,6 +474,7 @@ class RareAnimesProvider : MainAPI() {
             }.filter { it.isNotBlank() }.distinct().take(8)
 
             val sources = extractSources(doc)
+            val direct = parseDirectEpisodes(doc, defaultSeason)
 
             val archiveResults = mutableListOf<ArchiveResult>()
             for (src in sources.filter { it.kind == "archive" }) {
@@ -359,6 +491,17 @@ class RareAnimesProvider : MainAPI() {
             val epMap = LinkedHashMap<Int, EpEntry>()
             val usedVariantNames = mutableSetOf<String>()
             var anyNumbered = false
+
+            for (ep in direct.episodes) {
+                anyNumbered = true
+                val key = ep.season * 10000 + ep.epNum
+                val entry = epMap.getOrPut(key) {
+                    EpEntry(ep.season, ep.epNum, ep.name, mutableListOf())
+                }
+                ep.variants.forEach { v ->
+                    if (entry.variants.none { it.u == v.u }) entry.variants.add(v)
+                }
+            }
 
             for (archive in archiveResults) {
                 var vName = archive.variantName
@@ -380,7 +523,7 @@ class RareAnimesProvider : MainAPI() {
                 }
             }
 
-            val isMovie = archiveResults.isNotEmpty() && !anyNumbered
+            val isMovie = !anyNumbered
 
             if (isMovie) {
                 val variants = mutableListOf<RAIVariant>()
@@ -391,36 +534,48 @@ class RareAnimesProvider : MainAPI() {
                         }
                     }
                 }
+                direct.orphans.forEach { v ->
+                    if (variants.none { it.u == v.u }) variants.add(v)
+                }
                 sources.filter { it.kind != "archive" }.forEach { src ->
-                    variants.add(RAIVariant(src.label, src.url))
+                    if (variants.none { it.u == src.url }) {
+                        variants.add(RAIVariant(src.label, src.url))
+                    }
                 }
                 if (variants.isEmpty()) return null
                 newMovieLoadResponse(title, url, TvType.Movie, variantsJson(variants)) {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = plot
-                    this.tags = genres
-                }
-            } else if (epMap.isNotEmpty()) {
-                val episodes = epMap.values.map { e ->
-                    newEpisode(variantsJson(e.variants)) {
-                        this.season = e.season
-                        this.episode = e.epNum
-                        this.name = e.name
-                    }
-                }
-                newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                     this.posterUrl = poster
                     this.year = year
                     this.plot = plot
                     this.tags = genres
                 }
             } else {
-                val variants = sources.filter { it.kind != "archive" }.map {
-                    RAIVariant(it.label, it.url)
+                val episodes = epMap.values.sortedWith(
+                    compareBy({ it.season }, { it.epNum })
+                ).map { e ->
+                    newEpisode(variantsJson(e.variants)) {
+                        this.season = e.season
+                        this.episode = e.epNum
+                        this.name = e.name
+                    }
+                }.toMutableList()
+
+                val zipVariants = direct.orphans.filter { v ->
+                    epMap.values.none { entry -> entry.variants.any { it.u == v.u } }
                 }
-                if (variants.isEmpty()) return null
-                newMovieLoadResponse(title, url, TvType.Movie, variantsJson(variants)) {
+                if (zipVariants.isNotEmpty()) {
+                    val lastEp = epMap.values.maxByOrNull { it.season * 10000 + it.epNum }
+                    val zipSeason = lastEp?.season ?: defaultSeason
+                    val zipNum = (lastEp?.epNum ?: 0) + 1
+                    episodes.add(
+                        newEpisode(variantsJson(zipVariants)) {
+                            this.season = zipSeason
+                            this.episode = zipNum
+                            this.name = "ZIP Batch (Full Season)"
+                        }
+                    )
+                }
+                newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                     this.posterUrl = poster
                     this.year = year
                     this.plot = plot
@@ -524,7 +679,7 @@ class RareAnimesProvider : MainAPI() {
         return found
     }
 
-    private fun emitPixelDrain(
+    private suspend fun emitPixelDrain(
         id: String,
         suffix: String,
         callback: (ExtractorLink) -> Unit
@@ -541,6 +696,185 @@ class RareAnimesProvider : MainAPI() {
             }
         )
         return true
+    }
+
+    private suspend fun resolveStreamBeta(
+        id: String,
+        suffix: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var found = false
+        try {
+            val pageUrl = "https://$CODEDEW_HOST/streambeta/?url=$id"
+            val api = raiPostJson(
+                pageUrl,
+                """{"fileId":"$id"}""",
+                mapOf(
+                    "Accept" to "application/json",
+                    "Referer" to pageUrl,
+                    "Origin" to "https://$CODEDEW_HOST"
+                )
+            )
+            val parsed = parseJson<StreamBetaApi>(api.text)
+            if (parsed.success != true) return false
+            val emitted = mutableSetOf<String>()
+
+            fun linkUrl(src: StreamBetaLink): String? {
+                val direct = src.streamUrl ?: src.url ?: return null
+                if (direct.contains("$CODEDEW_HOST/") || direct.contains("mega.nz")) return null
+                val pdId = Regex("""/(?:u|api/file)/([A-Za-z0-9]+)""")
+                    .find(direct.substringBefore(".workers.dev"))
+                return when {
+                    direct.contains("pixeldra") && pdId != null ->
+                        "https://$PIXELDRAIN_HOST/api/file/${pdId.groupValues[1]}"
+                    direct.startsWith("http") -> direct
+                    else -> null
+                }
+            }
+
+            parsed.playerSources.orEmpty().forEach { src ->
+                val url = linkUrl(src)
+                if (url != null && emitted.add(url)) {
+                    callback(
+                        newExtractorLink(
+                            SOURCE,
+                            "WatchNow ${src.name ?: "Stream"} [$suffix]",
+                            url,
+                            ExtractorLinkType.VIDEO
+                        ) {
+                            this.quality = Qualities.Unknown.value
+                            this.headers = mapOf("User-Agent" to RAI_UA)
+                        }
+                    )
+                    found = true
+                }
+            }
+            parsed.servers.orEmpty().forEach { src ->
+                val url = linkUrl(src)
+                if (url != null && emitted.add(url)) {
+                    callback(
+                        newExtractorLink(
+                            SOURCE,
+                            "WatchNow ${src.name ?: "Server"} [$suffix]",
+                            url,
+                            ExtractorLinkType.VIDEO
+                        ) {
+                            this.quality = Qualities.Unknown.value
+                            this.headers = mapOf("User-Agent" to RAI_UA)
+                        }
+                    )
+                    found = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "streambeta: ${e.message}")
+        }
+        return found
+    }
+
+    private var goFileTokenCache: String? = null
+    private var goFileTokenAt: Long = 0
+
+    private suspend fun goFileToken(): String? {
+        val cached = goFileTokenCache
+        if (cached != null && System.currentTimeMillis() - goFileTokenAt < 3_600_000L) {
+            return cached
+        }
+        return try {
+            val account = parseJson<GoFileAccount>(
+                com.lagradost.cloudstream3.app.post(
+                    "https://api.gofile.io/accounts",
+                    headers = mapOf(
+                        "User-Agent" to RAI_UA,
+                        "Origin" to "https://gofile.io",
+                        "Referer" to "https://gofile.io/"
+                    ),
+                    timeout = 20_000L
+                ).text
+            )
+            val token = account.data?.token
+            if (token.isNullOrBlank()) return null
+            com.lagradost.cloudstream3.app.get(
+                "https://api.gofile.io/accounts/website",
+                headers = mapOf(
+                    "User-Agent" to RAI_UA,
+                    "Authorization" to "Bearer $token",
+                    "Origin" to "https://gofile.io",
+                    "Referer" to "https://gofile.io/"
+                ),
+                timeout = 20_000L
+            )
+            goFileTokenCache = token
+            goFileTokenAt = System.currentTimeMillis()
+            token
+        } catch (e: Exception) {
+            Log.e(TAG, "gofile account: ${e.message}")
+            null
+        }
+    }
+
+    private fun goFileWt(token: String): String {
+        val bucket = System.currentTimeMillis() / 14_400_000L
+        val payload = "$RAI_UA::en-US::$token::$bucket::$GOFILE_WT_SECRET"
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(payload.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private suspend fun resolveGoFile(
+        code: String,
+        suffix: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var found = false
+        try {
+            val token = goFileToken() ?: return false
+            val wt = goFileWt(token)
+            val content = parseJson<GoFileContent>(
+                com.lagradost.cloudstream3.app.get(
+                    "https://api.gofile.io/contents/$code?pageSize=100&sortField=name&sortDirection=1",
+                    headers = mapOf(
+                        "User-Agent" to RAI_UA,
+                        "Authorization" to "Bearer $token",
+                        "X-Website-Token" to wt,
+                        "X-BL" to "en-US",
+                        "Origin" to "https://gofile.io",
+                        "Referer" to "https://gofile.io/"
+                    ),
+                    timeout = 25_000L
+                ).text
+            )
+            if (content.status != "ok") {
+                goFileTokenCache = null
+                Log.e(TAG, "gofile contents: ${content.status}")
+                return false
+            }
+            content.data?.children.orEmpty().values.forEach { child ->
+                val link = child.link ?: return@forEach
+                if (!link.startsWith("http")) return@forEach
+                val sizeMb = child.size?.let {
+                    if (it > 0) " ${it / 1048576}MB" else ""
+                } ?: ""
+                callback(
+                    newExtractorLink(
+                        SOURCE,
+                        "GoFile ${(child.name ?: "file").take(40)}$sizeMb [$suffix]",
+                        link,
+                        ExtractorLinkType.VIDEO
+                    ) {
+                        this.quality = qualityFromLabel(child.name ?: "")
+                        this.headers = mapOf(
+                            "User-Agent" to RAI_UA,
+                            "Authorization" to "Bearer $token"
+                        )
+                    }
+                )
+                found = true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "gofile: ${e.message}")
+        }
+        return found
     }
 
     private suspend fun resolveHubCloud(
@@ -623,7 +957,7 @@ class RareAnimesProvider : MainAPI() {
         return found
     }
 
-    private fun emitResolvedPopupLink(
+    private suspend fun emitResolvedPopupLink(
         resolved: RAIResolvedLink,
         callback: (ExtractorLink) -> Unit
     ) {
@@ -660,7 +994,7 @@ class RareAnimesProvider : MainAPI() {
                     emitPixelDrain(id, "WebView", callback)
                 }
             }
-            "r2", "gvideo" -> callback(
+            "r2", "gvideo", "worker" -> callback(
                 newExtractorLink(
                     SOURCE,
                     "Direct [WebView]",
@@ -695,12 +1029,21 @@ class RareAnimesProvider : MainAPI() {
                     is ResolvedTarget.Argon -> {
                         if (resolveArgon(t.code, v.n, callback)) any = true
                     }
+                    is ResolvedTarget.StreamBeta -> {
+                        if (resolveStreamBeta(t.id, v.n, callback)) any = true
+                    }
                     is ResolvedTarget.PixelDrain -> {
                         emitPixelDrain(t.id, v.n, callback)
                         any = true
                     }
                     is ResolvedTarget.HubCloud -> {
                         if (resolveHubCloud(t.id, v.n, callback)) any = true
+                    }
+                    is ResolvedTarget.GoFile -> {
+                        if (resolveGoFile(t.code, v.n, callback)) any = true
+                    }
+                    is ResolvedTarget.Mega -> {
+                        Log.i(TAG, "mega link is not streamable, skipped")
                     }
                     is ResolvedTarget.Archive -> {
                         try {
@@ -710,12 +1053,16 @@ class RareAnimesProvider : MainAPI() {
                                     when (val t2 = CodedewResolver.resolveUrl(epUrl)) {
                                         is ResolvedTarget.Argon ->
                                             if (resolveArgon(t2.code, v.n, callback)) any = true
+                                        is ResolvedTarget.StreamBeta ->
+                                            if (resolveStreamBeta(t2.id, v.n, callback)) any = true
                                         is ResolvedTarget.PixelDrain -> {
                                             emitPixelDrain(t2.id, v.n, callback)
                                             any = true
                                         }
                                         is ResolvedTarget.HubCloud ->
                                             if (resolveHubCloud(t2.id, v.n, callback)) any = true
+                                        is ResolvedTarget.GoFile ->
+                                            if (resolveGoFile(t2.code, v.n, callback)) any = true
                                         else -> {}
                                     }
                                 } catch (e: Exception) {
