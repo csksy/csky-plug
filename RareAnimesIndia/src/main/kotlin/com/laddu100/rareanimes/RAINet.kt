@@ -258,6 +258,9 @@ internal class CodedewResolver {
             current = absolutize(current, htmlUnescape(m.groupValues[1]))
             ref = current
             classifyUrl(current)?.let { return current }
+            if (isForeignAdLink(current)) {
+                throw CodedewChainException("codedew step button leads to ad site ${hostOf(current)}")
+            }
         }
         return current
     }
@@ -307,8 +310,27 @@ internal class CodedewResolver {
             target = absolutize(target, htmlUnescape(dh.groupValues[1]))
             referer = target
             classifyUrl(target)?.let { return it }
+            if (isForeignAdLink(target)) {
+                throw CodedewChainException("codedew step button leads to ad site ${hostOf(target)}")
+            }
         }
         throw CodedewChainException("codedew chain too deep")
+    }
+
+    // The codedew step pages sometimes hand their button to a plain
+    // advertisement host such as wikipedia or a social site. Those
+    // destinations are never part of the real chain, so stop instead of
+    // burning hops and request quota on them.
+    private fun isForeignAdLink(url: String): Boolean {
+        val host = hostOf(url)
+        if (host.isBlank()) return false
+        if (host == CODEDEW_HOST) return false
+        val knownHosts = listOf(
+            ARGON_HOST, HUBCLOUD_HOST, PIXELDRAIN_HOST, "pixeldrain.dev",
+            "pixeldra.in", "gofile.io", "mediafire.com", "mega.nz", "mega.io",
+            STORE_HOST
+        )
+        return knownHosts.none { host == it || host.endsWith(".$it") }
     }
 
     companion object {

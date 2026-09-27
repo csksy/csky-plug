@@ -1130,12 +1130,20 @@ class RareAnimesProvider : MainAPI() {
                 Regex(""""file"\s*:\s*"([^"]*\.m3u8)"""").find(it)?.groupValues?.get(1)
             }?.replace("\\/", "/")
             if (!m3u8.isNullOrBlank() && m3u8.startsWith("http")) {
+                // The juicy config file is an HLS playlist - a master with
+                // per quality variants or a plain media playlist. The player
+                // maps the M3U8 type to application/x-mpegURL and hands it to
+                // ExoPlayer's HLS pipeline, which walks the master, the
+                // variant playlists and the EXT-X-BYTERANGE ts segments with
+                // the headers below. Shipping it as a direct video link made
+                // the player parse the playlist text as a container and die
+                // with UnrecognizedInputFormat.
                 callback(
                     newExtractorLink(
                         SOURCE,
                         "MultiQuality [$suffix]",
                         m3u8,
-                        ExtractorLinkType.VIDEO
+                        ExtractorLinkType.M3U8
                     ) {
                         this.quality = Qualities.Unknown.value
                         this.referer = "https://$ARGON_HOST/"
@@ -1651,7 +1659,7 @@ class RareAnimesProvider : MainAPI() {
                         SOURCE,
                         "MultiQuality [WebView]",
                         resolved.url,
-                        ExtractorLinkType.VIDEO
+                        ExtractorLinkType.M3U8
                     ) {
                         this.quality = Qualities.Unknown.value
                         this.referer = "https://$ARGON_HOST/"
