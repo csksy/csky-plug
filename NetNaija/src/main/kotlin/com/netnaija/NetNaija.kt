@@ -1,537 +1,1142 @@
 package com.netnaija
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.annotation.JsonProperty
+import android.content.SharedPreferences
 import com.fasterxml.jackson.databind.JsonNode
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.databind.node.ArrayNode
-import com.fasterxml.jackson.databind.node.ObjectNode
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
+import com.lagradost.cloudstream3.Actor
+import com.lagradost.cloudstream3.ActorData
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageData
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.MovieSearchResponse
+import com.lagradost.cloudstream3.Score
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SearchResponseList
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvSeriesLoadResponse
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newLiveSearchResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newSubtitleFile
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.newSubtitleFile
-import com.lagradost.api.Log
-import android.os.Looper
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import com.lagradost.cloudstream3.utils.INFER_TYPE
+import com.lagradost.cloudstream3.utils.SubtitleHelper
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.netnaija.donation.DonationManager
+import com.lagradost.cloudstream3.amap
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.net.URLEncoder
+import org.json.JSONObject
+import java.net.URI
 import java.security.MessageDigest
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
+import java.security.SecureRandom
+import java.util.Base64
+import java.util.Locale
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
-class NetNaija : MainAPI() {
-    override var mainUrl = "https://netnaija.film"
-    override var name = "NetNaija"
-    override var lang = "en"
-    override val hasMainPage = true
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries,
-        TvType.Anime,
-        TvType.AnimeMovie,
-        TvType.OVA
-    )
+class NetNaija(private val sharedPref: SharedPreferences?) : MainAPI() {
 
-    private val apiUrl = "https://h5-api.aoneroom.com"
-    private val bff = "$apiUrl/wefeed-h5api-bff"
-    private val TAG = "NetNaija"
+    companion object {
+        const val SPORT_API = "https://h5-sport-api.aoneroom.com/wefeed-h5api-bff"
+        const val SPORT_URL = "https://www.sportslive.wine/"
+        const val WEB_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
 
-    private val ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        // The h5 web frontends share one backend, so any of them can serve the
+        // play request when the primary domain is down or blocked.
+        val WEB_DOMAINS = listOf(
+            "https://123moviesfree.club",
+            "https://movie-box.co",
+            "https://movieboxonline.net",
+            "https://sflix.film",
+            "https://h5-api.aoneroom.com",
+            "https://netnaija.film",
+            "https://movieboxhd.net"
+        )
 
-    private val baseHeaders = mapOf(
-        "User-Agent" to ua,
-        "Accept" to "application/json",
-        "Origin" to mainUrl,
-        "Referer" to "$mainUrl/",
-        "X-Request-Lang" to "en",
-        "X-Client-Info" to """{"timezone":"Asia/Kolkata"}"""
-    )
+        // The anonymous token bootstrap runs against the mobile gateway while
+        // everything else can be served by any regional api host.
+        val HOST_POOL = listOf(
+            "https://api6.aoneroom.com",
+            "https://api5.aoneroom.com",
+            "https://api4.aoneroom.com",
+            "https://api4sg.aoneroom.com",
+            "https://api3.aoneroom.com"
+        )
 
-    private val playHeaders = mapOf(
-        "Referer" to "$mainUrl/",
-        "Origin" to mainUrl,
-        "User-Agent" to ua
-    )
+        private const val TOKEN_BOOTSTRAP_URL =
+            "https://apig.inmoviebox.com/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1"
 
-    // browse channels used by the site's movies / tv-series / animated-series pages
-    private val moviesChannel = 1
-    private val seriesChannel = 2
-    private val animeChannel = 1006
+        // Each secret is stored base64 encoded and the hmac key is the decoded
+        // string decoded once more, matching the mobile client.
+        private const val SECRET_DEFAULT_B64 = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
+        private const val SECRET_ALT_B64 = "WHFuMm5uTzQxL0w5Mm8xaXVYaFNMSFRiWHZZNFo1Wlo2Mm04bVNMQQ=="
 
-    // ranking menu ids from the site's ranking-list page
-    private val trendingAnimeRanking = "62133389738001440"
-    private val top100AnimeRanking = "1513079728666723416"
+        var bearerToken: String? = null
 
-    private val mapper: ObjectMapper = jacksonObjectMapper()
+        fun decodeJwtExpiry(token: String): Long {
+            return try {
+                val payload = token.split(".").getOrNull(1) ?: return 0L
+                val std = payload.replace("-", "+").replace("_", "/")
+                val padded = std + "=".repeat((4 - (std.length % 4)) % 4)
+                val json = String(Base64.getUrlDecoder().decode(padded))
+                JSONObject(json).getLong("exp")
+            } catch (e: Exception) {
+                0L
+            }
+        }
 
-    private var jwtToken: String? = null
-    private val tokenMutex = Mutex()
-
-    private fun generateXClientToken(): String {
-        val ts = System.currentTimeMillis() / 1000
-        val reversed = ts.toString().reversed()
-        val md5 = MessageDigest.getInstance("MD5").digest(reversed.toByteArray())
-            .joinToString("") { "%02x".format(it) }
-        return "$ts,$md5"
+        fun isTokenValid(token: String?): Boolean {
+            if (token.isNullOrBlank()) return false
+            val exp = decodeJwtExpiry(token)
+            // Keep a one hour buffer so a token never expires mid session.
+            return exp > (System.currentTimeMillis() / 1000) + 3600
+        }
     }
 
-    private fun extractTokenFromResponse(response: com.lagradost.nicehttp.NiceResponse): String? {
-        try {
-            val xUser = response.headers?.get("x-user") ?: return null
-            if (xUser.isBlank()) return null
-            val token = mapper.readTree(xUser)["token"]?.asText()
+    override var mainUrl = sharedPref?.getString("netnaija_host", HOST_POOL[4]) ?: HOST_POOL[4]
+    override var name = "NetNaija"
+    override val hasMainPage = true
+    override var lang = "hi"
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Live)
+
+    private val random = SecureRandom()
+    private val deviceId: String = generateDeviceId()
+
+    private val modernUserAgent =
+        "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
+    private val modernClientInfo =
+        "{\"package_name\":\"com.community.mbox.in\",\"version_name\":\"4.0.03.0920.03\",\"version_code\":50020130," +
+            "\"os\":\"android\",\"os_version\":\"14\",\"device_id\":\"$deviceId\",\"install_store\":\"official\"," +
+            "\"gaid\":\"1b2212c1-dadf-43c3-a0c8-bd6ce48ae22d\",\"brand\":\"Google\",\"model\":\"Pixel 8\"," +
+            "\"system_language\":\"en\",\"net\":\"NETWORK_WIFI\",\"region\":\"IN\",\"timezone\":\"Asia/Calcutta\",\"sp_code\":\"\"}"
+
+    private val PREF_TOKEN_KEY = "netnaija_bearer_token_v3"
+
+    private val mapper: com.fasterxml.jackson.databind.ObjectMapper =
+        com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+
+    private fun generateDeviceId(): String {
+        val bytes = ByteArray(16)
+        random.nextBytes(bytes)
+        return bytes.joinToString("") { String.format("%02x", it) }
+    }
+
+    private fun md5(input: ByteArray): String {
+        return MessageDigest.getInstance("MD5").digest(input)
+            .joinToString("") { String.format("%02x", it) }
+    }
+
+    private fun generateXClientToken(timestamp: Long = System.currentTimeMillis()): String {
+        val ts = timestamp.toString()
+        return ts + "," + md5(ts.reversed().toByteArray())
+    }
+
+    // Canonical string covers method, accept, content type, body length and
+    // hash, timestamp and the sorted query so both sides sign identical input.
+    private fun buildCanonicalString(
+        method: String,
+        accept: String?,
+        contentType: String?,
+        url: String,
+        body: String?,
+        timestamp: Long
+    ): String {
+        return try {
+            val parsed = URI(url)
+            val path = parsed.path ?: ""
+            val rawQuery = parsed.rawQuery
+            val query = if (!rawQuery.isNullOrBlank()) {
+                rawQuery.split("&").mapNotNull {
+                    val p = it.split("=")
+                    if (p.isEmpty()) null else p[0] to (p.getOrNull(1) ?: "")
+                }.sortedBy { it.first }.joinToString("&") { "${it.first}=${it.second}" }
+            } else ""
+            val canonicalUrl = if (query.isNotEmpty()) "$path?$query" else path
+            val bodyHash: String
+            val bodyLength: String
+            if (body != null) {
+                val bodyBytes = body.toByteArray()
+                bodyHash = md5(if (bodyBytes.size > 102400) bodyBytes.copyOfRange(0, 102400) else bodyBytes)
+                bodyLength = bodyBytes.size.toString()
+            } else {
+                bodyHash = ""
+                bodyLength = ""
+            }
+            method.uppercase(Locale.ROOT) + "\n" + (accept ?: "") + "\n" + (contentType ?: "") + "\n" +
+                bodyLength + "\n" + timestamp + "\n" + bodyHash + "\n" + canonicalUrl
+        } catch (e: Exception) {
+            method.uppercase(Locale.ROOT) + "\n" + (accept ?: "") + "\n" + (contentType ?: "") + "\n\n" +
+                timestamp + "\n\n"
+        }
+    }
+
+    private fun generateXTrSignature(
+        method: String,
+        accept: String?,
+        contentType: String?,
+        url: String,
+        body: String?,
+        useAltKey: Boolean = false,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
+        val secret = if (useAltKey) SECRET_ALT_B64 else SECRET_DEFAULT_B64
+        val secretBytes = Base64.getDecoder().decode(
+            String(Base64.getDecoder().decode(secret))
+        )
+        val mac = Mac.getInstance("HmacMD5")
+        mac.init(SecretKeySpec(secretBytes, "HmacMD5"))
+        val signature = Base64.getEncoder().encodeToString(mac.doFinal(canonical.toByteArray()))
+        return "$timestamp|2|$signature"
+    }
+
+    private fun saveToken(token: String) {
+        if (!token.isBlank() && isTokenValid(token)) {
+            bearerToken = token
+            sharedPref?.edit()?.putString(PREF_TOKEN_KEY, token)?.apply()
+        }
+    }
+
+    // Requests a fresh anonymous token; the gateway hands the jwt back through
+    // the x-user response header rather than the body.
+    private suspend fun fetchAnonymousToken(forceRefresh: Boolean = false): String {
+        if (!forceRefresh) {
+            if (isTokenValid(bearerToken)) return bearerToken!!
+            val saved = sharedPref?.getString(PREF_TOKEN_KEY, null)
+            if (isTokenValid(saved)) {
+                bearerToken = saved
+                return saved!!
+            }
+        }
+        return try {
+            val ts = System.currentTimeMillis()
+            val xClientToken = generateXClientToken(ts)
+            val xTrSig = generateXTrSignature("GET", "application/json", "application/json", TOKEN_BOOTSTRAP_URL, null, false, ts)
+            val headers = mapOf(
+                "user-agent" to modernUserAgent,
+                "accept" to "application/json",
+                "content-type" to "application/json",
+                "connection" to "keep-alive",
+                "x-client-token" to xClientToken,
+                "x-tr-signature" to xTrSig,
+                "x-client-info" to modernClientInfo,
+                "x-client-status" to "0"
+            )
+            val resp = app.get(TOKEN_BOOTSTRAP_URL, headers = headers)
+            val xUser = resp.headers["x-user"]
+            val token = xUser?.let { runCatching { JSONObject(it).optString("token") }.getOrNull() }
             if (!token.isNullOrBlank()) {
-                jwtToken = token
-                return token
+                saveToken(token)
+                token
+            } else {
+                bearerToken ?: ""
             }
         } catch (e: Exception) {
-            Log.d(TAG, "x-user parse failed: ${e.message}")
+            bearerToken ?: ""
+        }
+    }
+
+    private fun persistTokenFromXUser(xUserHeader: String?) {
+        if (xUserHeader.isNullOrBlank()) return
+        try {
+            val token = JSONObject(xUserHeader).optString("token")
+            if (token.isNotBlank()) saveToken(token)
+        } catch (e: Exception) {
+        }
+    }
+
+    private suspend fun buildAuthHeaders(
+        method: String,
+        url: String,
+        contentType: String = "application/json",
+        accept: String = "application/json",
+        body: String? = null,
+        useToken: Boolean = true
+    ): Map<String, String> {
+        val ts = System.currentTimeMillis()
+        val xClientToken = generateXClientToken(ts)
+        val xTrSig = generateXTrSignature(method, accept, contentType, url, body, false, ts)
+        val headers = mutableMapOf(
+            "user-agent" to modernUserAgent,
+            "accept" to accept,
+            "content-type" to contentType,
+            "connection" to "keep-alive",
+            "x-client-token" to xClientToken,
+            "x-tr-signature" to xTrSig,
+            "x-client-info" to modernClientInfo,
+            "x-client-status" to "0"
+        )
+        if (useToken) {
+            val token = fetchAnonymousToken()
+            if (token.isNotBlank()) headers["Authorization"] = "Bearer $token"
+        }
+        return headers
+    }
+
+    // CloudFront and Edge-Cache sign cookies embed the playable manifest path;
+    // decoding them turns a signed cookie into the real stream url.
+    private fun extractPolicyResource(signCookie: String?): String? {
+        if (signCookie.isNullOrBlank()) return null
+        val edgeCacheMatch = Regex("Edge-Cache-Cookie=urlprefix=([^:;\\s]+)").find(signCookie)
+        if (edgeCacheMatch != null) {
+            val urlPrefixB64 = edgeCacheMatch.groupValues[1]
+            return try {
+                val std = urlPrefixB64.replace('_', '/').replace('-', '+')
+                val padded = std + "=".repeat((4 - (std.length % 4)) % 4)
+                String(Base64.getUrlDecoder().decode(padded)).trimEnd('/') + "/index.mpd"
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val match = Regex("CloudFront-Policy=([^;]+)").find(signCookie) ?: return null
+        val policyRaw = match.groupValues[1]
+        val candidates = listOf(
+            policyRaw.replace('-', '+').replace('~', '/').replace('_', '='),
+            policyRaw.replace('-', '+').replace('_', '/')
+        )
+        for (cfB64 in candidates) {
+            try {
+                val rem = cfB64.length % 4
+                val padded = if (rem > 0) cfB64 + "=".repeat(4 - rem) else cfB64
+                val decoded = String(Base64.getDecoder().decode(padded))
+                val root = runCatching { mapper.readTree(decoded) }.getOrNull()
+                val resource = root?.get("Statement")?.get(0)?.get("Resource")?.asText()
+                if (resource != null) {
+                    val trimmed = resource.trimEnd('*', '/')
+                    return if (trimmed.endsWith(".mpd", true)) trimmed else "$trimmed/index.mpd"
+                }
+            } catch (e: Exception) {
+                continue
+            }
         }
         return null
     }
 
-    // rows all want a token at once, single flight on the lightest list endpoint
-    private suspend fun ensureToken(): String {
-        jwtToken?.let { return it }
-        return tokenMutex.withLock {
-            jwtToken?.let { return@withLock it }
-            try {
-                val headers = baseHeaders.toMutableMap()
-                headers["X-Client-Token"] = generateXClientToken()
-                val response = app.get("$bff/subject/trending?page=1&perPage=1", headers = headers)
-                extractTokenFromResponse(response) ?: ""
-            } catch (e: Exception) {
-                Log.d(TAG, "token bootstrap failed: ${e.message}")
-                ""
-            }
-        }
-    }
-
-    // play calls need the cookie, list calls need the bearer
-    private suspend fun authHeaders(extra: Map<String, String> = emptyMap()): Map<String, String> {
-        val token = ensureToken()
-        val headers = baseHeaders.toMutableMap()
-        if (token.isNotEmpty()) {
-            headers["Cookie"] = "token=$token"
-            headers["Authorization"] = "Bearer $token"
-        } else {
-            headers["X-Client-Token"] = generateXClientToken()
-        }
-        headers.putAll(extra)
-        return headers
-    }
-
-    // one /home response holds every section and the rows load in parallel,
-    // so cache it behind the mutex and share across them
-    private val homeMutex = Mutex()
-    private val homeCacheTtl = 10 * 60_000L
-
-    @Volatile
-    private var homeSectionsCache: Map<String, List<NetNaijaSubject>> = emptyMap()
-
-    @Volatile
-    private var homeCacheTime = 0L
-
-    // /home sections are region targeted, build the rows from whatever it returns
-    @Volatile
-    private var dynamicRows: List<MainPageData> = emptyList()
-
-    @Volatile
-    private var homeRowsFuture: CompletableFuture<Unit>? = null
-
-    private val doneFuture = CompletableFuture.completedFuture(Unit)
-
-    private fun homeRowsFresh(): Boolean =
-        homeSectionsCache.isNotEmpty() && System.currentTimeMillis() - homeCacheTime < homeCacheTtl
-
-    @Synchronized
-    private fun refreshHomeRowsAsync(): CompletableFuture<Unit> {
-        if (homeRowsFresh()) return doneFuture
-        homeRowsFuture?.let { return it }
-        val future = CompletableFuture<Unit>()
-        homeRowsFuture = future
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                homeSections()
-            } catch (e: Exception) {
-                Log.d(TAG, "home refresh failed: ${e.message}")
-            } finally {
-                homeRowsFuture = null
-                future.complete(Unit)
-            }
-        }
-        return future
-    }
-
-    // block briefly for the first /home on worker threads, never on the ui thread
-    private fun awaitHomeRows() {
-        if (homeRowsFresh()) return
-        try {
-            refreshHomeRowsAsync().get(4000, TimeUnit.MILLISECONDS)
-        } catch (e: Exception) {
-            Log.d(TAG, "home rows wait failed: ${e.message}")
-        }
-    }
-
-    private fun buildDynamicRows(byTitle: Map<String, List<NetNaijaSubject>>): List<MainPageData> {
-        val used = HashSet<String>()
-        val rows = ArrayList<MainPageData>(byTitle.size)
-        byTitle.forEach { (rawTitle, _) ->
-            val display = cleanSectionTitle(rawTitle).ifBlank { rawTitle }
-            if (used.add(display.lowercase())) {
-                rows.add(MainPageData(name = display, data = "home:$rawTitle"))
-            }
-        }
-        return rows
-    }
-
-    private suspend fun homeSections(): Map<String, List<NetNaijaSubject>> {
-        if (homeRowsFresh()) return homeSectionsCache
-        return homeMutex.withLock {
-            if (homeRowsFresh()) return@withLock homeSectionsCache
-            val sections = try {
-                val response = app.get("$bff/home", headers = authHeaders())
-                extractTokenFromResponse(response)
-                parseJson<NetNaijaHomeResponse>(response.text).data?.operatingList.orEmpty()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.d(TAG, "home fetch failed: ${e.message}")
-                emptyList()
-            }
-            val byTitle = LinkedHashMap<String, List<NetNaijaSubject>>()
-            sections.forEach { section ->
-                val subjects = section.subjects.orEmpty()
-                    .filter { !it.title.isNullOrBlank() && !it.detailPath.isNullOrBlank() }
-                if (subjects.isNotEmpty()) {
-                    byTitle[section.title ?: return@forEach] = subjects
-                }
-            }
-            if (byTitle.isNotEmpty()) {
-                homeSectionsCache = byTitle
-                homeCacheTime = System.currentTimeMillis()
-                val rows = buildDynamicRows(byTitle)
-                // keep the old list when unchanged so row indexes stay stable for pagination
-                if (rows.map { it.data } != dynamicRows.map { it.data }) {
-                    dynamicRows = rows
-                }
-            }
-            byTitle
-        }
-    }
-
-    fun warmUp() {
-        refreshHomeRowsAsync()
-    }
-
-    private val staticMainPage = mainPageOf(
-        "trending" to "Trending Now",
-        "filter:$moviesChannel:Latest" to "Latest Movies",
-        "filter:$seriesChannel:Latest" to "Latest Series",
-        "filter:$animeChannel:Hottest" to "Anime",
-        "filter:$animeChannel:Latest" to "Latest Anime",
-        "rank:$trendingAnimeRanking" to "Trending Anime",
-        "rank:$top100AnimeRanking" to "Top 100 Anime",
+    // Sections map straight onto the site homepage rows; keys are interpreted
+    // by getMainPage below ("r|" rankings, "1|channel;filters" browse lists).
+    private val allSections = listOf(
+        "live|matches" to "\u26bd Live Football & Sports",
+        "r|0|9167640870324258216" to "Trending Movies",
+        "r|0|5692654647815587592" to "In Cinema",
+        "r|0|414907768299210008" to "Bollywood",
+        "r|0|3859721901924910512" to "South Indian",
+        "r|0|8019599703232971616" to "Hollywood",
+        "r|0|1488104699998914056" to "New Release",
+        "r|0|6027735606879570952" to "New Punjabi",
+        "r|0|6144409817256968824" to "New Bengali",
+        "r|5|719331337777440448" to "Top Series",
+        "r|5|4903182713986896328" to "Indian Drama",
+        "r|5|1255898847918934600" to "Reality TV",
+        "r|5|1976033493293449744" to "Asian Drama",
+        "r|5|3910636007619709856" to "Western TV",
+        "r|5|5177200225164885656" to "Turkish Drama",
+        "1|1" to "Movies",
+        "1|2" to "Series",
+        "1|1006" to "Anime",
+        "2|2;country=Japan;genre=Animation" to "Anime (Series)",
+        "1|1;country=India" to "Indian (Movies)",
+        "1|2;country=India" to "Indian (Series)",
+        "1|1;classify=Hindi dub;country=United States" to "USA (Movies)",
+        "1|2;classify=Hindi dub;country=United States" to "USA (Series)",
+        "1|1;country=Japan" to "Japan (Movies)",
+        "1|2;country=Japan" to "Japan (Series)",
+        "1|1;country=China" to "China (Movies)",
+        "1|2;country=China" to "China (Series)",
+        "1|1;country=Philippines" to "Philippines (Movies)",
+        "1|2;country=Philippines" to "Philippines (Series)",
+        "1|1;country=Thailand" to "Thailand (Movies)",
+        "1|2;country=Thailand" to "Thailand (Series)",
+        "1|1;country=Nigeria" to "Nollywood (Movies)",
+        "1|2;country=Nigeria" to "Nollywood (Series)",
+        "1|1;country=Korea" to "South Korean (Movies)",
+        "1|2;country=Korea" to "South Korean (Series)",
+        "1|1;classify=Hindi dub;genre=Action" to "Action (Movies)",
+        "1|1;classify=Hindi dub;genre=Crime" to "Crime (Movies)",
+        "1|1;classify=Hindi dub;genre=Comedy" to "Comedy (Movies)",
+        "1|2;classify=Hindi dub;genre=Crime" to "Crime (Series)",
+        "1|2;classify=Hindi dub;genre=Comedy" to "Comedy (Series)"
     )
 
-    override val mainPage: List<MainPageData>
-        get() {
-            if (Looper.myLooper() === Looper.getMainLooper()) {
-                refreshHomeRowsAsync()
-            } else {
-                awaitHomeRows()
-            }
-            val used = HashSet<String>()
-            staticMainPage.forEach { used.add(it.name.lowercase()) }
-            val rows = ArrayList<MainPageData>(staticMainPage.size + dynamicRows.size)
-            rows.add(staticMainPage.first())
-            dynamicRows.forEach { row ->
-                if (used.add(row.name.lowercase())) rows.add(row)
-            }
-            rows.addAll(staticMainPage.drop(1))
-            return rows
-        }
+    override val mainPage = mainPageOf(*allSections.toTypedArray())
 
-    // the site decorates section titles with emoji and symbols
-    private fun cleanSectionTitle(title: String): String =
-        title.replace(Regex("[^\\p{L}\\p{N} &+\\[\\]().'-]"), "").trim()
+    // Adult content filter that hides explicit rows unless the user enabled
+    // adult content in the app settings.
+    fun isNsfwItem(item: JsonNode): Boolean {
+        if (MainAPI.Companion.settingsForProvider.enableAdult) return false
+        val genre = item.get("genre")?.asText()?.lowercase(Locale.ROOT) ?: ""
+        val genreTokens = genre.split(",").map { it.trim() }
+        val title = item.get("title")?.asText()?.lowercase(Locale.ROOT) ?: ""
+        val subjectType = item.get("subjectType")?.asInt() ?: 1
+        val restrictKid = item.get("restrictKid")?.asInt() ?: 0
+        val contentRating = item.get("contentRating")?.asText() ?: ""
+        val adultGenres = listOf("adult", "erotic", "erotica", "hot")
+        if (genreTokens.any { it in adultGenres }) return true
+        if (Regex("\\bsex\\b").containsMatchIn(title)) return true
+        val adultKeywords = listOf(
+            "porn", "hentai", "xxx", "seduced", "nude", "naked", "erotica", "vivamax",
+            "ullu", "charmsukh", "kooku", "primeplay", "bhabhi", "bhabhiji", "x-rated",
+            "سكس", "جنس"
+        )
+        if (adultKeywords.any { title.contains(it) }) return true
+        val isMatureRating = contentRating.equals("R", true) || contentRating.equals("TV-MA", true)
+        if (restrictKid == 1 && isMatureRating) {
+            if (genreTokens.any { it in listOf("romance", "erotic", "hot", "drama") }) return true
+        }
+        if (subjectType != 7) return false
+        if (!genre.contains("romance") && !genre.contains("drama")) return false
+        val provocativeWords = listOf(
+            "pleasure", "seductive", "naked", "escort", "affair", "lover", "mistress", "sensual"
+        )
+        return provocativeWords.any { title.contains(it) }
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        mainUrl = FirebaseDomainHelper.getDomain("netnaija") ?: mainUrl
-        val key = request.data
-        return try {
-            when {
-                key == "trending" -> {
-                    val response = app.get("$bff/subject/trending?page=$page&perPage=24", headers = authHeaders())
-                    extractTokenFromResponse(response)
-                    val data = parseJson<NetNaijaTrendingResponse>(response.text).data
-                    val items = data?.subjectList.orEmpty().mapNotNull { it.toSearchResponse() }
-                    newHomePageResponse(request.name, items, hasNext = data?.pager?.hasMore == true)
-                }
+        DonationManager.checkAndShow()
+        val restrictKid = if (!MainAPI.Companion.settingsForProvider.enableAdult) 1 else 0
 
-                key.startsWith("filter:") -> {
-                    val parts = key.split(":")
-                    val channelId = parts.getOrNull(1)?.toIntOrNull() ?: return newHomePageResponse(request.name, emptyList(), hasNext = false)
-                    val sort = parts.getOrNull(2) ?: "Hottest"
-                    val body = """{"page":$page,"perPage":24,"channelId":$channelId,"sort":"$sort"}"""
-                    val response = app.post(
-                        "$bff/subject/filter",
-                        headers = authHeaders(mapOf("Content-Type" to "application/json")),
-                        requestBody = body.toRequestBody("application/json".toMediaType())
+        // Live sports sections are served by a separate h5 sport api and render
+        // as one horizontally scrolling "Live Now" row.
+        if (request.data.startsWith("live|")) {
+            return try {
+                val headers = mapOf(
+                    "User-Agent" to WEB_USER_AGENT,
+                    "Accept" to "application/json",
+                    "Origin" to SPORT_URL.trimEnd('/'),
+                    "Referer" to SPORT_URL,
+                    "X-Device-Info" to "{}"
+                )
+                val resp = app.get("$SPORT_API/live/match-list-v5", headers = headers)
+                if (resp.code != 200) return newHomePageResponse(emptyList())
+                val list = mapper.readTree(resp.text).get("data")?.get("list")
+                    ?: return newHomePageResponse(emptyList())
+                val liveItems = ArrayList<SearchResponse>()
+                for (match in list) {
+                    val id = match.get("id")?.asText()?.takeUnless { it.isBlank() } ?: continue
+                    val team1 = match.get("team1")?.get("name")?.asText() ?: "Team 1"
+                    val team2 = match.get("team2")?.get("name")?.asText() ?: "Team 2"
+                    val score1 = match.get("team1")?.get("score")?.asText() ?: "0"
+                    val score2 = match.get("team2")?.get("score")?.asText() ?: "0"
+                    val status = match.get("status")?.asText() ?: ""
+                    val statusLive = match.get("statusLive")?.asText() ?: ""
+                    val playType = match.get("playType")?.asText() ?: ""
+                    val playPath = match.get("playPath")?.asText()?.takeUnless { it.isBlank() } ?: continue
+                    if (!playPath.startsWith("http")) continue
+                    val league = match.get("league")?.asText()
+                    val poster = match.get("team1")?.get("avatar")?.asText()
+                        ?: match.get("team2")?.get("avatar")?.asText()
+                    val ended = status == "MatchEnded" || status == "2" || status == "FT" || statusLive == "3"
+                    if (ended) continue
+                    val isVideoType = playType == "PlayTypeVideo"
+                    val isLive = status == "MatchIng" || status == "1" ||
+                        statusLive.equals("Living", true) || statusLive == "2" || statusLive == "1"
+                    if (!isVideoType && !isLive) continue
+                    val playSources = match.get("playSource")?.mapNotNull { src ->
+                        val path = src.get("path")?.asText()?.takeUnless { it.isBlank() } ?: return@mapNotNull null
+                        SportPlaySource(src.get("title")?.asText(), path)
+                    }
+                    val title = if (score1 != "0" && score2 != "0") {
+                        "\uD83D\uDD34 $team1  $score1 - $score2  $team2"
+                    } else {
+                        "\uD83D\uDD34 $team1 vs $team2"
+                    }
+                    val payload = SportMatchData(
+                        id = id,
+                        title = "$team1 vs $team2",
+                        league = league,
+                        status = "LIVE",
+                        playPath = playPath,
+                        playSource = playSources,
+                        poster = poster
+                    ).toJson()
+                    liveItems.add(
+                        newLiveSearchResponse(title, "sport_match:$payload", TvType.Live) {
+                            this.posterUrl = poster
+                        }
                     )
-                    extractTokenFromResponse(response)
-                    val data = parseJson<NetNaijaListResponse>(response.text).data
-                    val items = data?.items.orEmpty().mapNotNull { it.toSearchResponse() }
-                    newHomePageResponse(request.name, items, hasNext = data?.pager?.hasMore == true)
                 }
-
-                key.startsWith("rank:") -> {
-                    val listId = key.removePrefix("rank:")
-                    val response = app.get("$bff/ranking-list/content?id=$listId&page=$page&perPage=24", headers = authHeaders())
-                    extractTokenFromResponse(response)
-                    val data = parseJson<NetNaijaRankingResponse>(response.text).data
-                    val items = data?.subjectList.orEmpty().mapNotNull { it.toSearchResponse() }
-                    newHomePageResponse(request.name, items, hasNext = data?.pager?.hasMore == true)
-                }
-
-                key.startsWith("home:") -> {
-                    // curated site sections carry a fixed set of items
-                    if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
-                    val rawTitle = key.removePrefix("home:")
-                    val items = homeSections()[rawTitle].orEmpty().mapNotNull { it.toSearchResponse() }
-                    newHomePageResponse(request.name, items, hasNext = false)
-                }
-
-                else -> newHomePageResponse(request.name, emptyList(), hasNext = false)
+                if (liveItems.isEmpty()) return newHomePageResponse(emptyList())
+                newHomePageResponse(listOf(HomePageList("\uD83D\uDD34 Live Now", liveItems, true)), false)
+            } catch (e: Exception) {
+                newHomePageResponse(emptyList())
             }
-        } catch (e: CancellationException) {
-            throw e
+        }
+
+        val isRanking = request.data.startsWith("r|")
+        val url = if (isRanking) {
+            val parts = request.data.split("|")
+            val tabId = parts.getOrNull(1) ?: "0"
+            val categoryType = parts.getOrNull(2) ?: return newHomePageResponse(emptyList())
+            "$mainUrl/wefeed-mobile-bff/tab/ranking-list?tabId=$tabId&categoryType=$categoryType&page=$page&perPage=20&restrictKid=$restrictKid"
+        } else {
+            "$mainUrl/wefeed-mobile-bff/subject-api/list"
+        }
+
+        // "type|channel;key=value" section keys: the channel drives the list and
+        // the remaining pairs become the filter body of the browse request.
+        val data = request.data
+        val channelId = data.substringBefore(";").split("|").getOrNull(1)
+        val params = LinkedHashMap<String, String>()
+        data.substringAfter(";", "").split(";").forEach {
+            val p = it.split("=")
+            val k = p.getOrNull(0)
+            val v = p.getOrNull(1)
+            if (!k.isNullOrBlank() && !v.isNullOrBlank()) params[k] = v
+        }
+        val classify = params["classify"] ?: "All"
+        val country = params["country"] ?: "All"
+        val year = params["year"] ?: "All"
+        val genre = params["genre"] ?: "All"
+        val sort = params["sort"] ?: "ForYou"
+        val bodyJson = "{\"page\":$page,\"perPage\":20,\"channelId\":\"$channelId\"," +
+            "\"classify\":\"$classify\",\"country\":\"$country\",\"year\":\"$year\"," +
+            "\"genre\":\"$genre\",\"sort\":\"$sort\",\"restrictKid\":$restrictKid}"
+        val requestBody = bodyJson.toRequestBody("application/json".toMediaType())
+
+        var headers = if (isRanking) {
+            buildAuthHeaders("GET", url)
+        } else {
+            buildAuthHeaders("POST", url, "application/json; charset=utf-8", body = bodyJson)
+        }
+        var response = if (isRanking) {
+            app.get(url, headers = headers)
+        } else {
+            app.post(url, headers = headers, requestBody = requestBody)
+        }
+        if (response.code == 401 || response.code == 441) {
+            bearerToken = null
+            sharedPref?.edit()?.remove(PREF_TOKEN_KEY)?.apply()
+            headers = if (isRanking) {
+                buildAuthHeaders("GET", url)
+            } else {
+                buildAuthHeaders("POST", url, "application/json; charset=utf-8", body = bodyJson)
+            }
+            response = if (isRanking) {
+                app.get(url, headers = headers)
+            } else {
+                app.post(url, headers = headers, requestBody = requestBody)
+            }
+        }
+
+        return try {
+            val mapper = mapper
+            val root = mapper.readTree(response.text)
+            // Ranking rows arrive under data.items while browse rows arrive
+            // under data.subjects, so both shapes are accepted here.
+            val items = root.get("data")?.get("items") ?: root.get("data")?.get("subjects")
+                ?: return newHomePageResponse(emptyList())
+            val responses = ArrayList<MovieSearchResponse>()
+            for (item in items) {
+                if (isNsfwItem(item)) continue
+                val rawTitle = item.get("title")?.asText() ?: continue
+                val title = rawTitle.substringBefore("[")
+                val subjectId = item.get("subjectId")?.asText() ?: continue
+                val coverImg = item.get("cover")?.get("url")?.asText()
+                val tvType = when (item.get("subjectType")?.asInt() ?: 1) {
+                    2 -> TvType.TvSeries
+                    else -> TvType.Movie
+                }
+                responses.add(
+                    newMovieSearchResponse(title, subjectId, tvType) {
+                        this.posterUrl = coverImg
+                        this.score = Score.from10(item.get("imdbRatingValue")?.asText())
+                    }
+                )
+            }
+            val seen = HashSet<String>()
+            val deduped = responses.filter { seen.add(it.url) }
+            newHomePageResponse(listOf(HomePageList(request.name, deduped, false)), false)
         } catch (e: Exception) {
-            Log.d(TAG, "main page $key failed: ${e.message}")
-            newHomePageResponse(request.name, emptyList(), hasNext = false)
+            newHomePageResponse(emptyList())
         }
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        mainUrl = FirebaseDomainHelper.getDomain("netnaija") ?: mainUrl
-        if (query.isBlank()) return emptyList()
-        // the search api needs the bearer from the token bootstrap, the rendered
-        // page only backs it up for when that call gets refused
-        apiSearch(query)?.let { return it }
-        return try {
-            val html = app.get(
-                "$mainUrl/search-result?keyword=${URLEncoder.encode(query, "UTF-8")}",
-                headers = mapOf("User-Agent" to ua)
-            ).text
-            parseSearchPage(html)
+    override suspend fun search(query: String, page: Int): SearchResponseList {
+        val url = "$mainUrl/wefeed-mobile-bff/subject-api/search/v2"
+        val restrictKid = if (!MainAPI.Companion.settingsForProvider.enableAdult) 1 else 0
+        val bodyJson = "{\"page\": $page, \"perPage\": 20, \"keyword\": \"$query\", \"restrictKid\": $restrictKid}"
+        val requestBody = bodyJson.toRequestBody("application/json".toMediaType())
+
+        var headers = buildAuthHeaders("POST", url, "application/json; charset=utf-8", body = bodyJson)
+        var response = app.post(url, headers = headers, requestBody = requestBody)
+        if (response.code == 401 || response.code == 441) {
+            bearerToken = null
+            sharedPref?.edit()?.remove(PREF_TOKEN_KEY)?.apply()
+            headers = buildAuthHeaders("POST", url, "application/json; charset=utf-8", body = bodyJson)
+            response = app.post(url, headers = headers, requestBody = requestBody)
+        }
+        persistTokenFromXUser(response.headers["x-user"])
+
+        val results = ArrayList<SearchResponse>()
+        try {
+            val root = mapper.readTree(response.text)
+            val groups = root.get("data")?.get("results")
+            if (groups != null) {
+                for (group in groups) {
+                    val subjects = group.get("subjects") ?: continue
+                    for (subject in subjects) {
+                        if (isNsfwItem(subject)) continue
+                        val title = subject.get("title")?.asText() ?: continue
+                        val subjectId = subject.get("subjectId")?.asText() ?: continue
+                        val coverImg = subject.get("cover")?.get("url")?.asText()
+                        val tvType = when (subject.get("subjectType")?.asInt() ?: 1) {
+                            2 -> TvType.TvSeries
+                            else -> TvType.Movie
+                        }
+                        results.add(
+                            newMovieSearchResponse(title, subjectId, tvType) {
+                                this.posterUrl = coverImg
+                                this.score = Score.from10(subject.get("imdbRatingValue")?.asText())
+                            }
+                        )
+                    }
+                }
+            }
         } catch (e: Exception) {
-            Log.d(TAG, "search failed: ${e.message}")
+        }
+
+        // On the first page also match running sports events so live matches
+        // surface directly from search.
+        if (page == 1) {
+            try {
+                val headers2 = mapOf(
+                    "User-Agent" to WEB_USER_AGENT,
+                    "Accept" to "application/json",
+                    "Origin" to SPORT_URL.trimEnd('/'),
+                    "Referer" to SPORT_URL,
+                    "X-Device-Info" to "{}"
+                )
+                val resp = app.get("$SPORT_API/live/match-list-v5", headers = headers2)
+                if (resp.code == 200) {
+                    val list = mapper.readTree(resp.text).get("data")?.get("list")
+                    if (list != null) {
+                        val q = query.trim().lowercase(Locale.ROOT)
+                        for (match in list) {
+                            val id = match.get("id")?.asText() ?: continue
+                            val team1 = match.get("team1")?.get("name")?.asText() ?: ""
+                            val team2 = match.get("team2")?.get("name")?.asText() ?: ""
+                            val league = match.get("league")?.asText() ?: ""
+                            val matchesQuery = q in listOf("football", "soccer", "live", "match", "sports") ||
+                                (q.length >= 3 && (team1.contains(q, true) || team2.contains(q, true) || league.contains(q, true)))
+                            if (!matchesQuery) continue
+                            val score1 = match.get("team1")?.get("score")?.asText() ?: "0"
+                            val score2 = match.get("team2")?.get("score")?.asText() ?: "0"
+                            val status = match.get("status")?.asText() ?: ""
+                            val statusLive = match.get("statusLive")?.asText() ?: ""
+                            val playPath = match.get("playPath")?.asText()
+                            val ended = status == "MatchEnded" || status == "2" || status == "FT" || statusLive == "3"
+                            if (ended) continue
+                            val live = status == "MatchIng" || status == "1" ||
+                                statusLive.equals("Living", true) || statusLive == "2" || statusLive == "1"
+                            if (!live) continue
+                            if (playPath.isNullOrBlank() || !playPath.startsWith("http")) continue
+                            val poster = match.get("team1")?.get("avatar")?.asText()
+                                ?: match.get("team2")?.get("avatar")?.asText()
+                            val title = if (score1 != "0" && score2 != "0") {
+                                "\uD83D\uDD34 LIVE: $team1 $score1 - $score2 $team2"
+                            } else {
+                                "\uD83D\uDD34 $team1 vs $team2"
+                            }
+                            val payload = SportMatchData(
+                                id = id,
+                                title = "$team1 vs $team2",
+                                league = league,
+                                status = "LIVE",
+                                playPath = playPath,
+                                poster = poster
+                            ).toJson()
+                            results.add(
+                                0,
+                                newLiveSearchResponse(title, "sport_match:$payload", TvType.Live) {
+                                    this.posterUrl = poster
+                                }
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+            }
+        }
+        return results.toNewSearchResponseList()
+    }
+
+    private suspend fun fetchRecommendations(subjectId: String): List<SearchResponse> {
+        return try {
+            val recUrl = "$mainUrl/wefeed-mobile-bff/subject-api/detail-rec"
+            val bodyJson = "{\"subjectId\":\"$subjectId\",\"page\":1,\"perPage\":20}"
+            val requestBody = bodyJson.toRequestBody("application/json".toMediaType())
+            var headers = buildAuthHeaders("POST", recUrl, "application/json; charset=utf-8", body = bodyJson)
+            var response = app.post(recUrl, headers = headers, requestBody = requestBody)
+            if (response.code == 401 || response.code == 441) {
+                bearerToken = null
+                sharedPref?.edit()?.remove(PREF_TOKEN_KEY)?.apply()
+                headers = buildAuthHeaders("POST", recUrl, "application/json; charset=utf-8", body = bodyJson)
+                response = app.post(recUrl, headers = headers, requestBody = requestBody)
+            }
+            persistTokenFromXUser(response.headers["x-user"])
+            if (response.code != 200) return emptyList()
+            val items = mapper.readTree(response.text).get("data")?.get("items") ?: return emptyList()
+            if (!items.isArray) return emptyList()
+            val out = ArrayList<SearchResponse>()
+            for (item in items) {
+                if (isNsfwItem(item)) continue
+                val subjectId2 = item.get("subjectId")?.asText() ?: continue
+                val rawTitle = item.get("title")?.asText() ?: continue
+                val title = rawTitle.substringBefore("[")
+                val coverImg = item.get("cover")?.get("url")?.asText()
+                val tvType = when (item.get("subjectType")?.asInt() ?: 1) {
+                    2 -> TvType.TvSeries
+                    else -> TvType.Movie
+                }
+                out.add(
+                    newMovieSearchResponse(title, subjectId2, tvType) {
+                        this.posterUrl = coverImg
+                        this.score = Score.from10(item.get("imdbRatingValue")?.asText())
+                    }
+                )
+            }
+            out
+        } catch (e: Exception) {
             emptyList()
         }
     }
 
-    private suspend fun apiSearch(query: String): List<SearchResponse>? {
-        return try {
-            val response = app.post(
-                "$bff/subject/search",
-                json = mapOf("keyword" to query, "page" to 1, "perPage" to 20),
-                headers = authHeaders()
+    override suspend fun load(url: String): LoadResponse {
+        val normalizedUrl = when {
+            url.contains("/sport_match:") -> "sport_match:" + url.substringAfter("/sport_match:")
+            url.contains("/sport_video:") -> "sport_video:" + url.substringAfter("/sport_video:")
+            else -> url
+        }
+
+        if (normalizedUrl.startsWith("sport_match:")) {
+            val json = normalizedUrl.removePrefix("sport_match:")
+            val matchData = mapper.readValue(json, SportMatchData::class.java)
+            val desc = buildString {
+                matchData.league?.let { append("League: $it\n") }
+                matchData.status?.let { append("Status: $it\n") }
+                val extra = ArrayList<String>()
+                if (!matchData.playPath.isNullOrBlank()) extra.add("Live Stream Available")
+                if (!matchData.playSource.isNullOrEmpty()) extra.add("${matchData.playSource.size} Channels")
+                if (extra.isNotEmpty()) append("Streams: " + extra.joinToString(", "))
+            }
+            return newMovieLoadResponse(matchData.title, normalizedUrl, TvType.Live, normalizedUrl) {
+                this.posterUrl = matchData.poster
+                this.plot = desc
+            }
+        }
+
+        if (normalizedUrl.startsWith("sport_video:")) {
+            val json = normalizedUrl.removePrefix("sport_video:")
+            val videoData = mapper.readValue(json, SportVideoData::class.java)
+            return newMovieLoadResponse(videoData.title, normalizedUrl, TvType.Live, normalizedUrl) {
+                this.posterUrl = videoData.poster
+                this.plot = "Sports Highlight / Replay Clip"
+            }
+        }
+
+        val id = Regex("subjectId=([^&]+)").find(url)?.groupValues?.get(1)
+            ?: url.substringAfterLast('/')
+        val finalUrl = "$mainUrl/wefeed-mobile-bff/subject-api/get?subjectId=$id"
+
+        var headers = buildAuthHeaders("GET", finalUrl)
+        var response = app.get(finalUrl, headers = headers)
+        if (response.code == 401 || response.code == 441) {
+            bearerToken = null
+            sharedPref?.edit()?.remove(PREF_TOKEN_KEY)?.apply()
+            headers = buildAuthHeaders("GET", finalUrl)
+            response = app.get(finalUrl, headers = headers)
+        }
+        if (response.code != 200) {
+            throw ErrorLoadingException("Failed to load data: ${response.text}")
+        }
+        val root = mapper.readTree(response.text)
+        val data = root.get("data") ?: throw ErrorLoadingException("No data")
+        if (isNsfwItem(data)) {
+            throw ErrorLoadingException(
+                "Content blocked by the NSFW filter. Enable 'Adult content' in CloudStream settings to show it."
             )
-            val parsed = parseJson<NetNaijaListResponse>(response.text)
-            parsed.data?.items?.mapNotNull { it.toSearchResponse() }
+        }
+
+        val title = data.get("title")?.asText()?.substringBefore("[") ?: "No title found"
+        val description = data.get("description")?.asText()
+        val releaseDate = data.get("releaseDate")?.asText()
+        val duration = data.get("duration")?.asText()
+        val genre = data.get("genre")?.asText()
+        val imdbRatingStr = data.get("imdbRatingValue")?.asText()?.takeUnless { it.isBlank() || it.equals("null", true) }
+            ?: data.get("imdbRate")?.asText()?.takeUnless { it.isBlank() || it.equals("null", true) }
+        val imdbRatingDouble = imdbRatingStr?.toDoubleOrNull()
+        val year = releaseDate?.take(4)?.toIntOrNull()
+        val coverUrl = data.get("cover")?.get("url")?.asText()
+        val backgroundUrl = data.get("cover")?.get("url")?.asText()
+        val detailUrl = data.get("detailUrl")?.asText()
+        var detailDomain: String? = null
+        var detailPath: String? = null
+        if (!detailUrl.isNullOrBlank()) {
+            try {
+                val uri = URI(detailUrl)
+                detailDomain = "${uri.scheme}://${uri.host}"
+                detailPath = detailUrl.trimEnd('/').substringBefore('?').substringAfterLast('/')
+            } catch (e: Exception) {
+            }
+        }
+        if (detailPath.isNullOrBlank()) {
+            detailPath = data.get("detailPath")?.asText()
+        }
+        val subjectType = data.get("subjectType")?.asInt() ?: 1
+        val type = when (subjectType) {
+            2 -> TvType.TvSeries
+            7 -> TvType.TvSeries
+            else -> TvType.Movie
+        }
+        val isIndian = data.get("countryName")?.asText()?.contains("India", true) == true ||
+            data.get("language")?.asText()?.contains("Hindi", true) == true ||
+            data.get("title")?.asText()?.contains("Hindi", true) == true ||
+            data.get("corner")?.asText()?.contains("Hindi", true) == true
+
+        val cleanName = title.substringBefore("(").substringBefore("[").trim()
+        val (tmdbId, imdbId) = try {
+            identifyID(cleanName, year, imdbRatingDouble, isIndian, type)
         } catch (e: Exception) {
-            Log.d(TAG, "api search failed: ${e.message}")
+            null to null
+        }
+
+        // Site cast list first; cinemeta fills the gap for entries without one.
+        val movieboxActors = try {
+            data.get("staffList")?.mapNotNull { staff ->
+                val name = staff.get("name")?.asText()?.takeUnless { it.isBlank() } ?: return@mapNotNull null
+                val roleString = staff.get("character")?.asText()
+                val image = staff.get("avatarUrl")?.asText()?.takeUnless { it.isBlank() }
+                ActorData(Actor(name, image), null, roleString)
+            } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val meta = if (!imdbId.isNullOrBlank()) fetchMetaData(imdbId, type) else null
+        val metaActors = try {
+            meta?.get("cast")?.mapNotNull { castNode ->
+                castNode.asText()?.takeUnless { it.isBlank() || it.equals("null", true) }
+            }?.map { ActorData(Actor(it, null)) } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val actors = if (movieboxActors.isEmpty()) metaActors else movieboxActors
+        val tags = genre?.split(",")?.map { it.trim() } ?: emptyList()
+        val durationMinutes: Int? = try {
+            val runtimeSource = duration?.takeUnless { it.isBlank() }
+                ?: meta?.get("runtime")?.asText()
+            val hmatch = Regex("(\\d+)h\\s*(\\d+)m").find(runtimeSource ?: "")
+            when {
+                hmatch != null -> hmatch.groupValues[1].toInt() * 60 + hmatch.groupValues[2].toInt()
+                runtimeSource != null -> runtimeSource.replace("m", "").trim().toIntOrNull()
+                else -> null
+            }
+        } catch (e: Exception) {
             null
         }
-    }
 
-    private val nuxtDataRegex = Regex(
-        """<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>""",
-        RegexOption.DOT_MATCHES_ALL
-    )
-
-    private fun parseSearchPage(html: String): List<SearchResponse> {
-        val match = nuxtDataRegex.find(html) ?: return emptyList()
-        val root = try {
-            mapper.readTree(match.groupValues[1])
+        val logoUrl = try {
+            fetchTmdbLogoUrl(
+                "https://api.themoviedb.org/3",
+                "98ae14df2b8d8f8f8136499daf79f0e0",
+                type,
+                tmdbId,
+                "en"
+            )
         } catch (e: Exception) {
-            Log.d(TAG, "search page json failed: ${e.message}")
-            return emptyList()
+            null
         }
-        if (root !is ArrayNode) return emptyList()
-        for (i in 0 until root.size()) {
-            val node = root.get(i)
-            if (node is ObjectNode && node.has("items") && node.has("pager") && node.get("items").isNumber) {
-                val resolved = resolveNuxtNode(root, node.get("items").asInt(), 0) as? List<*> ?: continue
-                return resolved.mapNotNull { entry ->
-                    try {
-                        mapper.convertValue(entry, NetNaijaSubject::class.java).toSearchResponse()
-                    } catch (e: Exception) {
-                        null
+
+        val Poster = meta?.get("poster")?.asText()
+        val Background = meta?.get("background")?.asText()
+        val Description = meta?.get("overview")?.asText()?.takeUnless { it.isBlank() }
+        val IMDBRating = meta?.get("imdbRating")?.asText()?.takeUnless { it.isBlank() }
+        val score = Score.from10(IMDBRating ?: imdbRatingStr)
+        var contentRating = data.get("contentRating")?.asText()?.takeUnless { it.isBlank() || it.equals("null", true) }
+        if (contentRating == null) {
+            contentRating = meta?.get("certification")?.asText()?.takeUnless { it.isBlank() || it.equals("null", true) }
+        }
+        if (contentRating == null) {
+            contentRating = meta?.get("app_extras")?.get("certification")?.asText()
+                ?.takeUnless { it.isBlank() || it.equals("null", true) }
+        }
+
+        if (type == TvType.TvSeries) {
+            // Collect the main subject plus every dub, then merge their season
+            // maps so an audio track that carries more seasons still shows up.
+            val allSubjectIds = ArrayList<String>()
+            allSubjectIds.add(id)
+            data.get("dubs")?.forEach { dub ->
+                val dubSubjectId = dub.get("subjectId")?.asText()
+                if (!dubSubjectId.isNullOrBlank() && !allSubjectIds.contains(dubSubjectId)) {
+                    allSubjectIds.add(dubSubjectId)
+                }
+            }
+            val episodeMap = LinkedHashMap<Int, LinkedHashSet<Int>>()
+            for (subjectId in allSubjectIds) {
+                try {
+                    val seasonUrl = "$mainUrl/wefeed-mobile-bff/subject-api/season-info?subjectId=$subjectId"
+                    val seasonHeaders = buildAuthHeaders("GET", seasonUrl)
+                    val seasonResp = app.get(seasonUrl, headers = seasonHeaders)
+                    if (seasonResp.code != 200) continue
+                    val seasonRoot = mapper.readTree(seasonResp.text)
+                    val seasons = seasonRoot.get("data")?.get("seasons") ?: continue
+                    if (!seasons.isArray || seasons.size() == 0) continue
+                    for (season in seasons) {
+                        val se = season.get("se")?.asInt() ?: 1
+                        val maxEp = season.get("maxEp")?.asInt() ?: 1
+                        val eps = episodeMap.getOrPut(se) { LinkedHashSet() }
+                        for (i in 1..maxEp) eps.add(i)
                     }
+                } catch (e: Exception) {
+                    continue
                 }
             }
-        }
-        return emptyList()
-    }
 
-    // nuxt flattens the page state into one array of indexes, resolve one level at a time
-    private fun resolveNuxtNode(arr: ArrayNode, idx: Int, depth: Int): Any? {
-        if (idx < 0 || idx >= arr.size() || depth > 8) return null
-        return when (val node = arr.get(idx)) {
-            is ObjectNode -> {
-                val out = LinkedHashMap<String, Any?>()
-                val fields = node.fields()
-                while (fields.hasNext()) {
-                    val field = fields.next()
-                    out[field.key] = resolveNuxtValue(arr, field.value, depth)
-                }
-                out
-            }
-
-            is ArrayNode -> {
-                val out = ArrayList<Any?>(node.size())
-                for (i in 0 until node.size()) {
-                    out.add(resolveNuxtValue(arr, node.get(i), depth))
-                }
-                out
-            }
-
-            else -> plainNuxtValue(node)
-        }
-    }
-
-    private fun resolveNuxtValue(arr: ArrayNode, value: JsonNode, depth: Int): Any? =
-        if (value.isNumber) resolveNuxtNode(arr, value.asInt(), depth + 1) else plainNuxtValue(value)
-
-    private fun plainNuxtValue(node: JsonNode): Any? = when {
-        node.isTextual -> node.asText()
-        node.isBoolean -> node.asBoolean()
-        node.isInt || node.isLong -> node.asLong()
-        node.isNumber -> node.asDouble()
-        else -> null
-    }
-
-    override suspend fun load(url: String): LoadResponse? {
-        mainUrl = FirebaseDomainHelper.getDomain("netnaija") ?: mainUrl
-        val detailPath = url.substringAfterLast("/").substringBefore("?").takeIf { it.isNotBlank() }
-            ?: return null
-
-        return try {
-            val response = app.get("$bff/detail?detailPath=$detailPath", headers = authHeaders())
-            extractTokenFromResponse(response)
-            val data = parseJson<NetNaijaDetailResponse>(response.text).data ?: return null
-            val subject = data.subject ?: return null
-            val title = subject.title ?: return null
-
-            val poster = subject.cover?.url
-            val plot = subject.description?.takeIf { it.isNotBlank() }
-            val genres = subject.genre?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
-            val year = subject.releaseDate?.substringBefore("-")?.toIntOrNull()
-            val score = subject.imdbRatingValue?.takeIf { it.isNotBlank() }
-                ?.let { runCatching { Score.from10(it) }.getOrNull() }
-            val runtime = subject.duration?.takeIf { it > 0 }?.let { it / 60 }
-            val cast = data.stars.orEmpty().mapNotNull { staff ->
-                staff.name?.let { ActorData(Actor(it, staff.avatarUrl)) }
-            }.take(15)
-            val trailer = subject.trailer?.videoAddress?.url?.takeIf { it.isNotBlank() }
-            val recommendations = fetchRecommendations(subject.subjectId, detailPath)
-
-            val tvType = when (subject.subjectType) {
-                1 -> TvType.Movie
-                2 -> TvType.TvSeries
-                else -> TvType.Movie
-            }
-
-            val seasons = data.resource?.seasons ?: emptyList()
-            val dubs = subject.dubs.orEmpty().ifEmpty {
-                listOf(
-                    NetNaijaDub(
-                        subjectId = subject.subjectId ?: "",
-                        detailPath = detailPath,
-                        lanName = "Original Audio",
-                        lanCode = "en",
-                        type = 0,
-                        original = true
+            val episodes = ArrayList<Episode>()
+            val apiGetUrl = "$mainUrl/wefeed-mobile-bff/subject-api/get?subjectId=$id"
+            for ((seasonNumber, episodeNumbers) in episodeMap) {
+                for (episodeNumber in episodeNumbers.sorted()) {
+                    val epUrl = "$apiGetUrl|$seasonNumber|$episodeNumber|$detailPath|$detailDomain"
+                    episodes.add(
+                        newEpisode(epUrl) {
+                            this.name = "S${seasonNumber}E${episodeNumber}"
+                            this.season = seasonNumber
+                            this.episode = episodeNumber
+                            this.description = "Season $seasonNumber Episode $episodeNumber"
+                        }
                     )
+                }
+            }
+            if (episodes.isEmpty()) {
+                val fallbackUrl = "$apiGetUrl|1|1|$detailPath|$detailDomain"
+                episodes.add(
+                    newEpisode(fallbackUrl) {
+                        this.name = "Episode 1"
+                        this.season = 1
+                        this.episode = 1
+                        this.posterUrl = coverUrl
+                    }
                 )
             }
 
-            NetNaijaSources.register(dubs.mapNotNull { sourceLabel(it) })
-
-            if (tvType == TvType.Movie || seasons.isEmpty()) {
-                // Movie - store all dub subjectIds so loadLinks can fetch each audio
-                val movieData = NetNaijaEpisodeData(dubs = dubs, season = 0, episode = 0).toJson()
-                return newMovieLoadResponse(title, url, tvType, movieData) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.tags = genres
-                    this.year = year
-                    this.score = score
-                    this.duration = runtime
-                    this.actors = cast
-                    this.recommendations = recommendations
-                    if (trailer != null) addTrailer(trailer)
+            val recommendations = fetchRecommendations(id)
+            return newTvSeriesLoadResponse(title, normalizedUrl, type, episodes) {
+                this.posterUrl = coverUrl ?: Poster
+                this.backgroundPosterUrl = Background ?: backgroundUrl ?: Poster
+                try {
+                    this.logoUrl = logoUrl
+                } catch (e: Throwable) {
                 }
-            } else {
-                val episodes = mutableListOf<Episode>()
-                seasons.forEach { season ->
-                    val seasonNum = season.se ?: return@forEach
-                    val maxEp = season.maxEp ?: 0
-                    for (ep in 1..maxEp) {
-                        val epData = NetNaijaEpisodeData(dubs = dubs, season = seasonNum, episode = ep).toJson()
-                        episodes.add(newEpisode(epData) {
-                            this.season = seasonNum
-                            this.episode = ep
-                            this.name = "Episode $ep"
-                        })
-                    }
-                }
-                return newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.tags = genres
-                    this.year = year
-                    this.score = score
-                    this.duration = runtime
-                    this.actors = cast
-                    this.recommendations = recommendations
-                    if (trailer != null) addTrailer(trailer)
-                }
+                this.plot = Description ?: description
+                this.year = year
+                this.tags = tags
+                this.actors = actors
+                this.score = score
+                this.contentRating = contentRating
+                this.duration = durationMinutes
+                this.recommendations = recommendations
+                addImdbId(imdbId)
+                addTMDbId(tmdbId?.toString())
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "load failed: ${e.message}")
-            null
+        }
+
+        val recommendations = fetchRecommendations(id)
+        val movieUrl = "$mainUrl/wefeed-mobile-bff/subject-api/get?subjectId=$id|0|0|$detailPath|$detailDomain"
+        return newMovieLoadResponse(title, movieUrl, type, movieUrl) {
+            this.posterUrl = coverUrl ?: Poster
+            this.backgroundPosterUrl = Background ?: backgroundUrl
+            try {
+                this.logoUrl = logoUrl
+            } catch (e: Throwable) {
+            }
+            this.plot = Description ?: description
+            this.year = year
+            this.tags = tags
+            this.actors = actors
+            this.score = score
+            this.contentRating = contentRating
+            this.duration = durationMinutes
+            this.recommendations = recommendations
+            addImdbId(imdbId)
+            addTMDbId(tmdbId?.toString())
         }
     }
 
-    private suspend fun fetchRecommendations(subjectId: String?, detailPath: String): List<SearchResponse> {
-        if (subjectId.isNullOrBlank()) return emptyList()
-        return try {
-            val response = app.get(
-                "$bff/subject/detail-rec?subjectId=$subjectId&detailPath=$detailPath",
-                headers = authHeaders()
-            )
-            val items = parseJson<NetNaijaListResponse>(response.text).data?.items.orEmpty()
-            items.filter { it.detailPath != detailPath }.mapNotNull { it.toSearchResponse() }.take(12)
+    private suspend fun loadCaptions(
+        streamId: String,
+        language: String,
+        subjectId: String,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val seen = HashSet<String>()
+        try {
+            // Both caption endpoints return their rows list under data.extCaptions.
+            val subLink = "$mainUrl/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=$subjectId&streamId=$streamId"
+            val subHeaders = buildAuthHeaders("GET", subLink)
+            val subResponse = app.get(subLink, headers = subHeaders)
+            val subRoot = mapper.readTree(subResponse.text).get("data")?.get("extCaptions")
+            if (subRoot != null && subRoot.isArray) {
+                for (caption in subRoot) {
+                    emitCaption(seen, subtitleCallback, language, caption)
+                }
+            }
         } catch (e: Exception) {
-            Log.d(TAG, "recommendations failed: ${e.message}")
-            emptyList()
+        }
+        try {
+            val subLink = "$mainUrl/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId=$subjectId&resourceId=$streamId&episode=0"
+            val subHeaders = buildAuthHeaders("GET", subLink)
+            val subResponse = app.get(subLink, headers = subHeaders)
+            val subRoot = mapper.readTree(subResponse.text).get("data")?.get("extCaptions")
+            if (subRoot != null && subRoot.isArray) {
+                for (caption in subRoot) {
+                    emitCaption(seen, subtitleCallback, language, caption)
+                }
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private suspend fun emitCaption(
+        seen: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        language: String,
+        caption: JsonNode
+    ) {
+        val url = caption.get("url")?.asText()?.takeUnless { it.isBlank() } ?: return
+        if (!seen.add(url)) return
+        val rawLang = caption.get("lanName")?.asText()?.takeUnless { it.isBlank() }
+            ?: caption.get("language")?.asText()?.takeUnless { it.isBlank() }
+            ?: caption.get("lan")?.asText()?.takeUnless { it.isBlank() }
+            ?: "Unknown"
+        val lang = SubtitleHelper.fromTagToEnglishLanguageName(rawLang)
+            ?: SubtitleHelper.fromTagToEnglishLanguageName(rawLang.substringBefore("-"))
+            ?: rawLang
+        val audioTag = language.replace("dub", "Audio")
+        val label = "$lang ($audioTag)"
+        subtitleCallback(newSubtitleFile(label, url))
+    }
+
+    private suspend fun loadNativeMobileStreams(
+        subjectId: String,
+        language: String,
+        season: Int,
+        episode: Int,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val playUrl = "$mainUrl/wefeed-mobile-bff/subject-api/play-info?subjectId=$subjectId&se=$season&ep=$episode"
+            var playHeaders = buildAuthHeaders("GET", playUrl)
+            var response = app.get(playUrl, headers = playHeaders)
+            if (response.code == 401 || response.code == 441) {
+                fetchAnonymousToken(forceRefresh = true)
+                playHeaders = buildAuthHeaders("GET", playUrl)
+                response = app.get(playUrl, headers = playHeaders)
+            }
+            if (response.code != 200) return
+            val playData = mapper.readTree(response.text).get("data") ?: return
+            val streams = playData.get("streams")
+            if (streams != null && streams.isArray && streams.size() > 0) {
+                // Dash variants first so adaptive streams sort to the top.
+                val sortedStreams = streams.sortedByDescending { stream ->
+                    val url = stream.get("url")?.asText() ?: ""
+                    val format = stream.get("format")?.asText() ?: ""
+                    if (format.equals("DASH", true) || url.contains(".mpd")) 1 else 0
+                }
+                for (stream in sortedStreams) {
+                    try {
+                        val rawStreamUrl = stream.get("url")?.asText() ?: continue
+                        val format = stream.get("format")?.asText() ?: ""
+                        val resolutions = stream.get("resolutions")?.asText() ?: ""
+                        val signCookieRaw = stream.get("signCookie")?.asText()
+                        if (signCookieRaw.isNullOrEmpty()) continue
+                        val streamId = stream.get("id")?.asText() ?: "$subjectId|$season|$episode"
+                        val quality = getHighestQuality(resolutions)
+                        val policyUrl = extractPolicyResource(signCookieRaw)
+                        val finalStreamUrl = policyUrl ?: rawStreamUrl
+                        if (finalStreamUrl.contains("b164fbfb4347792950bdfbfb563d39d9")) continue
+                        if (finalStreamUrl == rawStreamUrl && rawStreamUrl.contains("/other/2026/09/")) continue
+                        val isDash = format.equals("DASH", true) || finalStreamUrl.contains(".mpd")
+                        val type = when {
+                            isDash -> ExtractorLinkType.DASH
+                            rawStreamUrl.startsWith("magnet:") -> ExtractorLinkType.MAGNET
+                            rawStreamUrl.substringAfterLast('.').equals("torrent", true) -> ExtractorLinkType.TORRENT
+                            format.equals("HLS", true) || finalStreamUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
+                            finalStreamUrl.contains(".mp4") || finalStreamUrl.contains(".mkv") -> ExtractorLinkType.VIDEO
+                            else -> INFER_TYPE
+                        }
+                        val audioTag = language.replace("dub", "Audio")
+                        val sourceName = if (isDash) "$name DASH" else "$name HLS"
+                        val displayName = if (isDash) "$name DASH ($audioTag)" else "$name HLS ($audioTag)"
+                        callback(
+                            com.lagradost.cloudstream3.utils.newExtractorLink(sourceName, displayName, finalStreamUrl, type) {
+                                this.headers = mapOf(
+                                    "Referer" to "$mainUrl/",
+                                    "User-Agent" to modernUserAgent
+                                ) + mapOf("Cookie" to signCookieRaw)
+                                if (quality != null) this.quality = quality
+                            }
+                        )
+                        loadCaptions(streamId, language, subjectId, subtitleCallback)
+                        return
+                    } catch (e: Exception) {
+                        continue
+                    }
+                }
+            }
+
+            // External mirrors carry per resolution direct links keyed by
+            // season and episode and are only used for the requested position.
+            val fallbackUrl = "$mainUrl/wefeed-mobile-bff/subject-api/get?subjectId=$subjectId"
+            val fallbackHeaders = buildAuthHeaders("GET", fallbackUrl)
+            val fallbackResponse = app.get(fallbackUrl, headers = fallbackHeaders)
+            if (fallbackResponse.code != 200) return
+            val fallbackRoot = mapper.readTree(fallbackResponse.text).get("data") ?: return
+            val detectors = fallbackRoot.get("resourceDetectors") ?: return
+            for (detector in detectors) {
+                try {
+                    val resolutionList = detector.get("resolutionList") ?: continue
+                    for (video in resolutionList) {
+                        val link = video.get("resourceLink")?.asText() ?: continue
+                        val resolution = video.get("resolution")?.asInt() ?: continue
+                        val se = video.get("se")?.asInt() ?: continue
+                        val ep = video.get("ep")?.asInt() ?: continue
+                        if (se != season || ep != episode) continue
+                        val audioTag = language.replace("dub", "Audio")
+                        val sourceName = "$name $audioTag"
+                        val displayName = "$name S${se}E${ep} ${resolution}p ($audioTag)"
+                        callback(
+                            com.lagradost.cloudstream3.utils.newExtractorLink(sourceName, displayName, link, ExtractorLinkType.VIDEO) {
+                                this.headers = mapOf(
+                                    "Referer" to "$mainUrl/",
+                                    "User-Agent" to modernUserAgent
+                                )
+                                this.quality = resolution
+                            }
+                        )
+                    }
+                } catch (e: Exception) {
+                    continue
+                }
+            }
+        } catch (e: Exception) {
         }
     }
 
@@ -541,385 +1146,318 @@ class NetNaija : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val epData = try {
-            parseJson<NetNaijaEpisodeData>(data)
-        } catch (e: Exception) {
-            Log.d(TAG, "episode data parse failed: ${e.message}")
-            return false
+        val normalizedData = when {
+            data.contains("/sport_match:") -> "sport_match:" + data.substringAfter("/sport_match:")
+            data.contains("/sport_video:") -> "sport_video:" + data.substringAfter("/sport_video:")
+            else -> data
         }
 
-        NetNaijaSources.register(epData.dubs.mapNotNull { sourceLabel(it) })
-
-        // a source turned off in the settings is skipped entirely, its play
-        // endpoint is never touched
-        val dubs = epData.dubs.filter { dub ->
-            sourceLabel(dub)?.let { NetNaijaSources.isEnabled(it) } == true
-        }
-        var found = false
-
-        // soft subs only hang off the original audio stream, pull them once at the end
-        var captionStream: Triple<String, String, String>? = null
-
-        // one source per audio track, cloudstream's audioTracks can't handle dash manifests
-        dubs.forEach { dub ->
-            val dubSubjectId = dub.subjectId ?: return@forEach
-            val dubDetailPath = dub.detailPath ?: return@forEach
-            val label = sourceLabel(dub)
-            if (label == null) return@forEach
-
-            val playReferer = "$mainUrl/videoPlayPage/$dubDetailPath"
-            val headers = authHeaders(mapOf(
-                "X-Source" to "webNetnaijaSite",
-                "Referer" to playReferer
-            ))
-
-            val playUrl = "$bff/subject/play?subjectId=$dubSubjectId" +
-                "&se=${epData.season}&ep=${epData.episode}&detailPath=$dubDetailPath"
-
-            val playData = try {
-                val resp = app.get(playUrl, headers = headers)
-                extractTokenFromResponse(resp)
-                parseJson<NetNaijaPlayResponse>(resp.text).data
-            } catch (e: Exception) {
-                Log.d(TAG, "play fetch failed for $label: ${e.message}")
-                return@forEach
-            } ?: return@forEach
-
-            val mp4Streams = playData.streams ?: emptyList()
-            mp4Streams.forEach { stream ->
-                val url = stream.url ?: return@forEach
-                val resolution = stream.resolutions ?: return@forEach
-                if (stream.vipLocked == true) return@forEach
-
-                val qualityInt = resolution.toIntOrNull()
-                val qualityLabel = when (qualityInt) {
-                    360 -> Qualities.P360.value
-                    480 -> Qualities.P480.value
-                    720 -> Qualities.P720.value
-                    1080 -> Qualities.P1080.value
-                    else -> Qualities.Unknown.value
-                }
-                val sizeBytes = stream.size?.toLongOrNull() ?: 0
-                val sizeLabel = if (sizeBytes > 0) " (${sizeBytes / (1024 * 1024)}MB)" else ""
-
-                callback.invoke(
-                    newExtractorLink(
-                        "NetNaija $label",
-                        "$label ${resolution}p${sizeLabel}",
-                        url,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = "$mainUrl/"
-                        this.quality = qualityLabel
-                        this.headers = playHeaders
-                    }
-                )
-                found = true
-            }
-
-            if ((dub.original == true || captionStream == null) && mp4Streams.isNotEmpty()) {
-                mp4Streams.first().id?.let { streamId ->
-                    captionStream = Triple(streamId, dubSubjectId, dubDetailPath)
-                }
-            }
-
-            playData.dash?.forEach { dashStream ->
-                val url = dashStream.url ?: return@forEach
-                callback.invoke(
-                    newExtractorLink(
-                        "NetNaija $label",
-                        "$label DASH (Adaptive)",
-                        url,
-                        type = ExtractorLinkType.DASH
-                    ) {
-                        this.referer = "$mainUrl/"
-                        this.headers = playHeaders
-                    }
-                )
-                found = true
-            }
-
-            playData.hls?.forEach { hlsStream ->
-                val url = hlsStream.url ?: return@forEach
-                val resolution = hlsStream.resolutions ?: "0"
+        if (normalizedData.startsWith("sport_match:")) {
+            try {
+                val json = normalizedData.removePrefix("sport_match:")
+                val matchData = mapper.readValue(json, SportMatchData::class.java)
+                // The detail endpoint carries fresher channel data than the
+                // list response, so both are merged before emitting links.
+                var freshPlayPath: String? = null
+                var freshPlaySources: List<SportPlaySource>? = null
                 try {
-                    M3u8Helper.generateM3u8(
-                        "NetNaija $label HLS ${resolution}p",
-                        url,
-                        "$mainUrl/",
-                        headers = playHeaders
-                    ).forEach(callback)
-                    found = true
+                    val sportHeaders = mapOf(
+                        "User-Agent" to WEB_USER_AGENT,
+                        "Accept" to "application/json",
+                        "Origin" to SPORT_URL.trimEnd('/'),
+                        "Referer" to SPORT_URL,
+                        "X-Device-Info" to "{}"
+                    )
+                    val detailResp = app.get("$SPORT_API/live/match-detail?id=${matchData.id}", headers = sportHeaders)
+                    if (detailResp.code == 200) {
+                        val detail = mapper.readTree(detailResp.text).get("data")
+                        freshPlayPath = detail?.get("playPath")?.asText()?.takeUnless { it.isBlank() }
+                        freshPlaySources = detail?.get("playSource")?.mapNotNull { src ->
+                            val path = src.get("path")?.asText()?.takeUnless { it.isBlank() } ?: return@mapNotNull null
+                            SportPlaySource(src.get("title")?.asText(), path)
+                        }
+                    } else {
+                        freshPlayPath = null
+                        freshPlaySources = null
+                    }
                 } catch (e: Exception) {
-                    callback.invoke(
-                        newExtractorLink(
-                            "NetNaija $label",
-                            "$label HLS ${resolution}p",
-                            url,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = "$mainUrl/"
-                            this.headers = playHeaders
+                    freshPlayPath = null
+                    freshPlaySources = null
+                }
+                val mainPath = freshPlayPath ?: matchData.playPath
+                if (!mainPath.isNullOrBlank() && mainPath.startsWith("http")) {
+                    callback(
+                        com.lagradost.cloudstream3.utils.newExtractorLink("NetNaija Live", "Live Stream (Main)", mainPath, ExtractorLinkType.M3U8) {
+                            this.referer = SPORT_URL
+                            this.headers = mapOf(
+                                "Referer" to SPORT_URL,
+                                "User-Agent" to WEB_USER_AGENT
+                            )
+                            this.quality = com.lagradost.cloudstream3.utils.Qualities.P1080.value
                         }
                     )
-                    found = true
+                }
+                val channels = freshPlaySources ?: matchData.playSource ?: emptyList()
+                channels.forEachIndexed { idx, src ->
+                    try {
+                        val rawPath = src.path ?: return@forEachIndexed
+                        if (rawPath.isBlank()) return@forEachIndexed
+                        val channelTitle = src.title?.takeUnless { it.isBlank() } ?: "Channel ${idx + 1}"
+                        var streamUrl = rawPath
+                        if (streamUrl.contains("88player.top/m3u8.html")) {
+                            streamUrl = Regex("[?&]url=([^&]+)").find(streamUrl)?.groupValues?.get(1)
+                                ?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrNull() }
+                                ?: return@forEachIndexed
+                        }
+                        if (!streamUrl.startsWith("http")) return@forEachIndexed
+                        val isM3u8 = streamUrl.contains("m3u8") || streamUrl.contains("playlist")
+                        val channelReferer = if (rawPath.contains("88player.top")) "https://play.88player.top/" else SPORT_URL
+                        callback(
+                            com.lagradost.cloudstream3.utils.newExtractorLink(
+                                "NetNaija Live",
+                                "Live Channel - $channelTitle",
+                                streamUrl,
+                                if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = channelReferer
+                                this.headers = mapOf(
+                                    "Referer" to channelReferer,
+                                    "User-Agent" to WEB_USER_AGENT
+                                )
+                                this.quality = com.lagradost.cloudstream3.utils.Qualities.P720.value
+                            }
+                        )
+                    } catch (e: Exception) {
+                    }
+                }
+            } catch (e: Exception) {
+            }
+            return true
+        }
+
+        if (normalizedData.startsWith("sport_video:")) {
+            try {
+                val json = normalizedData.removePrefix("sport_video:")
+                val videoData = mapper.readValue(json, SportVideoData::class.java)
+                val isM3u8 = videoData.url.contains("m3u8")
+                callback(
+                    com.lagradost.cloudstream3.utils.newExtractorLink(
+                        "NetNaija Sports",
+                        videoData.title,
+                        videoData.url,
+                        if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = SPORT_URL
+                        this.headers = mapOf(
+                            "Referer" to SPORT_URL,
+                            "User-Agent" to WEB_USER_AGENT
+                        )
+                        this.quality = com.lagradost.cloudstream3.utils.Qualities.P1080.value
+                    }
+                )
+            } catch (e: Exception) {
+            }
+            return true
+        }
+
+        val parts = normalizedData.split("|")
+        val originalSubjectId: String = when {
+            parts[0].contains("get?subjectId") -> {
+                Regex("subjectId=([^&]+)").find(parts[0])?.groupValues?.get(1)
+                    ?: parts[0].substringAfterLast('/')
+            }
+            parts[0].contains("/") -> parts[0].substringAfterLast('/')
+            else -> parts[0]
+        }
+        val season = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        val episode = parts.getOrNull(2)?.toIntOrNull() ?: 0
+        val passedDetailPath = parts.getOrNull(3)?.takeUnless { it.isBlank() }
+        val passedDetailDomain = parts.getOrNull(4)?.takeUnless { it.isBlank() }
+
+        val subjectUrl = "$mainUrl/wefeed-mobile-bff/subject-api/get?subjectId=$originalSubjectId"
+        var subjectHeaders = buildAuthHeaders("GET", subjectUrl)
+        var subjectResponse = app.get(subjectUrl, headers = subjectHeaders)
+        if (subjectResponse.code == 401 || subjectResponse.code == 441) {
+            bearerToken = null
+            sharedPref?.edit()?.remove(PREF_TOKEN_KEY)?.apply()
+            subjectHeaders = buildAuthHeaders("GET", subjectUrl)
+            subjectResponse = app.get(subjectUrl, headers = subjectHeaders)
+        }
+        persistTokenFromXUser(subjectResponse.headers["x-user"])
+
+        val subjectData = mapper.readTree(subjectResponse.text).get("data")
+        var mainDetailDomain: String? = passedDetailDomain
+        var mainDetailPath: String? = passedDetailPath
+        if (subjectData != null) {
+            val detailUrl = subjectData.get("detailUrl")?.asText()?.takeUnless { it.isBlank() }
+            if (detailUrl != null) {
+                try {
+                    val uri = URI(detailUrl)
+                    mainDetailDomain = "${uri.scheme}://${uri.host}"
+                    mainDetailPath = detailUrl.trimEnd('/').substringBefore('?').substringAfterLast('/')
+                } catch (e: Exception) {
                 }
             }
-        }
-
-        captionStream?.let { (streamId, subjectId, detailPath) ->
-            fetchSubtitles(streamId, subjectId, detailPath, subtitleCallback)
-        }
-
-        return found
-    }
-
-    // "English dub" -> English Dub, "Arabic sub" -> Arabic Hardsub
-    private fun sourceLabel(dub: NetNaijaDub): String? {
-        val lanName = dub.lanName ?: return null
-        if (dub.original == true) return "Original"
-        val base = lanName.substringBefore(" dub").substringBefore(" sub").trim()
-        if (base.isEmpty()) return null
-        val pretty = when (base.lowercase()) {
-            "ptbr" -> "PT-BR"
-            "esla" -> "ES-LA"
-            else -> base.replaceFirstChar { it.uppercase() }
-        }
-        return if (dub.type == 1) "$pretty Hardsub" else "$pretty Dub"
-    }
-
-    private suspend fun fetchSubtitles(
-        streamId: String,
-        subjectId: String,
-        detailPath: String,
-        subtitleCallback: (SubtitleFile) -> Unit
-    ) {
-        try {
-            val captionUrl = "$bff/subject/caption" +
-                "?format=MP4&id=$streamId&subjectId=$subjectId&detailPath=$detailPath"
-            val response = app.get(captionUrl, headers = authHeaders(mapOf("X-Source" to "webNetnaijaSite")))
-            val data = parseJson<NetNaijaCaptionResponse>(response.text).data
-            data?.captions?.forEach { caption ->
-                val url = caption.url ?: return@forEach
-                val lang = caption.lanName ?: caption.lan ?: "Unknown"
-                subtitleCallback.invoke(newSubtitleFile(lang, url))
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "caption fetch failed: ${e.message}")
-        }
-    }
-
-    private fun NetNaijaSubject.toSearchResponse(): SearchResponse? {
-        val title = this.title ?: return null
-        val path = detailPath ?: return null
-        val poster = cover?.url
-        val isMovie = subjectType == 1
-        return if (isMovie) {
-            newMovieSearchResponse(title, "$mainUrl/movieDetail/$path", TvType.Movie) {
-                this.posterUrl = poster
-                this.year = releaseDate?.substringBefore("-")?.toIntOrNull()
-            }
-        } else {
-            newTvSeriesSearchResponse(title, "$mainUrl/movieDetail/$path", TvType.TvSeries) {
-                this.posterUrl = poster
-                this.year = releaseDate?.substringBefore("-")?.toIntOrNull()
+            if (mainDetailPath.isNullOrBlank()) {
+                mainDetailPath = subjectData.get("detailPath")?.asText() ?: mainDetailPath
             }
         }
+
+        // Each dub is an independent stream set; the original track leads the
+        // list and every dub resolves in parallel.
+        val dubList = ArrayList<Triple<String, String, String?>>()
+        subjectData?.get("dubs")?.forEach { dub ->
+            val dubSubjectId = dub.get("subjectId")?.asText()
+            val language = dub.get("lanName")?.asText()
+            if (dubSubjectId.isNullOrBlank() || language.isNullOrBlank()) return@forEach
+            // The original subject is already covered by its own entry.
+            if (dubSubjectId == originalSubjectId) return@forEach
+            dubList.add(Triple(dubSubjectId, language, dub.get("detailUrl")?.asText()))
+        }
+        dubList.add(0, Triple(originalSubjectId, "Original", subjectData?.get("detailUrl")?.asText()))
+
+        dubList.amap { (subjectId, language, initialDubDetailUrl) ->
+            try {
+                // A dub can point at its own detail page; its subject record
+                // carries the authoritative url and path for the play request.
+                var currentDetailUrl: String? = initialDubDetailUrl
+                var dubPath: String? = mainDetailPath
+                if (subjectId.isNotBlank()) {
+                    try {
+                        val dubUrl = "$mainUrl/wefeed-mobile-bff/subject-api/get?subjectId=$subjectId"
+                        val dubHeaders = buildAuthHeaders("GET", dubUrl)
+                        val dubResp = app.get(dubUrl, headers = dubHeaders)
+                        if (dubResp.code == 200) {
+                            val dubData = mapper.readTree(dubResp.text).get("data")
+                            val detailUrl = dubData?.get("detailUrl")?.asText()
+                            if (!detailUrl.isNullOrBlank()) currentDetailUrl = detailUrl
+                            dubPath = dubData?.get("detailPath")?.asText() ?: dubPath
+                        }
+                    } catch (e: Exception) {
+                    }
+                }
+                var dubDomain: String? = mainDetailDomain
+                if (!currentDetailUrl.isNullOrBlank()) {
+                    try {
+                        val uri = URI(currentDetailUrl)
+                        dubDomain = "${uri.scheme}://${uri.host}"
+                        dubPath = currentDetailUrl.trimEnd('/').substringBefore('?').substringAfterLast('/')
+                    } catch (e: Exception) {
+                    }
+                }
+
+                val pathParam = dubPath ?: ""
+                val candidateDomains = LinkedHashSet<String>()
+                dubDomain?.trimEnd('/')?.let { candidateDomains.add(it) }
+                candidateDomains.addAll(WEB_DOMAINS)
+
+                val captionsLoaded = java.util.concurrent.atomic.AtomicBoolean(false)
+                var webStreamsEmitted = false
+                for (domain in candidateDomains) {
+                    try {
+                        val playUrl = "$domain/wefeed-h5api-bff/subject/play?subjectId=$subjectId" +
+                            "&se=$season&ep=$episode&detailPath=$pathParam" +
+                            "&streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1"
+                        val referer = "$domain/movies/$pathParam?id=$subjectId&type=/movie/detail&detailSe=&detailEp=&lang=en"
+                        val webHeaders = mutableMapOf(
+                            "User-Agent" to WEB_USER_AGENT,
+                            "Referer" to referer,
+                            "Accept" to "application/json",
+                            "x-client-info" to "{\"timezone\":\"Asia/Calcutta\"}",
+                            "x-request-lang" to "en",
+                            "x-vip-restrict" to "0",
+                            "x-no-high-risk-restrict" to "0",
+                            "x-source" to ""
+                        )
+                        if (!bearerToken.isNullOrBlank()) {
+                            webHeaders["Authorization"] = "Bearer $bearerToken"
+                        }
+                        val webResp = app.get(playUrl, headers = webHeaders)
+                        if (webResp.code != 200) continue
+                        val webData = mapper.readTree(webResp.text).get("data") ?: continue
+                        val dashItems = webData.get("dash")
+                        val streamItems = webData.get("streams")
+                        val hlsItems = webData.get("hls")
+                        val hasStreams = (dashItems != null && dashItems.isArray && dashItems.size() > 0) ||
+                            (streamItems != null && streamItems.isArray && streamItems.size() > 0) ||
+                            (hlsItems != null && hlsItems.isArray && hlsItems.size() > 0)
+                        if (!hasStreams) continue
+
+                        suspend fun emitWebStream(item: JsonNode, kind: String) {
+                            val rawStreamUrl = item.get("url")?.asText() ?: return
+                            val signCookie = item.get("signCookie")?.asText()?.takeUnless { it.isBlank() } ?: return
+                            val signHeaderKey = item.get("signHeaderKey")?.asText()?.takeUnless { it.isBlank() } ?: "X-MB-Token"
+                            val streamId = item.get("id")?.asText() ?: "$subjectId|$season|$episode"
+                            val resolutions = item.get("resolutions")?.asText() ?: ""
+                            val quality = getHighestQuality(resolutions)
+                            val policyUrl = extractPolicyResource(signCookie)
+                            val finalStreamUrl = policyUrl ?: rawStreamUrl
+                            // Known broken resource ids and a bad upload month
+                            // are filtered out before a link reaches the player.
+                            if (finalStreamUrl.contains("b164fbfb4347792950bdfbfb563d39d9")) return
+                            if (finalStreamUrl == rawStreamUrl && rawStreamUrl.contains("/other/2026/09/")) return
+                            val isDash = kind.equals("DASH", true) || finalStreamUrl.contains(".mpd")
+                            val type = when {
+                                isDash -> ExtractorLinkType.DASH
+                                kind.equals("HLS", true) || finalStreamUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
+                                finalStreamUrl.contains(".mp4") || finalStreamUrl.contains(".mkv") -> ExtractorLinkType.VIDEO
+                                else -> INFER_TYPE
+                            }
+                            val streamHeaders = mutableMapOf(
+                                "Origin" to domain,
+                                "Referer" to referer,
+                                "User-Agent" to WEB_USER_AGENT,
+                                "Accept" to "*/*"
+                            )
+                            streamHeaders[signHeaderKey] = signCookie
+                            streamHeaders["Cookie"] = signCookie
+                            val audioTag = language.replace("dub", "Audio")
+                            val sourceName = if (isDash) "$name DASH" else "$name HLS"
+                            val displayName = if (isDash) "$name DASH ($audioTag)" else "$name HLS ($audioTag)"
+                            callback(
+                                com.lagradost.cloudstream3.utils.newExtractorLink(sourceName, displayName, finalStreamUrl, type) {
+                                    this.referer = referer
+                                    this.headers = streamHeaders
+                                    if (quality != null) this.quality = quality
+                                }
+                            )
+                            if (captionsLoaded.compareAndSet(false, true)) {
+                                loadCaptions(streamId, language, subjectId, subtitleCallback)
+                            }
+                        }
+
+                        try {
+                            if (dashItems != null && dashItems.isArray) {
+                                for (item in dashItems) emitWebStream(item, "DASH")
+                            }
+                        } catch (e: Exception) {
+                        }
+                        try {
+                            if (hlsItems != null && hlsItems.isArray) {
+                                for (item in hlsItems) emitWebStream(item, "HLS")
+                            }
+                        } catch (e: Exception) {
+                        }
+                        try {
+                            if (streamItems != null && streamItems.isArray) {
+                                for (item in streamItems) emitWebStream(item, "MP4")
+                            }
+                        } catch (e: Exception) {
+                        }
+                        // The first domain that carries streams wins; native
+                        // mobile streams only run when no web domain worked.
+                        webStreamsEmitted = true
+                        return@amap
+                    } catch (e: Exception) {
+                        continue
+                    }
+                }
+                if (!webStreamsEmitted) {
+                    loadNativeMobileStreams(subjectId, language, season, episode, subtitleCallback, callback)
+                }
+            } catch (e: Exception) {
+            }
+        }
+        return true
     }
 }
-
-data class NetNaijaDub(
-    @JsonProperty("subjectId") val subjectId: String? = null,
-    @JsonProperty("detailPath") val detailPath: String? = null,
-    @JsonProperty("lanName") val lanName: String? = null,
-    @JsonProperty("lanCode") val lanCode: String? = null,
-    @JsonProperty("type") val type: Int? = null,
-    @JsonProperty("original") val original: Boolean? = null
-)
-
-data class NetNaijaEpisodeData(
-    val dubs: List<NetNaijaDub>,
-    val season: Int,
-    val episode: Int
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaCover(
-    @JsonProperty("url") val url: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaSubject(
-    @JsonProperty("subjectId") val subjectId: String? = null,
-    @JsonProperty("subjectType") val subjectType: Int? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("description") val description: String? = null,
-    @JsonProperty("releaseDate") val releaseDate: String? = null,
-    @JsonProperty("duration") val duration: Int? = null,
-    @JsonProperty("genre") val genre: String? = null,
-    @JsonProperty("cover") val cover: NetNaijaCover? = null,
-    @JsonProperty("countryName") val countryName: String? = null,
-    @JsonProperty("dubs") val dubs: List<NetNaijaDub>? = null,
-    @JsonProperty("imdbRatingValue") val imdbRatingValue: String? = null,
-    @JsonProperty("trailer") val trailer: NetNaijaTrailer? = null,
-    @JsonProperty("detailPath") val detailPath: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaTrailer(
-    @JsonProperty("videoAddress") val videoAddress: NetNaijaTrailerVideo? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaTrailerVideo(
-    @JsonProperty("url") val url: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaStaff(
-    @JsonProperty("staffId") val staffId: String? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("character") val character: String? = null,
-    @JsonProperty("avatarUrl") val avatarUrl: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaPager(
-    @JsonProperty("hasMore") val hasMore: Boolean? = null,
-    @JsonProperty("page") val page: String? = null,
-    @JsonProperty("perPage") val perPage: Int? = null,
-    @JsonProperty("totalCount") val totalCount: Int? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaTrendingData(
-    @JsonProperty("subjectList") val subjectList: List<NetNaijaSubject>? = null,
-    @JsonProperty("pager") val pager: NetNaijaPager? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaTrendingResponse(
-    @JsonProperty("code") val code: Int? = null,
-    @JsonProperty("data") val data: NetNaijaTrendingData? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaHomeSection(
-    @JsonProperty("type") val type: String? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("subjects") val subjects: List<NetNaijaSubject>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaHomeData(
-    @JsonProperty("operatingList") val operatingList: List<NetNaijaHomeSection>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaHomeResponse(
-    @JsonProperty("code") val code: Int? = null,
-    @JsonProperty("data") val data: NetNaijaHomeData? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaListData(
-    @JsonProperty("items") val items: List<NetNaijaSubject>? = null,
-    @JsonProperty("pager") val pager: NetNaijaPager? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaListResponse(
-    @JsonProperty("code") val code: Int? = null,
-    @JsonProperty("data") val data: NetNaijaListData? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaRankingData(
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("subjectList") val subjectList: List<NetNaijaSubject>? = null,
-    @JsonProperty("pager") val pager: NetNaijaPager? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaRankingResponse(
-    @JsonProperty("code") val code: Int? = null,
-    @JsonProperty("data") val data: NetNaijaRankingData? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaResolution(
-    @JsonProperty("resolution") val resolution: Int? = null,
-    @JsonProperty("epNum") val epNum: Int? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaSeason(
-    @JsonProperty("se") val se: Int? = null,
-    @JsonProperty("maxEp") val maxEp: Int? = null,
-    @JsonProperty("resolutions") val resolutions: List<NetNaijaResolution>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaResource(
-    @JsonProperty("seasons") val seasons: List<NetNaijaSeason>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaDetailData(
-    @JsonProperty("subject") val subject: NetNaijaSubject? = null,
-    @JsonProperty("resource") val resource: NetNaijaResource? = null,
-    @JsonProperty("stars") val stars: List<NetNaijaStaff>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaDetailResponse(
-    @JsonProperty("code") val code: Int? = null,
-    @JsonProperty("data") val data: NetNaijaDetailData? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaStream(
-    @JsonProperty("format") val format: String? = null,
-    @JsonProperty("id") val id: String? = null,
-    @JsonProperty("url") val url: String? = null,
-    @JsonProperty("resolutions") val resolutions: String? = null,
-    @JsonProperty("size") val size: String? = null,
-    @JsonProperty("duration") val duration: Int? = null,
-    @JsonProperty("codecName") val codecName: String? = null,
-    @JsonProperty("vipLocked") val vipLocked: Boolean? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaPlayData(
-    @JsonProperty("streams") val streams: List<NetNaijaStream>? = null,
-    @JsonProperty("hls") val hls: List<NetNaijaStream>? = null,
-    @JsonProperty("dash") val dash: List<NetNaijaStream>? = null,
-    @JsonProperty("limited") val limited: Boolean? = null,
-    @JsonProperty("hasResource") val hasResource: Boolean? = null,
-    @JsonProperty("vipLocked") val vipLocked: Boolean? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaPlayResponse(
-    @JsonProperty("code") val code: Int? = null,
-    @JsonProperty("data") val data: NetNaijaPlayData? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaCaption(
-    @JsonProperty("id") val id: String? = null,
-    @JsonProperty("lan") val lan: String? = null,
-    @JsonProperty("lanName") val lanName: String? = null,
-    @JsonProperty("url") val url: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaCaptionData(
-    @JsonProperty("captions") val captions: List<NetNaijaCaption>? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class NetNaijaCaptionResponse(
-    @JsonProperty("code") val code: Int? = null,
-    @JsonProperty("data") val data: NetNaijaCaptionData? = null
-)
