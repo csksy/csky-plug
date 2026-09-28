@@ -21,7 +21,6 @@ import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
@@ -49,7 +48,7 @@ internal data class Row(val name: String, val href: String) {
 }
 
 internal val episodePattern =
-    Regex("""(?i)^episode\s*(\d{1,4})(?:\s*[-\u2013]\s*(\d{1,4}))?$""")
+    Regex("""(?i)^(?:bonus\s+)?ep(?:isode)?\s*(\d{1,4})(?:\s*[-\u2013]\s*(\d{1,4}))?$""")
 internal val seasonPattern =
     Regex("""(?i)^season\s*(\d{1,3})(?:\s*[-\u2013]\s*(\d{1,3}))?$""")
 internal val titleSeasonPattern = Regex("""(?i)season\s*(\d{1,3})""")
@@ -85,6 +84,10 @@ class EonMoviesProvider : MainAPI() {
     override val hasMainPage = true
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+
+    // a mirror chain can walk a links page, a hub and a generation page
+    // before the first probe, dead hosts need room to time out
+    override val loadLinksTimeoutMs: Long? = 5 * 60_000L
 
     override val mainPage = mainPageOf(
         "latest" to "Latest Updates",
@@ -200,15 +203,19 @@ class EonMoviesProvider : MainAPI() {
 
         val titleSeason = seasonOfTitle(title)
         val episodes = mutableListOf<Episode>()
+        val episodeRowCount = rows.count { it.isEpisode }
 
-        if (rows.all { it.isEpisode }) {
+        // numbered episode rows win even when an unnumbered extra like a bonus
+        // clip rides along, the straggler keeps its name and gets a tail number
+        if (episodeRowCount > rows.size / 2 && rows.none { it.isSeason }) {
+            var next = (rows.maxOf { it.episodeRange?.first ?: 0 }) + 1
             for (row in rows) {
-                val range = row.episodeRange ?: continue
+                val number = row.episodeRange?.first ?: next++
                 episodes.add(
                     newEpisode(listOf(LinkEntry(row.name, row.href)).toJson()) {
                         this.name = row.name
                         this.season = titleSeason ?: row.seasonNumber ?: 1
-                        this.episode = range.first
+                        this.episode = number
                     }
                 )
             }
@@ -267,13 +274,14 @@ class EonMoviesProvider : MainAPI() {
     // quality or the episodes themselves, both shapes end up as episodes
     private suspend fun buildSeasonEpisodes(season: Int, hubRows: List<Row>): List<Episode> {
         if (hubRows.isEmpty()) return emptyList()
-        if (hubRows.all { it.isEpisode }) {
-            return hubRows.mapNotNull { row ->
-                val range = row.episodeRange ?: return@mapNotNull null
+        if (hubRows.count { it.isEpisode } > hubRows.size / 2) {
+            var next = (hubRows.maxOf { it.episodeRange?.first ?: 0 }) + 1
+            return hubRows.map { row ->
+                val number = row.episodeRange?.first ?: next++
                 newEpisode(listOf(LinkEntry(row.name, row.href)).toJson()) {
                     this.name = row.name
                     this.season = season
-                    this.episode = range.first
+                    this.episode = number
                 }
             }
         }
@@ -320,22 +328,34 @@ class EonMoviesProvider : MainAPI() {
         if (location.contains("/links/")) {
             val mirrorUrl = if (location.startsWith("http")) location else "$mainUrl$location"
             val doc = getPage(mirrorUrl) ?: return emptyList()
-            val targets = mutableListOf<MirrorTarget>()
-            for (btn in doc.select("a.dl-btn-host")) {
-                val label = btn.selectFirst("span")?.text()?.trim() ?: continue
-                val btnHref = btn.attr("href").takeIf { it.contains("/dl/") } ?: continue
-                val ext = redirectOf("$mainUrl$btnHref") ?: continue
-                if (ext.startsWith("http")) {
-                    targets.add(MirrorTarget(label, ext, qualityLabel))
-                }
+            return coroutineScope {
+                doc.select("a.dl-btn-host").map { btn ->
+                    async {
+                        val label = btn.selectFirst("span")?.text()?.trim()
+                            ?: return@async emptyList()
+                        val btnHref = btn.attr("href").takeIf { it.contains("/dl/") }
+                            ?: return@async emptyList()
+                        val sub = redirectOf(
+                            if (btnHref.startsWith("http")) btnHref else "$mainUrl$btnHref"
+                        ) ?: return@async emptyList()
+                        if (sub.startsWith("http")) {
+                            listOf(MirrorTarget(label, sub, qualityLabel))
+                        } else {
+                            expandEntry(btnHref, depth + 1, qualityLabel)
+                        }
+                    }
+                }.awaitAll().flatten()
             }
-            return targets
         }
 
         if (location.contains("/page/")) {
             val hubUrl = if (location.startsWith("http")) location else "$mainUrl$location"
             val hubRows = loadRows(hubUrl)
-            return hubRows.flatMap { expandEntry(it.href, depth + 1, it.name) }
+            return coroutineScope {
+                hubRows.map { row ->
+                    async { expandEntry(row.href, depth + 1, row.name) }
+                }.awaitAll().flatten()
+            }
         }
 
         if (location.startsWith("http")) {
@@ -368,21 +388,33 @@ class EonMoviesProvider : MainAPI() {
         }
         if (entries.isEmpty()) return false
 
+        val emitted = java.util.Collections.synchronizedSet(HashSet<String>())
         val results = coroutineScope {
             entries.map { entry ->
                 async {
                     var found = false
-                    for (target in expandEntry(entry.url, 0, null)) {
-                        val direct = EonSources.resolve(target.url) ?: continue
-                        val label = listOfNotNull(entry.label, target.qualityLabel, target.source)
-                            .joinToString(" · ")
+                    val targets = expandEntry(entry.url, 0, null)
+                    val streams = coroutineScope {
+                        targets.map { target ->
+                            async { EonSources.resolve(target.url).map { it to target } }
+                        }.awaitAll().flatten()
+                    }
+                    for ((stream, target) in streams) {
+                        if (!emitted.add(stream.url)) continue
+                        val label = listOfNotNull(
+                            entry.label,
+                            target.qualityLabel,
+                            target.source,
+                            stream.subLabel
+                        ).joinToString(" · ")
                         callback.invoke(
                             newExtractorLink(
                                 name,
                                 label,
-                                direct,
-                                type = ExtractorLinkType.VIDEO
+                                stream.url,
+                                type = stream.type
                             ) {
+                                this.headers = stream.headers
                                 this.quality = qualityOf(target.qualityLabel ?: entry.label)
                             }
                         )

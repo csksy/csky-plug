@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 cloudstream {
     description = "EonMovies - Bollywood, Hollywood and South movies and series with multiple cloud sources in 480p to 4K"
