@@ -1,7 +1,6 @@
-version = 15
+version = 16
 
 android {
-    namespace = "com.netnaija"
     buildFeatures {
         buildConfig = true
     }
@@ -12,11 +11,10 @@ dependencies {
 }
 
 cloudstream {
-    language = "hi"
-    description = "NetNaija - Multi Language Movies, Series and Live Sports. HD streaming with multiple dubs and subtitles."
+    language = "en"
+    description = "NetNaija - Watch Movies, TV Series, Anime, bollywood, Korean & Hollywood. HD streaming with multi-language."
     authors = listOf("raghav")
     status = 1
-    requiresResources = true
-    tvTypes = listOf("Movie", "TvSeries", "Live")
+    tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie", "OVA")
     iconUrl = "https://netnaija.film/favicon.ico"
 }
