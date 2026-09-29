@@ -1,4 +1,4 @@
-package com.cskyplay
+package com.justplay
 
 import android.annotation.SuppressLint
 import android.graphics.Color
@@ -16,7 +16,7 @@ import com.lagradost.cloudstream3.CloudStreamApp
 import com.lagradost.cloudstream3.MainActivity
 import com.lagradost.cloudstream3.plugins.Plugin
 
-class CskyPlaySettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragment() {
+class JustPlaySettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragment() {
 
     @SuppressLint("SetTextI18n")
     override fun onCreateView(
@@ -30,14 +30,14 @@ class CskyPlaySettingsFragment(private val plugin: Plugin) : BottomSheetDialogFr
         val smallPad = (8 * dp).toInt()
 
         fun siteEnabled(id: String): Boolean = try {
-            CloudStreamApp.getKey<Boolean>("CSKYPLAY_SITE_$id") ?: true
+            CloudStreamApp.getKey<Boolean>("JUSTPLAY_SITE_$id") ?: true
         } catch (e: Exception) {
             true
         }
 
         fun setSiteEnabled(id: String, value: Boolean) {
             try {
-                CloudStreamApp.setKey("CSKYPLAY_SITE_$id", value)
+                CloudStreamApp.setKey("JUSTPLAY_SITE_$id", value)
             } catch (e: Exception) {
             }
         }
@@ -49,7 +49,7 @@ class CskyPlaySettingsFragment(private val plugin: Plugin) : BottomSheetDialogFr
         }
 
         root.addView(TextView(ctx).apply {
-            text = "CskyPlay Settings"
+            text = "JustPlay Settings"
             textSize = 20f
             setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -64,11 +64,10 @@ class CskyPlaySettingsFragment(private val plugin: Plugin) : BottomSheetDialogFr
         })
 
         val sites = listOf(
+            Triple("netnaija", "NetNaija", "Direct mp4 multi audio streams"),
             Triple("vegamovies", "VegaMovies", "Fast direct download links"),
             Triple("hdhub4u", "HDHub4u", "Movies and series with watch online"),
             Triple("4khdhub", "4KHDHub", "4K UHD and pack downloads"),
-            Triple("moviebox", "MovieBox", "Multi audio streaming"),
-            Triple("netnaija", "NetNaija", "Direct mp4 streaming"),
             Triple("themoviesflix", "TheMoviesFlix", "Movies and web series"),
             Triple("multimovies", "Multimovies", "Streaming servers"),
             Triple("movies4u", "Movies4u", "Movies and series")
@@ -124,7 +123,7 @@ class CskyPlaySettingsFragment(private val plugin: Plugin) : BottomSheetDialogFr
         }
 
         root.addView(TextView(ctx).apply {
-            text = "Domain overrides are read from the Firebase realtime database every 5 minutes. If a site changes its domain add its key there: cskyplay_vegamovies_url cskyplay_hdhub4u_url cskyplay_4khdhub_url cskyplay_moviebox_url cskyplay_netnaija_url cskyplay_themoviesflix_url cskyplay_multimovies_url cskyplay_movies4u_url with the full site address like https://movies4u.cr as the value"
+            text = "Domain overrides are read from the Firebase realtime database every 5 minutes. If a site changes its domain add its key there: justplay_vegamovies_url justplay_hdhub4u_url justplay_4khdhub_url justplay_netnaija_url justplay_themoviesflix_url justplay_multimovies_url justplay_movies4u_url with the full site address like https://movies4u.cr as the value"
             textSize = 11f
             setTextColor(Color.parseColor("#61616F"))
             setPadding(0, smallPad, 0, smallPad)

@@ -11,7 +11,7 @@ dependencies {
 }
 
 cloudstream {
-    description = "Multi site movies and tv aggregator with VegaMovies HDHub4u 4KHDHub MovieBox NetNaija TheMoviesFlix Multimovies and Movies4u sources on a TMDB catalog with per site toggles and firebase domain override"
+    description = "Multi source movies and series on a TMDB catalog with VegaMovies HDHub4u 4KHDHub NetNaija TheMoviesFlix Multimovies and Movies4u servers, per site toggles and remote domain override"
     authors = listOf("csksy")
 
     status = 1

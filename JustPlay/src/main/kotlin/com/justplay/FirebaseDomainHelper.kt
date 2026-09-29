@@ -1,4 +1,4 @@
-package com.cskyplay
+package com.justplay
 
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson

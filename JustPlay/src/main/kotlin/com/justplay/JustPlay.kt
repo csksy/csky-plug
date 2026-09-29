@@ -1,11 +1,9 @@
-package com.cskyplay
+package com.justplay
 
 import android.net.Uri
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -17,7 +15,7 @@ import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class CskyLinkData(
+data class PlayLinkData(
     val id: Int? = null,
     val imdbId: String? = null,
     val type: String? = null,
@@ -26,18 +24,24 @@ data class CskyLinkData(
     val title: String? = null,
     val orgTitle: String? = null,
     val year: Int? = null,
+    val showYear: Int? = null,
     val isMovie: Boolean = false
-)
+) {
+    // posts list the year the show started, an episode only knows the season air
+    // year, so series matching always runs against the show year
+    val matchYear: Int?
+        get() = if (season != null) (showYear ?: year) else year
+}
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class TmdbData(
+data class PlayTmdbData(
     val id: Int? = null,
     val type: String? = null
 )
 
-class CskyPlay : MainAPI() {
+class JustPlay : MainAPI() {
     override var mainUrl = "https://www.themoviedb.org"
-    override var name = "CskyPlay"
+    override var name = "JustPlay"
     override val hasMainPage = true
     override val hasDownloadSupport = true
     override val instantLinkLoading = true
@@ -45,7 +49,7 @@ class CskyPlay : MainAPI() {
     override var lang = "en"
 
     companion object {
-        private const val TAG = "CskyPlay"
+        private const val TAG = "JustPlay"
         private const val TMDB = "https://api.themoviedb.org/3"
         private const val TMDB_KEY = "1865f43a0549ca50d341dd9ab8b29f49"
         private const val TMDB_KEY_ALT = "98ae14df2b8d8f8f8136499daf79f0e0"
@@ -56,7 +60,7 @@ class CskyPlay : MainAPI() {
         }
 
         fun siteEnabled(id: String): Boolean = try {
-            CloudStreamApp.getKey<Boolean>("CSKYPLAY_SITE_$id") ?: true
+            CloudStreamApp.getKey<Boolean>("JUSTPLAY_SITE_$id") ?: true
         } catch (e: Exception) {
             true
         }
@@ -100,7 +104,7 @@ class CskyPlay : MainAPI() {
         val poster = tmdbImageUrl(item.optString("poster_path"))
         val year = item.optString("release_date").ifBlank { item.optString("first_air_date") }.take(4).toIntOrNull()
         val type = if (mediaType == "movie") TvType.Movie else TvType.TvSeries
-        return newMovieSearchResponse(title, TmdbData(id, mediaType).toJson(), type) {
+        return newMovieSearchResponse(title, PlayTmdbData(id, mediaType).toJson(), type) {
             this.posterUrl = poster
             this.year = year
             score = Score.from10(item.optDouble("vote_average", 0.0))
@@ -146,7 +150,7 @@ class CskyPlay : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val data = try {
-            parseJson<TmdbData>(url)
+            parseJson<PlayTmdbData>(url)
         } catch (e: Exception) {
             return null
         }
@@ -210,7 +214,7 @@ class CskyPlay : MainAPI() {
         val rating = detail.optDouble("vote_average", 0.0)
 
         if (isMovie) {
-            val linkData = CskyLinkData(
+            val linkData = PlayLinkData(
                 id = id,
                 imdbId = imdbId,
                 type = type,
@@ -261,7 +265,7 @@ class CskyPlay : MainAPI() {
                                 val ep = epsArr.optJSONObject(i) ?: return@mapNotNull null
                                 val epNum = ep.optInt("episode_number", 0)
                                 if (epNum <= 0) return@mapNotNull null
-                                val linkData = CskyLinkData(
+                                val linkData = PlayLinkData(
                                     id = id,
                                     imdbId = imdbId,
                                     type = type,
@@ -270,6 +274,7 @@ class CskyPlay : MainAPI() {
                                     title = title,
                                     orgTitle = orgTitle.ifBlank { null },
                                     year = airDate.take(4).toIntOrNull() ?: year,
+                                    showYear = year,
                                     isMovie = false
                                 )
                                 newEpisode(linkData.toJson()) {
@@ -315,26 +320,24 @@ class CskyPlay : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val res = try {
-            parseJson<CskyLinkData>(data)
+            parseJson<PlayLinkData>(data)
         } catch (e: Exception) {
             return false
         }
 
         data class SiteEntry(
             val id: String,
-            val label: String,
-            val invoke: suspend (CskyLinkData, (SubtitleFile) -> Unit, (ExtractorLink) -> Unit) -> Unit
+            val invoke: suspend (PlayLinkData, (SubtitleFile) -> Unit, (ExtractorLink) -> Unit) -> Unit
         )
 
         val allSites = listOf(
-            SiteEntry("netnaija", "NetNaija") { r, s, c -> NetNaijaSite.invoke(r, s, c) },
-            SiteEntry("moviebox", "MovieBox") { r, s, c -> MovieBoxSite.invoke(r, s, c) },
-            SiteEntry("vegamovies", "VegaMovies") { r, s, c -> VegaMoviesSite.invoke(r, s, c) },
-            SiteEntry("hdhub4u", "HDHub4u") { r, s, c -> HdHub4uSite.invoke(r, s, c) },
-            SiteEntry("4khdhub", "4KHDHub") { r, s, c -> FourKhdHubSite.invoke(r, s, c) },
-            SiteEntry("themoviesflix", "TheMoviesFlix") { r, s, c -> TmfSite.invoke(r, s, c) },
-            SiteEntry("multimovies", "Multimovies") { r, s, c -> MultimoviesSite.invoke(r, s, c) },
-            SiteEntry("movies4u", "Movies4u") { r, s, c -> Movies4uSite.invoke(r, s, c) }
+            SiteEntry("netnaija") { r, s, c -> NetNaijaSite.invoke(r, s, c) },
+            SiteEntry("vegamovies") { r, s, c -> VegaMoviesSite.invoke(r, s, c) },
+            SiteEntry("hdhub4u") { r, s, c -> HdHub4uSite.invoke(r, s, c) },
+            SiteEntry("4khdhub") { r, s, c -> FourKhdHubSite.invoke(r, s, c) },
+            SiteEntry("themoviesflix") { r, s, c -> TmfSite.invoke(r, s, c) },
+            SiteEntry("multimovies") { r, s, c -> MultimoviesSite.invoke(r, s, c) },
+            SiteEntry("movies4u") { r, s, c -> Movies4uSite.invoke(r, s, c) }
         )
 
         val active = allSites.filter { siteEnabled(it.id) }
@@ -346,7 +349,7 @@ class CskyPlay : MainAPI() {
                     try {
                         site.invoke(res, subtitleCallback, callback)
                     } catch (e: Exception) {
-                        Log.d(TAG, "${site.label} failed: ${e.message}")
+                        Log.d(TAG, "${site.id}: ${e.message}")
                     }
                 }
             }
