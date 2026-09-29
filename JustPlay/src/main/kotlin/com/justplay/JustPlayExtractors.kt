@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -41,7 +40,8 @@ internal object PlayPacker {
         return try {
             val master = app.get(m3u8, headers = PlayNet.headers(referer), timeout = 15000L).text
             if (!master.contains("#EXTM3U")) return false
-            val quality = Regex("""RESOLUTION=\d+x(\d+)""").find(master)?.groupValues?.get(1)?.toIntOrNull()
+            // multimovies masters list their variants low to high, the first
+            // resolution is always the lowest one so no quality is set here
             callback(
                 newExtractorLink(
                     "JustPlay",
@@ -49,7 +49,6 @@ internal object PlayPacker {
                     m3u8,
                     ExtractorLinkType.M3U8
                 ) {
-                    this.quality = quality ?: Qualities.Unknown.value
                     this.referer = referer
                 }
             )
@@ -489,8 +488,7 @@ class PlayVCloud : ExtractorApi() {
 internal object PlayDirectStub {
     suspend fun resolve(
         url: String,
-        referer: String?,
-        source: String
+        referer: String?
     ): String? {
         try {
             val res = app.get(
@@ -532,7 +530,7 @@ class PlayFastDl : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val direct = PlayDirectStub.resolve(url, referer, "G-Direct") ?: return
+        val direct = PlayDirectStub.resolve(url, referer) ?: return
         callback(
             newExtractorLink(
                 "G-Direct",
@@ -557,7 +555,7 @@ class PlayHubCdn : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val direct = PlayDirectStub.resolve(url, referer, "HubCdn") ?: return
+        val direct = PlayDirectStub.resolve(url, referer) ?: return
         callback(
             newExtractorLink(
                 "HubCdn",

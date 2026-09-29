@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 android {
     buildFeatures {
@@ -11,7 +11,7 @@ dependencies {
 }
 
 cloudstream {
-    description = "Multi source movies and series on a TMDB catalog with VegaMovies HDHub4u 4KHDHub NetNaija TheMoviesFlix Multimovies and Movies4u servers, per site toggles and remote domain override"
+    description = "watch Multi source - Movies and Series"
     authors = listOf("csksy")
 
     status = 1
