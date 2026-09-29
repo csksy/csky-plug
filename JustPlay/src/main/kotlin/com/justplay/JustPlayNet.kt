@@ -183,21 +183,25 @@ internal object PlayNet {
         callback: (ExtractorLink) -> Unit,
     ) {
         if (url.isBlank()) return
-        val prefix = "[$site]"
+        if (PlayLabels.isDeadUrl(url) || PlayLabels.isDeadName(label)) return
+        val prefix = "[${PlayLabels.siteName(site)}]"
         try {
             val collected = mutableListOf<ExtractorLink>()
             loadExtractor(url, referer, subtitleCallback) { link ->
                 collected.add(link)
             }
             for (link in collected) {
-                val info = listOfNotNull(
-                    link.name.takeIf { name -> name.isNotBlank() },
-                    label.takeIf { l -> l.isNotBlank() }
-                ).joinToString(" ")
+                if (PlayLabels.isDeadName(link.name) || PlayLabels.isDeadUrl(link.url)) continue
+                // the hubcloud family names its links "Server [file | size]", the
+                // part before the bracket is the server, the rest is info
+                val server = link.name.substringBefore(" [").trim()
+                val extras = link.name.substringAfter(" [", "").removeSuffix("]").trim()
+                val info = listOf(extras, label).filter { it.isNotBlank() }.joinToString(" ")
+                val name = PlayLabels.buildLabel(site, server, info)
                 callback(
                     newExtractorLink(
                         prefix,
-                        if (info.isBlank()) prefix else "$prefix - $info",
+                        name,
                         link.url,
                         link.type
                     ) {

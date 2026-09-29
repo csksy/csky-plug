@@ -45,7 +45,7 @@ internal object PlayPacker {
             callback(
                 newExtractorLink(
                     "JustPlay",
-                    label,
+                    PlayLabels.buildLabel("multimovies", "", label),
                     m3u8,
                     ExtractorLinkType.M3U8
                 ) {
@@ -107,6 +107,7 @@ internal object PlayModiplay {
             return
         }
         for ((embed, platform, name, code) in servers) {
+            if (PlayLabels.isDeadName(name)) continue
             val linkLabel = "$label $name"
             var handled = false
             if (embed.startsWith("http")) {
@@ -249,6 +250,7 @@ internal object PlayGdmirror {
                         val suffix = src.optString("embed_suffix").takeIf { it != "null" && it.isNotBlank() } ?: ""
                         val code = codes[key] ?: continue
                         val friendly = src.optString("friendlyName").ifBlank { key }
+                        if (PlayLabels.isDeadName(friendly) || PlayLabels.isDeadName(key)) continue
                         val embed = "$siteUrl$code$suffix"
                         PlayPacker.resolvePackedEmbed(embed, "$label $friendly", playerBase, callback)
                     }
@@ -389,10 +391,8 @@ class PlayHubCloud : ExtractorApi() {
                         callback(newExtractorLink("Hub-Cloud", "Pixeldrain [$labelExtras]", final, ExtractorLinkType.VIDEO) { this.quality = quality })
                         emitted = true
                     }
-                    label.contains("10gbps") || label.contains("server :") -> {
-                        callback(newExtractorLink("Hub-Cloud", "10Gbps Server [$labelExtras]", abs, ExtractorLinkType.VIDEO) { this.quality = quality })
-                        emitted = true
-                    }
+                    // the 10gbps and instant download buttons point at dead workers
+                    // that answer with an empty 500, they are skipped on purpose
                     label.contains("s3 server") || label.contains("mega server") || label.contains("pdl") -> {
                         callback(newExtractorLink("Hub-Cloud", "${text.trim()} [$labelExtras]", abs, ExtractorLinkType.VIDEO) { this.quality = quality })
                         emitted = true
@@ -431,10 +431,6 @@ class PlayHubCloud : ExtractorApi() {
                         val final = if (href.contains("download", true)) href
                         else "https://pixeldrain.dev/api/file/${href.substringAfterLast("/u/")}?download"
                         callback(newExtractorLink("Hub-Cloud", "Pixeldrain [$labelExtras]", final, ExtractorLinkType.VIDEO) { this.quality = quality })
-                        emitted = true
-                    }
-                    text.contains("10gbps") || text.contains("server :") -> {
-                        callback(newExtractorLink("Hub-Cloud", "10Gbps Server [$labelExtras]", href, ExtractorLinkType.VIDEO) { this.quality = quality })
                         emitted = true
                     }
                 }
@@ -685,12 +681,13 @@ class PlayGofile : ExtractorApi() {
                 val link = child.optString("link").takeIf { it.startsWith("http") } ?: continue
                 val name = child.optString("name")
                 val size = child.optLong("size", 0L)
-                val sizeMb = if (size > 0) " ${size / 1024 / 1024}MB" else ""
+                val sizeText = if (size > 0) "${size / 1024 / 1024} MB" else ""
+                val inner = listOf(name.take(60), sizeText).filter { it.isNotBlank() }.joinToString(" | ")
                 val quality = PlayNet.getIndexQuality(name)
                 callback(
                     newExtractorLink(
                         "GoFile",
-                        "GoFile ${name.take(50)}$sizeMb",
+                        if (inner.isBlank()) "GoFile" else "GoFile [$inner]",
                         link,
                         ExtractorLinkType.VIDEO
                     ) {

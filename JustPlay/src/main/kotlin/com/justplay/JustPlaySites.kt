@@ -132,8 +132,14 @@ internal object DrivePages {
                 else if (junk.containsMatchIn(href) || isSelfLink(href, hosts)) null
                 else href
             }.distinct()
-            val quality = if (label.isBlank()) null else PlayNet.getIndexQuality(label)
-            val info = label.takeIf { it.isNotBlank() } ?: ""
+            // movies4u hands over a bare drive url, the drive page title carries
+            // the same quality and size info the other sites put in headings
+            val fallbackTitle = if (label.isBlank()) {
+                doc.title().substringBefore(" – ").substringBefore(" - ").trim()
+            } else ""
+            val effectiveLabel = label.ifBlank { fallbackTitle }
+            val quality = if (effectiveLabel.isBlank()) null else PlayNet.getIndexQuality(effectiveLabel)
+            val info = effectiveLabel
             coroutineScope {
                 external.forEach { href ->
                     async(Dispatchers.IO) {
@@ -833,7 +839,7 @@ internal object MultimoviesSite {
             options.forEach { option ->
                 async(Dispatchers.IO) {
                     val embed = embedOf(domain, option, pageUrl) ?: return@async
-                    resolveEmbed(embed, "[multimovies] - ${option.label}", subtitleCallback, callback)
+                    resolveEmbed(embed, option.label, subtitleCallback, callback)
                 }
             }
         }

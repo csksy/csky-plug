@@ -293,11 +293,17 @@ internal object NetNaijaSite {
                             play.streams.orEmpty().filter { it.vipLocked != true }.forEach { stream ->
                                 val url = stream.url ?: return@forEach
                                 val quality = stream.resolutions?.toIntOrNull() ?: Qualities.Unknown.value
-                                val sizeMb = stream.size?.toLongOrNull()?.let { if (it > 0) " (${it / 1048576}MB)" else "" } ?: ""
+                                val sizeText = stream.size?.toLongOrNull()?.let { if (it > 0) "${it / 1048576} MB" else "" } ?: ""
+                                val parts = listOfNotNull(
+                                    audioLabel.takeIf { it.isNotBlank() },
+                                    stream.resolutions?.let { r -> "${r}p" },
+                                    sizeText.takeIf { it.isNotBlank() }
+                                )
+                                val name = "[NetNaija] - " + parts.joinToString(" · ")
                                 callback(
                                     newExtractorLink(
-                                        "[netnaija]",
-                                        "[netnaija] - $audioLabel ${stream.resolutions ?: ""}p$sizeMb",
+                                        "[NetNaija]",
+                                        name,
                                         url,
                                         ExtractorLinkType.VIDEO
                                     ) {
@@ -313,10 +319,15 @@ internal object NetNaijaSite {
 
                             play.dash.orEmpty().forEach { stream ->
                                 val url = stream.url ?: return@forEach
+                                val dashName = if (audioLabel.isBlank()) {
+                                    "[NetNaija] - DASH"
+                                } else {
+                                    "[NetNaija] - $audioLabel · DASH"
+                                }
                                 callback(
                                     newExtractorLink(
-                                        "[netnaija]",
-                                        "[netnaija] - $audioLabel DASH",
+                                        "[NetNaija]",
+                                        dashName,
                                         url,
                                         ExtractorLinkType.DASH
                                     ) {
@@ -333,14 +344,14 @@ internal object NetNaijaSite {
                                 val url = stream.url ?: return@forEach
                                 try {
                                     M3u8Helper.generateM3u8(
-                                        "[netnaija] - $audioLabel",
+                                        "[NetNaija] - $audioLabel",
                                         url,
                                         "$site/",
                                         headers = mapOf("User-Agent" to NA_UA)
                                     ).forEach { hlsLink ->
                                         callback(
                                             newExtractorLink(
-                                                "[netnaija]",
+                                                "[NetNaija]",
                                                 hlsLink.name,
                                                 hlsLink.url,
                                                 hlsLink.type
@@ -351,10 +362,15 @@ internal object NetNaijaSite {
                                         )
                                     }
                                 } catch (e: Exception) {
+                                    val hlsName = if (audioLabel.isBlank()) {
+                                        "[NetNaija] - HLS"
+                                    } else {
+                                        "[NetNaija] - $audioLabel · HLS"
+                                    }
                                     callback(
                                         newExtractorLink(
-                                            "[netnaija]",
-                                            "[netnaija] - $audioLabel HLS",
+                                            "[NetNaija]",
+                                            hlsName,
                                             url,
                                             ExtractorLinkType.M3U8
                                         ) {

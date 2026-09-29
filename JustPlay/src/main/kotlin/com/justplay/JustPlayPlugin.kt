@@ -20,7 +20,7 @@ class JustPlayPlugin : Plugin() {
             val activity = ctx as? androidx.appcompat.app.AppCompatActivity
             if (activity != null) {
                 try {
-                    JustPlaySettingsFragment(this).show(activity.supportFragmentManager, "JustPlaySettings")
+                    JustPlaySettingsFragment().show(activity.supportFragmentManager, "JustPlaySettings")
                 } catch (e: Exception) {
                 }
             }
