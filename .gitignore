@@ -14,4 +14,3 @@ build/
 .kotlin/
 **/build/
 .gradle/
-tmf22/
