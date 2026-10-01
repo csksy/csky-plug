@@ -71,6 +71,7 @@ object StreamCornerApi {
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<JSONObject>>()
     private val nextId = AtomicInteger(1)
     private val listCache = ConcurrentHashMap<String, Pair<Long, String>>()
+    private val listInFlight = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -258,9 +259,24 @@ object StreamCornerApi {
         listCache[feed]?.takeIf { System.currentTimeMillis() - it.first < LIST_TTL }?.let {
             return parseJson(it.second)
         }
-        val raw = arrayFrom(callFeed(feed))
-        listCache[feed] = Pair(System.currentTimeMillis(), raw)
-        return parseJson(raw)
+        // the home screen asks for the same feeds from several rows at once,
+        // one flight per feed keeps the worker from answering the same thing
+        // over and over on a cold load
+        val inFlight = CompletableDeferred<String>()
+        listInFlight.putIfAbsent(feed, inFlight)?.let { running ->
+            return parseJson(running.await())
+        }
+        try {
+            val raw = arrayFrom(callFeed(feed))
+            listCache[feed] = Pair(System.currentTimeMillis(), raw)
+            inFlight.complete(raw)
+            return parseJson(raw)
+        } catch (e: Exception) {
+            inFlight.completeExceptionally(e)
+            throw e
+        } finally {
+            listInFlight.remove(feed)
+        }
     }
 
     suspend fun detail(feed: String, id: String): ScDetail? {
