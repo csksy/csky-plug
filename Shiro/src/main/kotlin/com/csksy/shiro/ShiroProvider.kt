@@ -132,11 +132,13 @@ class Shiro : MainAPI() {
 
         // one cheap api ping tells whether a dub track exists at all, the
         // site itself only learns this once the player is open, movies emit
-        // every version from one entry so they can skip the check
+        // every version from one entry so they can skip the check, the
+        // answer is held for half a day so browsing does not burn the per
+        // cookie answer budget the endpoint hands out
         val hasDub = if (isMovie || count == 0) {
             false
         } else {
-            ShiroApi.streams(id, m.idMal, 1)?.dub?.isNotEmpty() == true
+            ShiroApi.hasDub(id, m.idMal)
         }
 
         return if (isMovie) {
@@ -280,8 +282,11 @@ class Shiro : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val ref = parseData(data) ?: return false
-        val cookie = ShiroApi.streamsCookie() ?: return false
-        val streams = ShiroApi.streams(ref.id, ref.malId, ref.ep) ?: return false
+        // the streams answer carries the cookie that minted its urls, the
+        // stream endpoints only talk to that one cookie
+        val answer = ShiroApi.streams(ref.id, ref.malId, ref.ep) ?: return false
+        val cookie = answer.cookie
+        val streams = answer.streams
 
         val wanted = when (ref.variant) {
             "sub" -> buildList {

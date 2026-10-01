@@ -1,17 +1,30 @@
 package com.csksy.shiro
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 object ShiroApi {
     private const val TAG = "Shiro"
@@ -83,11 +96,15 @@ object ShiroApi {
     @Volatile
     private var watchCookie: String? = null
 
+    @Volatile
+    private var appContext: Context? = null
+
     fun init(context: Context) {
         if (!::prefs.isInitialized) {
             prefs = context.applicationContext.getSharedPreferences("shiro", Context.MODE_PRIVATE)
             watchCookie = prefs.getString("watch_cookie", null)
         }
+        appContext = context.applicationContext
     }
 
     class AnilistUnavailable(message: String) : Exception(message)
@@ -565,6 +582,15 @@ object ShiroApi {
         val dub: List<EpisodeSource>
     )
 
+    // the stream urls only answer the cookie that asked for them, so the
+    // cookie that minted the sources rides along for the player headers
+    class StreamsAnswer(
+        val streams: EpisodeStreams,
+        val cookie: String
+    )
+
+    private fun emptyStreams() = EpisodeStreams(emptyList(), emptyList(), emptyList())
+
     // the watch cookie is handed out by any /anime/{slug}/{n} page, a made
     // up slug works too, it stays valid for around a year and is never
     // rotated so one fetch per install is usually enough
@@ -596,8 +622,6 @@ object ShiroApi {
             fresh
         }
     }
-
-    suspend fun streamsCookie(): String? = cookie()
 
     private fun clearCookie() {
         watchCookie = null
@@ -649,54 +673,288 @@ object ShiroApi {
         return EpisodeStreams(sub, hsub, dub)
     }
 
-    // the endpoint answers 429 with a Retry-After while it is still pulling
-    // providers and a dead cookie answers 403, both are recoverable
-    suspend fun streams(anilistId: Int, malId: Int?, episode: Int): EpisodeStreams? {
-        for (attempt in 0 until 3) {
-            val cookie = cookie() ?: return null
-            val body = JSONObject().put("anilistId", anilistId).put("episode", episode)
-            malId?.let { body.put("malId", it) }
-            val res = try {
-                app.post(
-                    "$SITE/api/episode",
-                    json = body.toString(),
-                    headers = mapOf(
-                        "Content-Type" to "application/json",
-                        "Origin" to SITE,
-                        "Referer" to "$SITE/",
-                        "Cookie" to cookie
-                    ),
-                    timeout = 30L
-                )
-            } catch (e: Exception) {
-                Log.d(TAG, "episode request failed: ${e.message}")
-                return null
-            }
-            when {
-                res.code == 403 -> {
-                    clearCookie()
-                    if (attempt == 2) return null
+    // some carriers shred json request bodies on their filtering proxies and
+    // the episode endpoint answers those with a 400, the site parses the same
+    // body sent as text/plain so that flavour is the working one there while
+    // clean networks are free to keep the canonical json. whichever flavour
+    // last got a 200 is remembered and tried first
+    @Volatile
+    private var plainBodyWorks: Boolean = false
+
+    private fun rememberFlavor(asText: Boolean) {
+        if (plainBodyWorks == asText) return
+        plainBodyWorks = asText
+        prefs.edit().putBoolean("plain_body", asText).apply()
+    }
+
+    private suspend fun postEpisode(payload: JSONObject, cookie: String, asText: Boolean): NiceResponse? {
+        val type = if (asText) "text/plain" else "application/json"
+        return try {
+            app.post(
+                "$SITE/api/episode",
+                requestBody = payload.toString().toRequestBody(type.toMediaType()),
+                headers = mapOf(
+                    "Origin" to SITE,
+                    "Referer" to "$SITE/",
+                    "Cookie" to cookie,
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "*/*"
+                ),
+                timeout = 30L
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "episode request failed: ${e.message}")
+            null
+        }
+    }
+
+    // cloudflare answers a bot check with its own html page instead of the
+    // json the api speaks, that needs the webview solver not a cookie swap
+    private fun challengeBlocked(res: NiceResponse): Boolean {
+        if (res.headers["cf-mitigated"] != null) return true
+        val body = try {
+            res.text
+        } catch (e: Exception) {
+            return false
+        }
+        return body.contains("Just a moment") ||
+            body.contains("cf-chl") ||
+            body.contains("Attention Required") ||
+            body.contains("sorry, you have been blocked")
+    }
+
+    private fun jsonOf(res: NiceResponse): JSONObject? = try {
+        JSONObject(res.text)
+    } catch (e: Exception) {
+        null
+    }
+
+    // the episode endpoint hands out twenty answers per watch cookie and then
+    // answers 429 for about a minute, a fresh cookie starts the count over so
+    // the limit is rotated away instead of waited out
+    suspend fun streams(anilistId: Int, malId: Int?, episode: Int): StreamsAnswer? {
+        val payload = JSONObject().put("anilistId", anilistId).put("episode", episode)
+        malId?.let { payload.put("malId", it) }
+
+        var sawChallenge = false
+        var sawBadAnswer = false
+        var waitedOnce = false
+        var rotatedJustNow = false
+
+        for (round in 0 until 4) {
+            val cookie = cookie() ?: break
+            val flavors = if (plainBodyWorks) listOf(true, false) else listOf(false, true)
+            for (asText in flavors) {
+                val res = postEpisode(payload, cookie, asText)
+                if (res == null) {
+                    // the network refused the call outright, the webview gets
+                    // a chance with its own browser stack later
+                    sawBadAnswer = true
+                    continue
                 }
-                res.code == 429 -> {
-                    val wait = (res.headers["retry-after"]?.trim()?.toLongOrNull() ?: 5L)
-                        .coerceIn(2L, 10L)
-                    kotlinx.coroutines.delay(wait * 1000)
-                }
-                res.isSuccessful -> {
-                    val parsed = try {
-                        parseStreams(JSONObject(res.text))
-                    } catch (e: Exception) {
-                        Log.d(TAG, "episode parse failed: ${e.message}")
-                        null
+                when {
+                    res.isSuccessful -> {
+                        val body = jsonOf(res)
+                        if (body != null && body.optString("status") == "ready") {
+                            rememberFlavor(asText)
+                            val parsed = parseStreams(body)
+                            if (parsed != null) return StreamsAnswer(parsed, cookie)
+                            sawBadAnswer = true
+                        } else if (body != null && body.optString("status") == "unavailable") {
+                            // the site itself says this episode has nothing,
+                            // no amount of retrying changes that answer
+                            rememberFlavor(asText)
+                            return StreamsAnswer(emptyStreams(), cookie)
+                        } else {
+                            sawBadAnswer = true
+                        }
                     }
-                    if (parsed != null) return parsed
-                    if (attempt == 2) return null
-                    kotlinx.coroutines.delay(1500L)
+                    res.code == 429 -> {
+                        // a fresh cookie starts a clean answer budget, so the
+                        // limit is rotated away instead of waited out, the
+                        // retry-after only matters when even a fresh cookie
+                        // lands on a hot edge for this ip
+                        clearCookie()
+                        if (rotatedJustNow && !waitedOnce) {
+                            waitedOnce = true
+                            val wait = (res.headers["retry-after"]?.trim()?.toLongOrNull() ?: 5L)
+                                .coerceIn(3L, 15L)
+                            delay(wait * 1000L)
+                            if (cookie() == null) break
+                        }
+                        rotatedJustNow = true
+                        break
+                    }
+                    res.code == 403 -> {
+                        if (challengeBlocked(res)) {
+                            sawChallenge = true
+                        } else {
+                            // the cookie went stale mid session, a fresh one
+                            // is fetched and the call goes out again
+                            clearCookie()
+                        }
+                        break
+                    }
+                    else -> {
+                        if (challengeBlocked(res)) sawChallenge = true else sawBadAnswer = true
+                    }
                 }
-                else -> return null
             }
+            if (sawChallenge) break
+        }
+
+        if (sawChallenge || sawBadAnswer) {
+            webviewEpisode(payload)?.let { return it }
         }
         return null
+    }
+
+    // last resort when every direct call is refused: a throwaway webview
+    // opens a watch page of the site, which plants a fresh watch cookie in
+    // its own jar, and the episode call runs from inside that page with the
+    // browser stack, the same path the site's own player takes
+    @SuppressLint("SetJavaScriptEnabled")
+    private suspend fun webviewEpisode(payload: JSONObject): StreamsAnswer? {
+        val context = appContext ?: return null
+        return withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine { cont ->
+                val done = AtomicBoolean(false)
+                val asked = AtomicBoolean(false)
+                var webView: WebView? = null
+                val handler = Handler(Looper.getMainLooper())
+
+                fun finish(answer: StreamsAnswer?) {
+                    if (done.compareAndSet(false, true)) {
+                        try {
+                            webView?.stopLoading()
+                        } catch (e: Exception) {
+                            Log.d(TAG, "webview stop failed: ${e.message}")
+                        }
+                        try {
+                            webView?.destroy()
+                        } catch (e: Exception) {
+                            Log.d(TAG, "webview destroy failed: ${e.message}")
+                        }
+                        cont.resume(answer)
+                    }
+                }
+
+                fun harvestCookie(): String? {
+                    return try {
+                        val jar = CookieManager.getInstance().getCookie(SITE).orEmpty()
+                        val match = Regex("shiro_watch=[^;]+").find(jar)?.value
+                        if (match != null) {
+                            watchCookie = match
+                            prefs.edit().putString("watch_cookie", match).apply()
+                        }
+                        match
+                    } catch (e: Exception) {
+                        Log.d(TAG, "cookie harvest failed: ${e.message}")
+                        null
+                    }
+                }
+
+                fun askOnce(view: WebView) {
+                    if (done.get() || !asked.compareAndSet(false, true)) return
+                    val js = """
+                        (function(){
+                            window.__ep = null;
+                            fetch('/api/episode', {
+                                method: 'POST',
+                                credentials: 'include',
+                                headers: {'Content-Type': 'application/json', 'Accept': '*/*'},
+                                body: ${payload}
+                            }).then(function(r){
+                                return r.text().then(function(t){
+                                    window.__ep = JSON.stringify({code: r.status, body: t});
+                                });
+                            }).catch(function(e){
+                                window.__ep = JSON.stringify({code: 0, body: String(e)});
+                            });
+                        })();
+                    """.trimIndent()
+                    view.evaluateJavascript(js) {}
+                    for (i in 1..30) {
+                        handler.postDelayed({
+                            if (done.get()) return@postDelayed
+                            view.evaluateJavascript(
+                                "(function(){ return window.__ep; })()"
+                            ) { raw ->
+                                if (done.get() || raw == null || raw == "null") return@evaluateJavascript
+                                val unwrapped = try {
+                                    JSONArray("[$raw]").optString(0)
+                                } catch (e: Exception) {
+                                    null
+                                }
+                                val answer = try {
+                                    JSONObject(unwrapped ?: raw)
+                                } catch (e: Exception) {
+                                    null
+                                } ?: return@evaluateJavascript
+                                val cookie = harvestCookie()
+                                if (answer.optInt("code") == 200 && cookie != null) {
+                                    val body = try {
+                                        JSONObject(answer.optString("body"))
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                    if (body != null && body.optString("status") == "ready") {
+                                        val parsed = parseStreams(body)
+                                        finish(parsed?.let { StreamsAnswer(it, cookie) })
+                                    } else if (body != null && body.optString("status") == "unavailable") {
+                                        finish(StreamsAnswer(emptyStreams(), cookie))
+                                    } else {
+                                        finish(null)
+                                    }
+                                } else {
+                                    finish(null)
+                                }
+                            }
+                        }, i * 500L)
+                    }
+                }
+
+                try {
+                    CookieManager.getInstance().setAcceptCookie(true)
+                    webView = WebView(context).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.userAgentString = USER_AGENT
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                super.onPageFinished(view, url)
+                                // the cookie lands with the page response, the
+                                // call goes out a beat later once it is set
+                                handler.postDelayed({
+                                    if (view != null) askOnce(view)
+                                }, 600L)
+                            }
+                        }
+                        loadUrl("$SITE/anime/one-piece/1")
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "webview failed to start: ${e.message}")
+                    finish(null)
+                    return@suspendCancellableCoroutine
+                }
+
+                handler.postDelayed({ finish(null) }, 25000L)
+            }
+        }
+    }
+
+    // the dub tab needs one episode answer per anime, remembering it for
+    // half a day keeps browsing from burning through the per cookie budget
+    private val dubCache = ConcurrentHashMap<Int, Pair<Long, Boolean>>()
+
+    suspend fun hasDub(anilistId: Int, malId: Int?): Boolean {
+        val now = System.currentTimeMillis()
+        dubCache[anilistId]?.let { (at, dub) ->
+            if (now - at < 12 * 60 * 60 * 1000L) return dub
+        }
+        val dub = streams(anilistId, malId, 1)?.streams?.dub?.isNotEmpty() == true
+        dubCache[anilistId] = Pair(now, dub)
+        return dub
     }
 
     class HlsVariant(val url: String, val height: Int)
