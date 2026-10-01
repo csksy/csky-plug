@@ -1,4 +1,4 @@
-version = 18
+version = 21
 
 android {
     buildFeatures {
@@ -11,8 +11,7 @@ dependencies {
 }
 
 cloudstream {
-    language = "en"
-    description = "( don't use cs beta ) Download and stream movies & TV series HINDI,ENGLISH - TheMoviesFlix Provider"
+    description = "stream movies & TV series HINDI,ENGLISH - TheMoviesFlix Provider"
     authors = listOf("csksy")
 
     status = 1
@@ -20,5 +19,6 @@ cloudstream {
         "Movie",
         "TvSeries"
     )
+    language = "en"
     iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSj_C9WX4AwepepLyw_cF-EIJeRpqgI4wDiquYSoP9xDFFAKFtTVM-P_zo&s=10"
 }
