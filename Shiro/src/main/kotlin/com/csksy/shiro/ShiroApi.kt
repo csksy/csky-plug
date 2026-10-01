@@ -8,6 +8,7 @@ import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.FormBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -204,17 +205,20 @@ object ShiroApi {
         return (res.headers["retry-after"]?.trim()?.toLongOrNull() ?: 6L).coerceIn(2L, 12L)
     }
 
-    // anilist fills up a per minute bucket and answers 429 with a retry-after
-    // while it is full, riding it out once recovers most of those requests
+    // anilist takes the query as a urlencoded form as well, some mobile
+    // carriers run filtering proxies that shred json request bodies and
+    // anilist answers those with a 400, form bodies pass through untouched
     private suspend fun graphql(query: String, variables: JSONObject): JSONObject {
         var reason = "AniList could not be reached. Check your connection and retry."
         for (attempt in 0 until 2) {
             val res = try {
                 app.post(
                     ANILIST,
-                    json = JSONObject().put("query", query).put("variables", variables).toString(),
+                    requestBody = FormBody.Builder()
+                        .add("query", query)
+                        .add("variables", variables.toString())
+                        .build(),
                     headers = mapOf(
-                        "Content-Type" to "application/json",
                         "Accept" to "application/json",
                         "User-Agent" to USER_AGENT
                     ),
@@ -236,7 +240,16 @@ object ShiroApi {
                 }
                 throw AnilistUnavailable(reason)
             }
-            if (!res.isSuccessful) throw AnilistUnavailable("AniList answered with ${res.code}.")
+            if (!res.isSuccessful) {
+                // a one off 400 or 5xx happens on their edge, only the second
+                // one in a row is treated as a real answer
+                Log.d(TAG, "anilist answered ${res.code}: ${res.text.take(120)}")
+                if (attempt == 0) {
+                    delay(2000L)
+                    continue
+                }
+                throw AnilistUnavailable("AniList answered with ${res.code}.")
+            }
             val data = try {
                 JSONObject(res.text).optJSONObject("data")
             } catch (e: Exception) {
@@ -300,8 +313,19 @@ object ShiroApi {
     suspend fun detail(anilistId: Int): Media? {
         detailCache?.takeIf { it.id == anilistId && System.currentTimeMillis() < it.expireAt }
             ?.let { return it.media }
-        val data = graphql(DETAIL_QUERY, JSONObject().put("id", anilistId))
-        val media = data.optJSONObject("Media")?.let { mediaFromJson(it) } ?: return null
+        var anilistFailure: AnilistUnavailable? = null
+        var media = try {
+            graphql(DETAIL_QUERY, JSONObject().put("id", anilistId)).optJSONObject("Media")
+                ?.let { mediaFromJson(it) }
+        } catch (e: AnilistUnavailable) {
+            anilistFailure = e
+            null
+        }
+        if (media == null) {
+            // the site pages answer while anilist does not, an anime that is
+            // on neither is not on shiro at all
+            media = siteDetail(anilistId) ?: anilistFailure?.let { throw it } ?: return null
+        }
         detailCache = DetailCache(anilistId, System.currentTimeMillis() + LIST_TTL, media)
         return media
     }
@@ -322,36 +346,207 @@ object ShiroApi {
             )
         } catch (e: Exception) {
             Log.d(TAG, "recent episodes request failed: ${e.message}")
-            throw SiteUnavailable("shiro.so could not be reached. Check your connection and retry.")
+            throw SiteUnavailable("shiro.so could not be reached (${e.message}).")
         }
         if (!res.isSuccessful) throw SiteUnavailable("shiro.so answered with ${res.code}.")
+        val schedules = try {
+            JSONObject(res.text).getJSONArray("schedules")
+        } catch (e: Exception) {
+            Log.d(TAG, "recent episodes parse failed: ${e.message}")
+            // a proxy or block page instead of the feed, swallowing this is
+            // what left the home screen blank with nothing to read
+            throw SiteUnavailable("shiro.so did not send its episode feed, the connection is probably filtered.")
+        }
         val out = ArrayList<Media>()
         val seen = HashSet<Int>()
         val now = System.currentTimeMillis() / 1000
-        try {
-            val schedules = JSONObject(res.text).optJSONArray("schedules")
-            if (schedules != null) {
-                for (i in 0 until schedules.length()) {
-                    if (out.size >= 16) break
-                    val s = schedules.optJSONObject(i) ?: continue
-                    if (s.optLong("airingAt", Long.MAX_VALUE) > now) continue
-                    val m = s.optJSONObject("media") ?: continue
-                    if (m.optBoolean("isAdult")) continue
-                    if (!seen.add(m.optInt("id"))) continue
-                    val title = displayTitle(m)
-                    if (title.isBlank()) continue
-                    val cover = m.optJSONObject("coverImage")
-                    val poster = cover?.optString("extraLarge")?.takeIf { it.isNotBlank() }
-                        ?: cover?.optString("large").orEmpty()
-                    if (poster.isBlank()) continue
-                    out.add(Media(id = m.optInt("id"), title = title, poster = poster, format = m.optString("format")))
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "recent episodes parse failed: ${e.message}")
+        for (i in 0 until schedules.length()) {
+            if (out.size >= 16) break
+            val s = schedules.optJSONObject(i) ?: continue
+            if (s.optLong("airingAt", Long.MAX_VALUE) > now) continue
+            val m = s.optJSONObject("media") ?: continue
+            if (m.optBoolean("isAdult")) continue
+            if (!seen.add(m.optInt("id"))) continue
+            val title = displayTitle(m)
+            if (title.isBlank()) continue
+            val cover = m.optJSONObject("coverImage")
+            val poster = cover?.optString("extraLarge")?.takeIf { it.isNotBlank() }
+                ?: cover?.optString("large").orEmpty()
+            if (poster.isBlank()) continue
+            out.add(Media(id = m.optInt("id"), title = title, poster = poster, format = m.optString("format")))
         }
         recentCache = Pair(System.currentTimeMillis() + 60 * 1000L, out)
         return out
+    }
+
+    private val flightChunk =
+        Regex("""self\.__next_f\.push\(\[1,\s*("(?:[^"\\]|\\.)*")\s*\]\)""")
+    private val ldJsonScript =
+        Regex("""<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+    private val ogImage = Regex("""<meta[^>]+property="og:image"[^>]+content="([^"]*)"""")
+
+    // next.js streams its page data as escaped js string pushes, the anime
+    // object the player runs on sits inside them
+    private fun unescapeJs(quoted: String): String {
+        val s = quoted.removePrefix("\"").removeSuffix("\"")
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            if (s[i] == '\\' && i + 1 < s.length) {
+                when (s[i + 1]) {
+                    'n' -> { out.append('\n'); i += 2 }
+                    't' -> { out.append('\t'); i += 2 }
+                    'r' -> { out.append('\r'); i += 2 }
+                    'b' -> { out.append('\b'); i += 2 }
+                    'u' -> {
+                        val code = s.substring(i + 2, i + 6).toIntOrNull(16)
+                        if (code != null) {
+                            out.append(code.toChar())
+                            i += 6
+                        } else {
+                            out.append(s[i + 1]); i += 2
+                        }
+                    }
+                    else -> { out.append(s[i + 1]); i += 2 }
+                }
+            } else {
+                out.append(s[i]); i += 1
+            }
+        }
+        return out.toString()
+    }
+
+    private fun balancedJson(s: String, start: Int): String? {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in start until s.length) {
+            val c = s[i]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+            } else when (c) {
+                '"' -> inString = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return s.substring(start, i + 1)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun flightAnime(blob: String): JSONObject? {
+        val at = blob.indexOf("\"episodeCount\"")
+        if (at < 0) return null
+        var start = blob.lastIndexOf('{', at)
+        while (start >= 0) {
+            val candidate = balancedJson(blob, start)
+            if (candidate == null) return null
+            try {
+                val o = JSONObject(candidate)
+                if (o.has("episodeCount") && o.has("title")) return o
+            } catch (e: Exception) {
+                // a nested object, step out one brace and retry
+            }
+            start = blob.lastIndexOf('{', start - 1)
+        }
+        return null
+    }
+
+    private fun ldAnimeNode(html: String): JSONObject? {
+        val ld = ldJsonScript.find(html)?.groupValues?.get(1) ?: return null
+        val graph = try {
+            JSONObject(ld).optJSONArray("@graph")
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        for (i in 0 until graph.length()) {
+            val n = graph.optJSONObject(i) ?: continue
+            val type = n.optString("@type")
+            if (type == "TVSeries" || type == "Movie") return n
+        }
+        return null
+    }
+
+    // the pages render the whole catalog entry the player runs on, including
+    // the episode count the site itself lists by, so an anime stays openable
+    // even while anilist refuses the connection
+    suspend fun siteDetail(anilistId: Int): Media? {
+        val res = try {
+            app.get(
+                "$SITE/anime/$anilistId",
+                headers = mapOf("User-Agent" to USER_AGENT, "Accept" to "text/html"),
+                timeout = 20L
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "site detail request failed: ${e.message}")
+            throw SiteUnavailable("shiro.so could not be reached (${e.message}).")
+        }
+        if (res.code == 404) return null
+        if (!res.isSuccessful) throw SiteUnavailable("shiro.so answered with ${res.code}.")
+
+        val html = res.text
+        val blob = StringBuilder()
+        for (m in flightChunk.findAll(html)) {
+            blob.append(unescapeJs(m.groupValues[1]))
+        }
+        val node = flightAnime(blob.toString())
+        if (node != null) {
+            val facts = HashMap<String, String>()
+            val fa = node.optJSONArray("facts")
+            if (fa != null) {
+                for (i in 0 until fa.length()) {
+                    val f = fa.optJSONObject(i) ?: continue
+                    facts[f.optString("label")] = f.optString("value")
+                }
+            }
+            return Media(
+                id = anilistId,
+                idMal = node.optInt("idMal", 0).takeIf { it > 0 },
+                title = node.optString("title"),
+                poster = node.optString("cover"),
+                banner = node.optString("banner").takeIf { it.isNotBlank() },
+                format = node.optString("format"),
+                status = facts["Status"]?.uppercase().orEmpty(),
+                episodes = node.optInt("episodeCount", 0).takeIf { it > 0 },
+                year = if (node.has("seasonYear") && !node.isNull("seasonYear")) node.optInt("seasonYear") else null,
+                genres = buildList {
+                    val g = node.optJSONArray("genres")
+                    if (g != null) for (i in 0 until g.length()) add(g.optString(i))
+                },
+                score = if (node.has("score") && !node.isNull("score")) node.optDouble("score") else null,
+                duration = facts["Duration"]?.filter { it.isDigit() }?.toIntOrNull(),
+                studio = facts["Studio"]?.takeIf { it.isNotBlank() },
+                trailerUrl = node.optString("trailer")
+                    .takeIf { it.isNotBlank() && it != "null" }?.replace("%09", ""),
+                description = ldAnimeNode(html)?.optString("description")?.takeIf { it.isNotBlank() }
+            )
+        }
+
+        // the flight layout is not set in stone, the ld+json every page also
+        // carries covers the important fields
+        val ld = ldAnimeNode(html) ?: return null
+        val name = ld.optString("name").takeIf { it.isNotBlank() } ?: return null
+        return Media(
+            id = anilistId,
+            title = name,
+            poster = ld.optString("image"),
+            banner = ogImage.find(html)?.groupValues?.get(1)
+                ?.takeIf { it.isNotBlank() && it != "$SITE/og-image.jpg" },
+            format = if (ld.optInt("numberOfEpisodes", 0) == 1) "MOVIE" else "TV",
+            episodes = ld.optInt("numberOfEpisodes", 0).takeIf { it > 0 } ?: 12,
+            year = ld.optString("startDate").take(4).toIntOrNull(),
+            genres = buildList {
+                val g = ld.optJSONArray("genre")
+                if (g != null) for (i in 0 until g.length()) add(g.optString(i))
+            },
+            description = ld.optString("description").takeIf { it.isNotBlank() }
+        )
     }
 
     class EpisodeSource(

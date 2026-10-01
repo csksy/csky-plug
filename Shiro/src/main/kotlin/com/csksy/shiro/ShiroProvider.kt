@@ -122,7 +122,7 @@ class Shiro : MainAPI() {
         // one cheap api ping tells whether a dub track exists at all, the
         // site itself only learns this once the player is open, movies emit
         // every version from one entry so they can skip the check
-        val hasDub = if (isMovie) {
+        val hasDub = if (isMovie || count == 0) {
             false
         } else {
             ShiroApi.streams(id, m.idMal, 1)?.dub?.isNotEmpty() == true
@@ -145,16 +145,17 @@ class Shiro : MainAPI() {
                 recommendations = m.recommendations.mapNotNull { it.toSearchResponse() }
             }
         } else {
-            val total = if (count > 0) count else 1
-            val subEps = (1..total).map { n ->
+            // the site lists nothing for a show that has not aired, a made up
+            // episode one would only open a player with no links in it
+            val subEps = if (count > 0) (1..count).map { n ->
                 val stream = m.streamTitles[n]
                 newEpisode(episodeData(id, m.idMal, n, "sub")) {
                     episode = n
                     name = stream?.let { cleanEpisodeTitle(it.first) } ?: "Episode $n"
                     stream?.second?.takeIf { it.isNotBlank() }?.let { posterUrl = it }
                 }
-            }
-            val dubEps = if (hasDub) (1..total).map { n ->
+            } else emptyList()
+            val dubEps = if (hasDub) (1..count).map { n ->
                 val stream = m.streamTitles[n]
                 newEpisode(episodeData(id, m.idMal, n, "dub")) {
                     episode = n
