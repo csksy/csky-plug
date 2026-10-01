@@ -4,12 +4,13 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.nicehttp.NiceResponse
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 object ShiroApi {
     private const val TAG = "Shiro"
@@ -17,21 +18,13 @@ object ShiroApi {
     private const val SITE = "https://shiro.so"
     private const val ANILIST = "https://graphql.anilist.co"
 
-    private val GRAPH_FIELDS = """
-        id
-        idMal
-        title { romaji english native }
-        coverImage { large extraLarge }
-        bannerImage
-        format
-        status
-        episodes
-        seasonYear
-        genres
-        averageScore
-        description(asHtml: true)
-        nextAiringEpisode { episode }
-    """
+    private const val USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+    // rows only need the poster and the labels under it, the html synopsis is
+    // asked for on the detail query alone and cuts these answers to a tenth
+    private const val LIST_FIELDS =
+        "id title{romaji english native} coverImage{large extraLarge} format seasonYear averageScore"
 
     private val SEARCH_QUERY = """
         query (${'$'}search: String!, ${'$'}page: Int, ${'$'}perPage: Int) {
@@ -43,10 +36,10 @@ object ShiroApi {
     """.trimIndent()
 
     private val LIST_QUERY = """
-        query (${'$'}page: Int, ${'$'}sort: [MediaSort!]!, ${'$'}seasonYear: Int, ${'$'}statuses: [MediaStatus!]) {
+        query (${'$'}page: Int, ${'$'}sort: [MediaSort!]!, ${'$'}statuses: [MediaStatus!]) {
             Page(page: ${'$'}page, perPage: 24) {
                 pageInfo { hasNextPage }
-                media(type: ANIME, isAdult: false, sort: ${'$'}sort, seasonYear: ${'$'}seasonYear, status_in: ${'$'}statuses) { %s }
+                media(type: ANIME, isAdult: false, sort: ${'$'}sort, status_in: ${'$'}statuses) { %s }
             }
         }
     """.trimIndent()
@@ -54,15 +47,34 @@ object ShiroApi {
     private val DETAIL_QUERY = """
         query (${'$'}id: Int) {
             Media(id: ${'$'}id, type: ANIME, isAdult: false) {
-                %s
+                id
+                idMal
+                title { romaji english native }
+                coverImage { large extraLarge }
+                bannerImage
+                format
+                status
+                episodes
+                seasonYear
+                genres
+                averageScore
+                description(asHtml: true)
+                nextAiringEpisode { episode }
                 duration
-                source
                 studios(isMain: true) { nodes { name } }
                 trailer { id site }
                 streamingEpisodes { title thumbnail url }
+                recommendations(sort: RATING_DESC, perPage: 10) {
+                    nodes { mediaRecommendation { id title { romaji english native } coverImage { large extraLarge } format seasonYear } }
+                }
             }
         }
     """.trimIndent()
+
+    // the site holds anilist answers for five minutes, doing the same keeps
+    // the home screen from reasking anilist on every refresh and pushes the
+    // rate limit further away
+    private const val LIST_TTL = 5 * 60 * 1000L
 
     private lateinit var prefs: SharedPreferences
     private val cookieMutex = Mutex()
@@ -77,24 +89,28 @@ object ShiroApi {
         }
     }
 
+    class AnilistUnavailable(message: String) : Exception(message)
+    class SiteUnavailable(message: String) : Exception(message)
+
     class Media(
         val id: Int,
-        val idMal: Int?,
         val title: String,
         val poster: String,
-        val banner: String?,
-        val format: String,
-        val status: String,
-        val episodes: Int?,
-        val year: Int?,
-        val genres: List<String>,
-        val score: Double?,
-        val description: String?,
-        val nextEpisode: Int?,
-        val duration: Int?,
-        val studio: String?,
-        val trailerUrl: String?,
-        val streamTitles: Map<Int, Pair<String, String>>
+        val idMal: Int? = null,
+        val banner: String? = null,
+        val format: String = "",
+        val status: String = "",
+        val episodes: Int? = null,
+        val year: Int? = null,
+        val genres: List<String> = emptyList(),
+        val score: Double? = null,
+        val description: String? = null,
+        val nextEpisode: Int? = null,
+        val duration: Int? = null,
+        val studio: String? = null,
+        val trailerUrl: String? = null,
+        val streamTitles: Map<Int, Pair<String, String>> = emptyMap(),
+        val recommendations: List<Media> = emptyList()
     )
 
     private fun displayTitle(o: JSONObject): String {
@@ -126,6 +142,26 @@ object ShiroApi {
                 streamTitles[num] = Pair(title, e.optString("thumbnail"))
             }
         }
+        val recommendations = ArrayList<Media>()
+        val nodes = o.optJSONObject("recommendations")?.optJSONArray("nodes")
+        if (nodes != null) {
+            for (i in 0 until nodes.length()) {
+                val r = nodes.optJSONObject(i)?.optJSONObject("mediaRecommendation") ?: continue
+                val title = displayTitle(r)
+                if (title.isBlank()) continue
+                val cover = r.optJSONObject("coverImage")
+                recommendations.add(
+                    Media(
+                        id = r.optInt("id"),
+                        title = title,
+                        poster = cover?.optString("extraLarge")?.takeIf { it.isNotBlank() }
+                            ?: cover?.optString("large").orEmpty(),
+                        format = r.optString("format"),
+                        year = if (r.has("seasonYear") && !r.isNull("seasonYear")) r.optInt("seasonYear") else null
+                    )
+                )
+            }
+        }
         return Media(
             id = o.optInt("id"),
             idMal = if (o.has("idMal") && !o.isNull("idMal")) o.optInt("idMal") else null,
@@ -154,72 +190,168 @@ object ShiroApi {
             studio = o.optJSONArray("studios")?.optJSONObject(0)
                 ?.optJSONArray("nodes")?.optJSONObject(0)?.optString("name")?.takeIf { it.isNotBlank() },
             trailerUrl = trailerUrl(o),
-            streamTitles = streamTitles
+            streamTitles = streamTitles,
+            recommendations = recommendations
         )
     }
 
-    private suspend fun graphql(query: String, variables: JSONObject): JSONObject? {
-        val res = try {
-            app.post(
-                ANILIST,
-                json = JSONObject().put("query", query).put("variables", variables).toString(),
-                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"),
-                timeout = 20L
-            )
-        } catch (e: Exception) {
-            Log.d(TAG, "anilist request failed: ${e.message}")
-            return null
+    private fun retryAfterSeconds(res: NiceResponse): Long {
+        val reset = res.headers["x-ratelimit-reset"]?.trim()?.toLongOrNull()
+        if (reset != null) {
+            val delta = reset - System.currentTimeMillis() / 1000
+            if (delta > 0) return delta.coerceIn(2L, 12L)
         }
-        if (!res.isSuccessful) return null
-        return try {
-            JSONObject(res.text).optJSONObject("data")
-        } catch (e: Exception) {
-            Log.d(TAG, "anilist parse failed: ${e.message}")
-            null
+        return (res.headers["retry-after"]?.trim()?.toLongOrNull() ?: 6L).coerceIn(2L, 12L)
+    }
+
+    // anilist fills up a per minute bucket and answers 429 with a retry-after
+    // while it is full, riding it out once recovers most of those requests
+    private suspend fun graphql(query: String, variables: JSONObject): JSONObject {
+        var reason = "AniList could not be reached. Check your connection and retry."
+        for (attempt in 0 until 2) {
+            val res = try {
+                app.post(
+                    ANILIST,
+                    json = JSONObject().put("query", query).put("variables", variables).toString(),
+                    headers = mapOf(
+                        "Content-Type" to "application/json",
+                        "Accept" to "application/json",
+                        "User-Agent" to USER_AGENT
+                    ),
+                    timeout = 20L
+                )
+            } catch (e: Exception) {
+                if (attempt == 0) {
+                    delay(2000L)
+                    continue
+                }
+                Log.d(TAG, "anilist request failed: ${e.message}")
+                throw AnilistUnavailable(reason)
+            }
+            if (res.code == 429) {
+                reason = "AniList is rate limiting this connection, wait a minute and retry."
+                if (attempt == 0) {
+                    delay(retryAfterSeconds(res) * 1000L)
+                    continue
+                }
+                throw AnilistUnavailable(reason)
+            }
+            if (!res.isSuccessful) throw AnilistUnavailable("AniList answered with ${res.code}.")
+            val data = try {
+                JSONObject(res.text).optJSONObject("data")
+            } catch (e: Exception) {
+                null
+            }
+            return data ?: throw AnilistUnavailable("AniList returned no data.")
         }
+        throw AnilistUnavailable(reason)
+    }
+
+    private class PageCache(val expireAt: Long, val media: List<Media>, val hasNext: Boolean)
+
+    private val pageCache = ConcurrentHashMap<String, PageCache>()
+
+    private suspend fun pageOf(query: String, vars: JSONObject, cacheKey: String): PageCache {
+        pageCache[cacheKey]?.takeIf { System.currentTimeMillis() < it.expireAt }?.let { return it }
+        val data = graphql(query, vars)
+        val pageObj = data.optJSONObject("Page") ?: throw AnilistUnavailable("AniList returned no data.")
+        val media = pageObj.optJSONArray("media")
+        val out = ArrayList<Media>()
+        if (media != null) {
+            for (i in 0 until media.length()) {
+                media.optJSONObject(i)?.let { out.add(mediaFromJson(it)) }
+            }
+        }
+        val hasNext = pageObj.optJSONObject("pageInfo")?.optBoolean("hasNextPage") ?: false
+        val entry = PageCache(System.currentTimeMillis() + LIST_TTL, out, hasNext)
+        pageCache[cacheKey] = entry
+        return entry
     }
 
     suspend fun search(query: String, page: Int): Pair<List<Media>, Boolean> {
-        val data = graphql(
-            String.format(SEARCH_QUERY, GRAPH_FIELDS),
-            JSONObject().put("search", query).put("page", page).put("perPage", 30)
-        ) ?: return Pair(emptyList(), false)
-        val pageObj = data.optJSONObject("Page") ?: return Pair(emptyList(), false)
-        val media = pageObj.optJSONArray("media") ?: return Pair(emptyList(), false)
-        val out = ArrayList<Media>()
-        for (i in 0 until media.length()) {
-            media.optJSONObject(i)?.let { out.add(mediaFromJson(it)) }
-        }
-        val hasNext = pageObj.optJSONObject("pageInfo")?.optBoolean("hasNextPage") ?: false
-        return Pair(out, hasNext)
+        val entry = pageOf(
+            String.format(SEARCH_QUERY, LIST_FIELDS),
+            JSONObject().put("search", query).put("page", page).put("perPage", 30),
+            "search|$query|$page"
+        )
+        return Pair(entry.media, entry.hasNext)
     }
 
     suspend fun list(
         sort: String,
         page: Int,
-        year: Int? = null,
         statuses: List<String>? = null
     ): Pair<List<Media>, Boolean> {
         val vars = JSONObject().put("page", page).put("sort", JSONArray().put(sort))
-        year?.let { vars.put("seasonYear", it) }
         statuses?.let { list -> vars.put("statuses", JSONArray(list)) }
-        val data = graphql(String.format(LIST_QUERY, GRAPH_FIELDS), vars) ?: return Pair(emptyList(), false)
-        val pageObj = data.optJSONObject("Page") ?: return Pair(emptyList(), false)
-        val media = pageObj.optJSONArray("media") ?: return Pair(emptyList(), false)
-        val out = ArrayList<Media>()
-        for (i in 0 until media.length()) {
-            media.optJSONObject(i)?.let { out.add(mediaFromJson(it)) }
-        }
-        val hasNext = pageObj.optJSONObject("pageInfo")?.optBoolean("hasNextPage") ?: false
-        return Pair(out, hasNext)
+        val entry = pageOf(
+            String.format(LIST_QUERY, LIST_FIELDS),
+            vars,
+            "$sort|${statuses?.joinToString(",") ?: ""}|$page"
+        )
+        return Pair(entry.media, entry.hasNext)
     }
 
+    private class DetailCache(val id: Int, val expireAt: Long, val media: Media)
+
+    @Volatile
+    private var detailCache: DetailCache? = null
+
     suspend fun detail(anilistId: Int): Media? {
-        val data = graphql(
-            String.format(DETAIL_QUERY, GRAPH_FIELDS),
-            JSONObject().put("id", anilistId)
-        ) ?: return null
-        return data.optJSONObject("Media")?.let { mediaFromJson(it) }
+        detailCache?.takeIf { it.id == anilistId && System.currentTimeMillis() < it.expireAt }
+            ?.let { return it.media }
+        val data = graphql(DETAIL_QUERY, JSONObject().put("id", anilistId))
+        val media = data.optJSONObject("Media")?.let { mediaFromJson(it) } ?: return null
+        detailCache = DetailCache(anilistId, System.currentTimeMillis() + LIST_TTL, media)
+        return media
+    }
+
+    // shiro's own schedule feed, unlike the rest of the catalog it never goes
+    // through anilist so it keeps filling the home page while anilist is
+    // limiting or unreachable
+    @Volatile
+    private var recentCache: Pair<Long, List<Media>>? = null
+
+    suspend fun recentEpisodes(): List<Media> {
+        recentCache?.takeIf { System.currentTimeMillis() < it.first }?.let { return it.second }
+        val res = try {
+            app.get(
+                "$SITE/api/recent-episodes",
+                headers = mapOf("User-Agent" to USER_AGENT, "Accept" to "application/json"),
+                timeout = 15L
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "recent episodes request failed: ${e.message}")
+            throw SiteUnavailable("shiro.so could not be reached. Check your connection and retry.")
+        }
+        if (!res.isSuccessful) throw SiteUnavailable("shiro.so answered with ${res.code}.")
+        val out = ArrayList<Media>()
+        val seen = HashSet<Int>()
+        val now = System.currentTimeMillis() / 1000
+        try {
+            val schedules = JSONObject(res.text).optJSONArray("schedules")
+            if (schedules != null) {
+                for (i in 0 until schedules.length()) {
+                    if (out.size >= 16) break
+                    val s = schedules.optJSONObject(i) ?: continue
+                    if (s.optLong("airingAt", Long.MAX_VALUE) > now) continue
+                    val m = s.optJSONObject("media") ?: continue
+                    if (m.optBoolean("isAdult")) continue
+                    if (!seen.add(m.optInt("id"))) continue
+                    val title = displayTitle(m)
+                    if (title.isBlank()) continue
+                    val cover = m.optJSONObject("coverImage")
+                    val poster = cover?.optString("extraLarge")?.takeIf { it.isNotBlank() }
+                        ?: cover?.optString("large").orEmpty()
+                    if (poster.isBlank()) continue
+                    out.add(Media(id = m.optInt("id"), title = title, poster = poster, format = m.optString("format")))
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "recent episodes parse failed: ${e.message}")
+        }
+        recentCache = Pair(System.currentTimeMillis() + 60 * 1000L, out)
+        return out
     }
 
     class EpisodeSource(
@@ -243,7 +375,7 @@ object ShiroApi {
     // rotated so one fetch per install is usually enough
     private suspend fun fetchCookie(): String? {
         val res = try {
-            app.get("$SITE/anime/one-piece/1", timeout = 15L)
+            app.get("$SITE/anime/one-piece/1", headers = mapOf("User-Agent" to USER_AGENT), timeout = 15L)
         } catch (e: Exception) {
             Log.d(TAG, "cookie fetch failed: ${e.message}")
             return null
@@ -403,7 +535,7 @@ object ShiroApi {
     }
 
     fun streamHeaders(cookie: String): Map<String, String> = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent" to USER_AGENT,
         "Referer" to "$SITE/",
         "Cookie" to cookie
     )

@@ -21,11 +21,11 @@ class Shiro : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
     override val mainPage = mainPageOf(
+        "recent" to "Recently Released",
         "trending" to "Trending Now",
         "popular" to "All Time Popular",
         "rated" to "Top Rated",
-        "airing" to "Currently Airing",
-        "new" to "Recently Released"
+        "airing" to "Currently Airing"
     )
 
     private fun tvTypeOf(format: String): TvType = when (format) {
@@ -43,21 +43,40 @@ class Shiro : MainAPI() {
         }
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val (media, hasNext) = when (request.data) {
-            "trending" -> ShiroApi.list("TRENDING_DESC", page)
-            "popular" -> ShiroApi.list("POPULARITY_DESC", page)
-            "rated" -> ShiroApi.list("SCORE_DESC", page)
-            "airing" -> ShiroApi.list("POPULARITY_DESC", page, statuses = listOf("RELEASING"))
-            else -> ShiroApi.list("START_DATE_DESC", page)
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        if (request.data == "recent") {
+            // shiro's own schedule feed, when it is down the streams are down
+            // too so the error is let through to the home screen instead of a
+            // blank page
+            val items = ShiroApi.recentEpisodes().mapNotNull { it.toSearchResponse() }
+            return if (items.isEmpty()) null
+            else newHomePageResponse(request.name, items, hasNext = false)
+        }
+        val (media, hasNext) = try {
+            when (request.data) {
+                "trending" -> ShiroApi.list("TRENDING_DESC", page)
+                "popular" -> ShiroApi.list("POPULARITY_DESC", page)
+                "rated" -> ShiroApi.list("SCORE_DESC", page)
+                else -> ShiroApi.list("POPULARITY_DESC", page, statuses = listOf("RELEASING"))
+            }
+        } catch (e: ShiroApi.AnilistUnavailable) {
+            // the anilist rows are dropped so the site feed still fills the
+            // home page while anilist is limiting or unreachable
+            Log.d("Shiro", "${request.name} skipped: ${e.message}")
+            return null
         }
         val items = media.mapNotNull { it.toSearchResponse() }
-        return newHomePageResponse(request.name, items, hasNext = hasNext)
+        return if (items.isEmpty()) null
+        else newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val (media, _) = ShiroApi.search(query, 1)
-        return media.mapNotNull { it.toSearchResponse() }
+        return try {
+            val (media, _) = ShiroApi.search(query, 1)
+            media.mapNotNull { it.toSearchResponse() }
+        } catch (e: ShiroApi.AnilistUnavailable) {
+            throw ErrorLoadingException(e.message)
+        }
     }
 
     // data carries the ids, the episode number and which versions the
@@ -123,6 +142,7 @@ class Shiro : MainAPI() {
                     episode = 1
                 }))
                 m.trailerUrl?.let { addTrailer(it) }
+                recommendations = m.recommendations.mapNotNull { it.toSearchResponse() }
             }
         } else {
             val total = if (count > 0) count else 1
@@ -158,6 +178,7 @@ class Shiro : MainAPI() {
                 addEpisodes(DubStatus.Subbed, subEps)
                 if (dubEps.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEps)
                 m.trailerUrl?.let { addTrailer(it) }
+                recommendations = m.recommendations.mapNotNull { it.toSearchResponse() }
             }
         }
     }
