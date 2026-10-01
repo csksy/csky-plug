@@ -1,10 +1,10 @@
 package com.laddu100
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.api.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -14,6 +14,16 @@ import java.net.URLEncoder
 
 private const val TAG = "TMF"
 
+/**
+ * themoviesflix - download site.
+ *
+ * post page -> one download group per quality, every group points at a drive
+ * page on nexdrive/mobilejsr which carries the actual source buttons
+ * (fastdl, vcloud, vegadrive, filepress) and an alternative sources box.
+ *
+ * series posts group by season, episode drive pages carry one button set per
+ * episode under an episodes h4 header.
+ */
 class TheMoviesFlix : MainAPI() {
     override var mainUrl = "https://themoviesflixhq.com"
     override var name = "TheMoviesFlix"
@@ -109,15 +119,22 @@ class TheMoviesFlix : MainAPI() {
 
     private data class DownloadGroup(val label: String, val redirectUrl: String)
 
+    // whole season packs arrive as zip archives, they are not playable so
+    // the button and its group are dropped before the drive page is ever
+    // fetched
+    private val packRegex = Regex("""(?i)\b(zip|ziP|rar|7z|batch)\b""")
+
     private fun extractDownloadGroups(entry: Element): List<DownloadGroup> {
         return entry.select("div.mfx-download-group").flatMap { div ->
             val label = div.selectFirst("h3")?.text()?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
+            if (packRegex.containsMatchIn(label)) return@flatMap emptyList()
             div.select("a[href]").mapNotNull { a ->
                 val text = a.text().trim()
                 val href = a.attr("href").trim()
                 when {
                     !href.startsWith("http") -> null
                     text.contains("Batch", true) || text.contains("Zip", true) -> null
+                    packRegex.containsMatchIn(text) -> null
                     else -> DownloadGroup(label, href)
                 }
             }
@@ -266,9 +283,8 @@ class TheMoviesFlix : MainAPI() {
                             page.links
                         }
                         if (hrefs.isEmpty()) return@async false
-                        val info = page.info
                         TmfSources.emitAll(
-                            hrefs, page.quality, info,
+                            hrefs, page.quality, page.info,
                             "https://nexdrive.fit/", subtitleCallback, callback
                         )
                     } catch (e: Exception) {

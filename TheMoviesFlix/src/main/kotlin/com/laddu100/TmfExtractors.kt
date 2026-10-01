@@ -1,6 +1,5 @@
 package com.laddu100
 
-import android.content.Context
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -61,7 +60,7 @@ class TmfVegaDriveExtractor : ExtractorApi() {
         for (s in TmfSources.resolveVegaDrive(url)) {
             callback.invoke(
                 ExtractorLink(source = name, name = s.name, url = s.url, referer = mainUrl,
-                    quality = Qualities.Unknown.value, type = s.type, headers = s.headers)
+                    quality = Qualities.Unknown.value, type = ExtractorLinkType.VIDEO, headers = s.headers)
             )
         }
     }
@@ -78,7 +77,7 @@ class TmfFilePressExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        for (s in TmfSources.resolveHub(url)) {
+        for (s in TmfSources.resolveFilePress(url)) {
             callback.invoke(
                 ExtractorLink(source = name, name = s.name, url = s.url, referer = mainUrl,
                     quality = Qualities.Unknown.value, type = s.type, headers = s.headers)

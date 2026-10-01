@@ -8,6 +8,17 @@ import kotlinx.coroutines.sync.withLock
 import org.jsoup.nodes.Document
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * Networking layer for TheMoviesFlix.
+ *
+ * The site sits behind cloudflare and only lets a request through when it
+ * carries the full header set a real browser sends, a bare user agent alone
+ * gets blocked on a lot of networks.
+ *
+ * Every post button points at a drive page on nexdrive/mobilejsr, that page
+ * carries the actual download buttons for the file (fastdl, vcloud,
+ * vegadrive, filepress) plus an "alternative sources" box with direct hosts.
+ */
 object TmfNet {
     private const val TAG = "TMF"
 
@@ -21,9 +32,6 @@ object TmfNet {
     const val DESKTOP_UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-    // the site sits behind cloudflare and only lets a request through when
-    // it carries the full header set a real browser sends, a bare user
-    // agent alone gets blocked on a lot of networks
     fun browserHeaders(referer: String? = null): Map<String, String> {
         val h = LinkedHashMap<String, String>()
         h["User-Agent"] = DESKTOP_UA
@@ -66,11 +74,7 @@ object TmfNet {
             ).distinct()
             for (candidate in candidates) {
                 val res = try {
-                    app.get(
-                        "$candidate/?s=the",
-                        headers = browserHeaders(),
-                        timeout = 15L
-                    )
+                    app.get("$candidate/?s=the", headers = browserHeaders(), timeout = 15L)
                 } catch (e: Exception) {
                     null
                 }
@@ -118,18 +122,20 @@ object TmfNet {
     private const val DRIVE_CACHE_MS = 5 * 60 * 1000L
 
     fun qualityOf(text: String): Int? =
-        Regex("""(\d{3,4})[pP]""").find(text)?.groupValues?.get(1)?.toIntOrNull()
+        Regex("""(\d{3,4})[pP]\b""").find(text)?.groupValues?.get(1)?.toIntOrNull()
             ?: if (text.contains("2160", true) || text.contains("4K", true) || text.contains("UHD", true)) 2160 else null
 
     fun infoOf(title: String): String =
-        Regex("""[\[{]([^\]}]+)[\]}]""").findAll(title)
+        Regex("""[\[{(]([^\]})]+)[\]})]""").findAll(title)
             .map { it.groupValues[1].trim() }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && !it.equals("links", true) }
             .joinToString(" · ")
 
+    // links that belong to the drive page itself, never to the file
     private val DRIVE_SELF = listOf(
         "nexdrive", "mobilejsr", "vglist", "w.org", "wordpress", "gmpg",
-        "googleapis", "googletagmanager", "font-awesome", "schema", "category/"
+        "googleapis", "googletagmanager", "font-awesome", "schema", "category/",
+        "t.me/+", "telegram"
     )
 
     private fun isDriveJunk(href: String): Boolean = DRIVE_SELF.any { href.contains(it, true) }
@@ -145,6 +151,8 @@ object TmfNet {
             if (href.startsWith("http") && !isDriveJunk(href)) href else null
         }.distinct()
 
+        // episode pages list every episode as an h4 header with the button
+        // set sitting in the next paragraphs
         val episodes = mutableMapOf<Int, MutableList<String>>()
         for (h4 in root.select("h4")) {
             val text = h4.text().trim()
@@ -247,6 +255,23 @@ object TmfNet {
             }
             driveCache[key] = CachedDrivePage(System.currentTimeMillis(), page)
             page
+        }
+    }
+
+    // one kilobyte range request, used to drop links whose file is gone
+    // before they ever reach the player
+    suspend fun probe(url: String, referer: String? = null): Int? {
+        return try {
+            val res = app.get(
+                url,
+                headers = browserHeaders(referer).toMutableMap().apply {
+                    put("Range", "bytes=0-1023")
+                },
+                timeout = 15L
+            )
+            res.code
+        } catch (e: Exception) {
+            null
         }
     }
 }
