@@ -36,7 +36,7 @@ class Shiro : MainAPI() {
 
     private fun ShiroApi.Media.toSearchResponse(): SearchResponse? {
         if (title.isBlank()) return null
-        return newAnimeSearchResponse(title, "$id", tvTypeOf(format)) {
+        return newAnimeSearchResponse(title, "/anime/$id", tvTypeOf(format)) {
             posterUrl = this@toSearchResponse.poster
             this.score = this@toSearchResponse.score?.let { Score.from10(it.toFloat()) }
             this.year = this@toSearchResponse.year
@@ -111,8 +111,19 @@ class Shiro : MainAPI() {
         raw.replace(Regex("""^Episode\s*\d+\s*[-–:]\s*""", RegexOption.IGNORE_CASE), "").trim()
             .takeIf { it.isNotBlank() } ?: raw
 
+    // the app fixes every card url through mainUrl, and the site itself uses
+    // /anime/{id}-{slug} pages, so the id is picked out of whichever shape
+    // arrives here
+    private fun idFromUrl(url: String): Int? {
+        url.toIntOrNull()?.let { return it }
+        if (!url.startsWith("$mainUrl/")) return null
+        val path = url.removePrefix("$mainUrl/").substringBefore('?').trimEnd('/')
+        val segment = if (path.startsWith("anime/")) path.removePrefix("anime/") else path
+        return segment.substringBefore('-').toIntOrNull()
+    }
+
     override suspend fun load(url: String): LoadResponse? {
-        val id = url.toIntOrNull() ?: return null
+        val id = idFromUrl(url) ?: return null
         val m = ShiroApi.detail(id) ?: return null
         if (m.title.isBlank()) return null
 

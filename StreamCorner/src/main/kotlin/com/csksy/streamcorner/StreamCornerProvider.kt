@@ -87,17 +87,62 @@ class StreamCornerProvider : MainAPI() {
         }
     }
 
+    // the schedule labels arrive as east coast text like 10/04/26 01:45PM ET,
+    // the zone entry keeps the daylight saving shifts correct
+    private val etZone = java.util.TimeZone.getTimeZone("America/New_York")
+    private val etFormats = listOf(
+        "MM/dd/yy h:mma", "MM/dd/yy hh:mma", "MM/dd/yyyy h:mma", "MM/dd/yyyy hh:mma"
+    )
+
+    private fun parseEt(raw: String?): Long? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        val text = if (trimmed.endsWith("ET", ignoreCase = true)) trimmed.dropLast(2).trim() else trimmed
+        for (fmt in etFormats) {
+            try {
+                val sdf = java.text.SimpleDateFormat(fmt, java.util.Locale.US)
+                sdf.timeZone = etZone
+                val d = sdf.parse(text) ?: continue
+                return d.time / 1000
+            } catch (e: Exception) {
+            }
+        }
+        return null
+    }
+
+    private fun eventStart(ev: ScEvent): Long? =
+        ev.startTime?.takeIf { it > 0 }
+            ?: ev.timestamp?.takeIf { it > 0 }
+            ?: parseEt(ev.timeEt)
+
+    // mirrors the site's own live test: a listing marked LIVE is always on, a
+    // game counts as live from two minutes before the whistle until about
+    // three and a half hours in, and an entry with no schedule at all plays
+    // around the clock like the 24/7 channels
+    private fun isLiveEvent(ev: ScEvent, now: Long): Boolean {
+        if (ev.timeEt.orEmpty().contains("live", ignoreCase = true)) return true
+        val start = eventStart(ev) ?: return true
+        if (now < start - 120) return false
+        ev.endTime?.takeIf { it > 0 }?.let { end -> if (now > end) return false }
+        return (now - start) / 60.0 <= 210
+    }
+
+    // the category art is a tiny vector icon behind an image proxy, asking the
+    // proxy for a big png lets the card art actually fill the tile
+    private fun cardArt(url: String): String =
+        if (url.contains(".svg") && !url.contains("output=")) "$url&w=400&output=png" else url
+
     private fun ScEvent.toSearch(feed: String): SearchResponse? {
-        val eventId = id ?: return null
-        val title = name?.takeIf { it.isNotBlank() } ?: return null
-        val start = startTime ?: timestamp
+        val eventId = eventId ?: return null
+        val title = eventName?.takeIf { it.isNotBlank() } ?: return null
+        val start = eventStart(this)
         val now = System.currentTimeMillis() / 1000
         val upcoming = start != null && start > now
         val display = if (upcoming) "$title [Starts: ${formatTime(start)}]" else title
-        val poster = poster?.takeIf { it.isNotBlank() }
+        val poster = posterUrl
             ?: homeTeamLogo?.takeIf { it.isNotBlank() }
             ?: awayTeamLogo?.takeIf { it.isNotBlank() }
-            ?: categoryLogo?.takeIf { it.isNotBlank() }
+            ?: categoryLogo?.takeIf { it.isNotBlank() }?.let { cardArt(it) }
         val data = EventLoadData(
             feed = feed,
             id = eventId,
@@ -152,14 +197,12 @@ class StreamCornerProvider : MainAPI() {
         val now = System.currentTimeMillis() / 1000
         if (request.data == "live" || request.data == "upcoming") {
             val events = allEvents()
-            val live = events.filter { (_, ev) ->
-                val start = ev.startTime ?: ev.timestamp
-                start == null || start <= now
-            }.sortedByDescending { (_, ev) -> ev.startTime ?: ev.timestamp ?: Long.MAX_VALUE }
-            val upcoming = events.filter { (_, ev) ->
-                val start = ev.startTime ?: ev.timestamp
-                start != null && start > now
-            }.sortedBy { (_, ev) -> ev.startTime ?: ev.timestamp ?: Long.MAX_VALUE }
+            val live = events.filter { (_, ev) -> isLiveEvent(ev, now) }
+                .sortedByDescending { (_, ev) -> eventStart(ev) ?: 0L }
+            val upcoming = events.mapNotNull { (feed, ev) ->
+                val start = eventStart(ev)
+                if (start != null && start > now + 120) feed to ev else null
+            }.sortedBy { (_, ev) -> eventStart(ev) ?: 0L }
             return if (request.data == "live") {
                 pageOf(request.name, live, page) { (feed, ev) -> ev.toSearch(feed) }
             } else {
@@ -174,14 +217,14 @@ class StreamCornerProvider : MainAPI() {
             Log.d("StreamCorner", "${request.name} skipped: ${e.message}")
             return null
         }
-        val sorted = events.sortedByDescending { it.startTime ?: it.timestamp ?: Long.MAX_VALUE }
+        val sorted = events.sortedByDescending { eventStart(it) ?: 0L }
         return pageOf(request.name, sorted, page) { it.toSearch(feed) }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.lowercase()
         return allEvents().mapNotNull { (feed, ev) ->
-            val hit = ev.name?.lowercase()?.contains(q) == true ||
+            val hit = ev.eventName?.lowercase()?.contains(q) == true ||
                 ev.category?.lowercase()?.contains(q) == true ||
                 ev.league?.lowercase()?.contains(q) == true ||
                 ev.homeTeam?.lowercase()?.contains(q) == true ||
@@ -225,6 +268,12 @@ class StreamCornerProvider : MainAPI() {
                         entries.add(StreamEntry(label, "embed", streamUrl))
                     }
                 }
+            }
+        }
+        // the slingtv channels answer with one embed page instead of a list
+        if (entries.isEmpty()) {
+            detail?.embedUrl?.takeIf { it.isNotBlank() }?.let {
+                entries.add(StreamEntry(detail.name?.takeIf { n -> n.isNotBlank() } ?: "Stream", "embed", it))
             }
         }
 
@@ -320,12 +369,78 @@ class StreamCornerProvider : MainAPI() {
     private fun isRawStreamUrl(url: String): Boolean =
         url.endsWith(".ts") || url.contains(".ts?", true) || url.contains(".flv", true)
 
+    // the embed pages wrap their player in an iframe and bury it under popunder
+    // and click banner scripts that happily crash a headless webview, fetching
+    // the page first and handing the webview a cleaned copy of the real player
+    // avoids all of that, and the original page stays the fallback
+    private class EmbedTarget(val url: String, val html: String?)
+
+    private val adHosts = listOf(
+        "jkjk.sportsonline.website", "sportsonline.website", "intellipopup.com",
+        "adexchangerapid.com", "cdn4ads.com", "dtscout.com", "histats.com",
+        "amung.us", "disable-devtool.com"
+    )
+
+    private fun isAdUrl(url: String): Boolean {
+        if (url.contains("jsdelivr.net/gh/senbonzakura000")) return true
+        val host = try {
+            java.net.URI(url).host
+        } catch (e: Exception) {
+            return false
+        } ?: return false
+        return adHosts.any { host == it || host.endsWith(".$it") }
+    }
+
+    private fun emptyResponse(): WebResourceResponse =
+        WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+
+    private fun stripAdScripts(html: String): String =
+        html.replace(
+            Regex("""<script[^>]*src="[^"]*(?:jsdelivr\.net/gh/senbonzakura000|disable-devtool)[^"]*"[^>]*>\s*</script>"""),
+            ""
+        )
+
+    private suspend fun preparePlayer(embedUrl: String): EmbedTarget? {
+        return try {
+            val res = app.get(
+                embedUrl,
+                headers = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/"),
+                timeout = 12L
+            )
+            if (!res.isSuccessful) return null
+            val iframe = Regex("""<iframe[^>]+src="(https?://[^"]+)"""")
+                .find(res.text)?.groupValues?.get(1) ?: return null
+            val player = app.get(
+                iframe,
+                headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "Referer" to (originOf(embedUrl)?.plus("/") ?: "$mainUrl/")
+                ),
+                timeout = 12L
+            )
+            if (!player.isSuccessful) return null
+            val body = player.text
+            val looksLikePlayer = body.contains("_econfig") || body.contains("clappr") ||
+                body.contains("oplayer") || body.contains("bitmovin") || body.contains("mpegts")
+            if (!looksLikePlayer) return null
+            val cleaned = stripAdScripts(body)
+                .replace(Regex("""if\(window==window\.top\)\{document\.location="[^"]*"\}"""), "")
+            EmbedTarget(iframe, cleaned)
+        } catch (e: Exception) {
+            Log.d("StreamCorner", "player shortcut failed: ${e.message}")
+            null
+        }
+    }
+
     // players start muted since a webview without a user gesture is only
     // allowed to autoplay silent video, the click wakes the ones that wait
-    // for interaction
+    // for interaction and the banner teardown clears the overlays the embed
+    // pages put between the user and the stream
     private val NUDGE = """
         (function() {
             try {
+                var b = document.getElementById('html1'); if (b) b.remove();
+                var b2 = document.getElementById('button1'); if (b2) b2.remove();
                 var v = document.querySelector('video');
                 if (v) { v.muted = true; var p = v.play(); if (p && p.catch) p.catch(function() {}); }
                 var c = document.querySelector('#player, .player, .jwplayer, .oplayer, .video-container, iframe');
@@ -336,6 +451,7 @@ class StreamCornerProvider : MainAPI() {
 
     private suspend fun resolveEmbed(embedUrl: String): String? {
         val ctx = StreamCornerApi.context() ?: return null
+        val target = preparePlayer(embedUrl) ?: EmbedTarget(embedUrl, null)
         return withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { cont ->
                 val captured = AtomicBoolean(false)
@@ -376,7 +492,8 @@ class StreamCornerProvider : MainAPI() {
                                 request: WebResourceRequest
                             ): WebResourceResponse? {
                                 val url = request.url.toString()
-                                if (!captured.get() && url.startsWith("http") && url != embedUrl) {
+                                if (isAdUrl(url)) return emptyResponse()
+                                if (!captured.get() && url.startsWith("http") && url != target.url) {
                                     if (isPlaylistUrl(url)) {
                                         Handler(Looper.getMainLooper()).post { finish(url) }
                                     } else if (rawCandidate.get() == null &&
@@ -395,7 +512,11 @@ class StreamCornerProvider : MainAPI() {
                                 }, 2500)
                             }
                         }
-                        loadUrl(embedUrl, mapOf("Referer" to "https://streamcorner.st/"))
+                        if (target.html != null) {
+                            loadDataWithBaseURL(target.url, target.html, "text/html", "utf-8", null)
+                        } else {
+                            loadUrl(target.url, mapOf("Referer" to "$mainUrl/"))
+                        }
                     }
                     // a playlist answers fast, a bare mpegts stream only shows
                     // itself as one long download so the wait covers both

@@ -54,7 +54,7 @@ object StreamCornerApi {
         "extra003" to "Extra 003",
         "extra004" to "Extra 004",
         "channels" to "Channels",
-        "slingtv" to "SlingTV",
+        "slingtv_channels" to "SlingTV",
         "admin" to "24/7 Streams"
     )
 
@@ -307,8 +307,17 @@ data class ScEvent(
     @JsonProperty("timestamp") val timestamp: Long? = null,
     @JsonProperty("start_time") val startTime: Long? = null,
     @JsonProperty("end_time") val endTime: Long? = null,
-    @JsonProperty("time_et") val timeEt: String? = null
-)
+    @JsonProperty("time_et") val timeEt: String? = null,
+    // the slingtv feed names its channels differently
+    @JsonProperty("channel_id") val channelId: String? = null,
+    @JsonProperty("channel_name") val channelName: String? = null,
+    @JsonProperty("channel_logo") val channelLogo: String? = null
+) {
+    val eventId: String? get() = id ?: channelId
+    val eventName: String? get() = name ?: channelName
+    val posterUrl: String? get() = poster?.takeIf { it.isNotBlank() }
+        ?: channelLogo?.takeIf { it.isNotBlank() }
+}
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class ScStream(
@@ -324,5 +333,7 @@ data class ScDetail(
     @JsonProperty("event_name") val name: String? = null,
     @JsonProperty("description") val description: String? = null,
     @JsonProperty("poster") val poster: String? = null,
-    @JsonProperty("streams") val streams: List<ScStream>? = null
+    @JsonProperty("streams") val streams: List<ScStream>? = null,
+    // the slingtv channels carry one embed instead of a stream list
+    @JsonProperty("embed_url") val embedUrl: String? = null
 )
