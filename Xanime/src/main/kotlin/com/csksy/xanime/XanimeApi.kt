@@ -115,9 +115,11 @@ internal object XanimeApi {
             }
         }
 
+    // the backend binds graphql variables by exact name, a $SELECT declaration
+    // paired with a "select" key silently drops the whole select and serves a
+    // default browse list instead, so the names below must stay lowercase
     private suspend fun query(query: String, variables: JSONObject): JSONObject? {
         val payload = seal(JSONObject().put("query", query).put("variables", variables))
-        // a transient network hiccup should not truncate an episode list mid way
         var result = post(payload) ?: post(payload)
         if (result == null) result = postViaKiller(payload)
         if (result == null) return null
@@ -135,7 +137,8 @@ internal object XanimeApi {
         val title: String,
         val poster: String?,
         val year: Int?,
-        val types: List<String>
+        val types: List<String>,
+        val audio: Set<String>
     )
 
     class EpisodeEntry(
@@ -155,8 +158,8 @@ internal object XanimeApi {
     )
 
     private const val SEARCH_QUERY = """
-    query get_q27(${'$'}SELECT: SearchAnime_Select) {
-      get_q27(select: ${'$'}SELECT) {
+    query get_q27(${'$'}select: SearchAnime_Select) {
+      get_q27(select: ${'$'}select) {
         items {
           id
           data {
@@ -165,6 +168,7 @@ internal object XanimeApi {
             urlCover600
             info_meta_type
             info_meta_year
+            info_sou_types
           }
         }
       }
@@ -183,15 +187,18 @@ internal object XanimeApi {
           info_meta_type
           info_meta_genre
           info_meta_scores
+          info_meta_status
           info_filmdesc
+          info_sou_types
         }
       }
     }
     """
 
     private const val EPISODES_QUERY = """
-    query get_q01(${'$'}SELECT: AnimesEpisodesList_Select) {
-      get_q01(select: ${'$'}SELECT) {
+    query get_q01(${'$'}select: AnimesEpisodesList_Select) {
+      get_q01(select: ${'$'}select) {
+        paging { total pages page init size }
         items {
           id
           data {
@@ -206,8 +213,8 @@ internal object XanimeApi {
     """
 
     private const val SOURCES_QUERY = """
-    query get_q07(${'$'}SELECT: Episodes_Select) {
-      get_q07(select: ${'$'}SELECT) {
+    query get_q07(${'$'}select: Episodes_Select) {
+      get_q07(select: ${'$'}select) {
         id
         data {
           ep_id
@@ -248,7 +255,9 @@ internal object XanimeApi {
                     title = title,
                     poster = data.optString("urlCover600").takeIf { it.isNotBlank() },
                     year = data.optString("info_meta_year").takeIf { it.isNotBlank() }?.toIntOrNull(),
-                    types = data.optJSONArray("info_meta_type").toStringList()
+                    types = data.optJSONArray("info_meta_type").toStringList(),
+                    audio = data.optJSONArray("info_sou_types").toStringList()
+                        .map { it.lowercase() }.toSet()
                 )
             )
         }
@@ -273,6 +282,8 @@ internal object XanimeApi {
         return select
     }
 
+    // field_popularity, field_year and field_title currently echo the default
+    // update order on the backend, only the three sorts below actually reorder
     suspend fun browse(
         sortby: String? = null,
         genre: String? = null,
@@ -313,6 +324,8 @@ internal object XanimeApi {
         val types: List<String>,
         val genres: List<String>,
         val score: Int?,
+        val status: String?,
+        val audio: Set<String>,
         val description: String?
     )
 
@@ -329,37 +342,39 @@ internal object XanimeApi {
             types = data.optJSONArray("info_meta_type").toStringList(),
             genres = data.optJSONArray("info_meta_genre").toStringList(),
             score = data.optInt("info_meta_scores").takeIf { it > 0 },
+            status = data.optString("info_meta_status").takeIf { it.isNotBlank() },
+            audio = data.optJSONArray("info_sou_types").toStringList()
+                .map { it.lowercase() }.toSet(),
             description = data.optString("info_filmdesc").takeIf { it.isNotBlank() }
         )
     }
 
-    // paging.total is not reliable on this backend, the list simply runs dry
+    // paging.pages is accurate, the first response tells how many more pages to
+    // pull so long shows do not need a page by page walk
     suspend fun episodes(aniId: String): List<EpisodeEntry> {
-        val collected = ArrayList<EpisodeEntry>()
-        var page = 1
-        while (true) {
+        val first = episodePage(aniId, 1) ?: return emptyList()
+        if (first.pages <= 1) return first.episodes
+
+        val collected = ArrayList<EpisodeEntry>(first.episodes)
+        var page = 2
+        while (page <= first.pages) {
+            val end = minOf(page + 3, first.pages)
             val batch = coroutineScope {
-                (0 until 3).map { offset ->
-                    async { episodePage(aniId, page + offset) }
-                }.awaitAll()
+                (page..end).map { async { episodePage(aniId, it) } }.awaitAll()
             }
-            if (batch.all { it.isEmpty() }) break
-            collected.addAll(batch.flatten())
-            page += 3
-            if (batch.any { it.isEmpty() }) break
+            batch.forEach { if (it != null) collected.addAll(it.episodes) }
+            page = end + 1
         }
+
         val seen = HashSet<String>()
         return collected.filter { seen.add(it.epId) }.sortedBy { it.index }
     }
 
-    private suspend fun episodePage(aniId: String, page: Int): List<EpisodeEntry> {
-        val select = JSONObject()
-            .put("ani_id", aniId)
-            .put("init", EP_PAGE_SIZE)
-            .put("size", EP_PAGE_SIZE)
-            .put("page", page)
-        val node = query(EPISODES_QUERY, JSONObject().put("select", select)) ?: return emptyList()
-        val items = node.optJSONArray("items") ?: return emptyList()
+    private class EpisodePage(val pages: Int, val episodes: List<EpisodeEntry>)
+
+    private fun parseEpisodePage(node: JSONObject?): EpisodePage? {
+        node ?: return null
+        val items = node.optJSONArray("items") ?: return null
         val out = ArrayList<EpisodeEntry>(items.length())
         for (i in 0 until items.length()) {
             val entry = items.optJSONObject(i) ?: continue
@@ -383,7 +398,18 @@ internal object XanimeApi {
                 )
             )
         }
-        return out
+        val paging = node.optJSONObject("paging")
+        val pages = paging?.optInt("pages")?.takeIf { it > 0 } ?: 1
+        return EpisodePage(pages, out)
+    }
+
+    private suspend fun episodePage(aniId: String, page: Int): EpisodePage? {
+        val select = JSONObject()
+            .put("ani_id", aniId)
+            .put("init", EP_PAGE_SIZE)
+            .put("size", EP_PAGE_SIZE)
+            .put("page", page)
+        return parseEpisodePage(query(EPISODES_QUERY, JSONObject().put("select", select)))
     }
 
     suspend fun sources(epId: String): List<Source> {
@@ -433,8 +459,8 @@ internal object XanimeApi {
         }
     }
 
-    // dub entries carry the sub track list but the cdn never has those files,
-    // probing one track tells a real subtitle set apart from a dead one
+    // some dub entries carry a subtitle list the cdn never actually hosts, one
+    // probe on the first track keeps those dead files away from the player
     fun tracksAreReal(source: Source): Boolean {
         val first = source.tracks.firstOrNull() ?: return true
         return fetchText(first.url)?.contains("WEBVTT") == true

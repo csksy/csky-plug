@@ -20,9 +20,9 @@ class Xanime : MainAPI() {
         "sort=field_update" to "Latest Updates",
         "sort=field_date_create" to "Recently Added",
         "sort=field_score" to "Top Rated",
-        "sort=field_popularity" to "Popular",
         "type=Movie" to "Movies",
         "type=OVA" to "OVA",
+        "type=ONA" to "ONA",
         "status=currently_airing" to "Currently Airing",
         "audio=dub" to "Dubbed",
         "genre=action" to "Action",
@@ -36,7 +36,9 @@ class Xanime : MainAPI() {
 
     private fun tvTypeOf(types: List<String>): TvType = when {
         types.any { it.equals("Movie", true) } -> TvType.AnimeMovie
-        types.any { it.equals("OVA", true) || it.equals("ONA", true) || it.equals("Special", true) } -> TvType.OVA
+        types.any {
+            it.equals("OVA", true) || it.equals("ONA", true) || it.equals("Special", true)
+        } -> TvType.OVA
         else -> TvType.Anime
     }
 
@@ -44,6 +46,12 @@ class Xanime : MainAPI() {
         return newAnimeSearchResponse(entry.title, entry.aniId, tvTypeOf(entry.types)) {
             this.posterUrl = entry.poster
             this.year = entry.year
+            val hasSub = entry.audio.isEmpty() ||
+                entry.audio.any { it == "sub" || it == "raw" }
+            addDubStatus(
+                dubExist = entry.audio.any { it == "dub" },
+                subExist = hasSub
+            )
         }
     }
 
@@ -83,12 +91,14 @@ class Xanime : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val aniId = url.substringAfter('/').takeIf { it.isNotBlank() } ?: return null
+        // cloudstream hands over the id as a full mainUrl link, only the tail
+        // segment is the ani id
+        val aniId = url.substringBefore('?').substringAfterLast('/')
+            .takeIf { it.isNotBlank() } ?: return null
         val detail = XanimeApi.detail(aniId) ?: return null
-        val tvType = tvTypeOf(detail.types)
 
         val episodes = XanimeApi.episodes(aniId)
-        val isSingle = episodes.size <= 1 || tvType == TvType.AnimeMovie
+        val siteType = tvTypeOf(detail.types)
 
         val subEps = ArrayList<Episode>()
         val dubEps = ArrayList<Episode>()
@@ -97,21 +107,23 @@ class Xanime : MainAPI() {
             val hasDub = ep.audio.any { it == "dub" }
             val hasRaw = ep.audio.any { it == "raw" }
             val number = if (ep.index > 0) ep.index else subEps.size + dubEps.size + 1
+            val single = episodes.size == 1
             if (hasSub || (!hasDub && hasRaw)) {
-                val name = when {
-                    isSingle -> "Sub"
-                    hasSub -> ep.title
-                    else -> "${ep.title} (Raw)"
-                }
-                subEps.add(newEpisode(episodeData(ep.epId, if (hasSub) "sub" else "raw")) {
+                val audio = if (hasSub) "sub" else "raw"
+                subEps.add(newEpisode(episodeData(ep.epId, audio)) {
                     this.episode = number
-                    this.name = name
+                    this.name = when {
+                        single && audio == "sub" -> "Sub"
+                        single -> "Raw"
+                        audio == "sub" -> ep.title
+                        else -> "${ep.title} (Raw)"
+                    }
                 })
             }
             if (hasDub) {
                 dubEps.add(newEpisode(episodeData(ep.epId, "dub")) {
                     this.episode = number
-                    this.name = if (isSingle) "Dub" else ep.title
+                    this.name = if (single) "Dub" else ep.title
                 })
             }
         }
@@ -119,12 +131,26 @@ class Xanime : MainAPI() {
         val tags = ArrayList<String>()
         detail.genres.forEach { tags.add(it.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }) }
 
+        // the dub and sub chips only render on series pages, a movie carrying
+        // both tracks is presented as a single episode series so the switcher
+        // stays reachable, single audio movies keep the real movie layout
+        val tvType = if (siteType == TvType.AnimeMovie && dubEps.isNotEmpty()) {
+            TvType.Anime
+        } else {
+            siteType
+        }
+
         return newAnimeLoadResponse(detail.title, aniId, tvType) {
             this.posterUrl = detail.poster
             this.backgroundPosterUrl = detail.background
             this.plot = detail.description
             this.tags = tags
             this.year = detail.year
+            this.showStatus = when (detail.status) {
+                "currently_airing" -> ShowStatus.Ongoing
+                "finished_airing" -> ShowStatus.Completed
+                else -> null
+            }
             detail.score?.let { this.score = Score.from10(it / 10f) }
             addEpisodes(DubStatus.Subbed, subEps)
             if (dubEps.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEps)
@@ -137,13 +163,19 @@ class Xanime : MainAPI() {
         else -> "RAW"
     }
 
+    private fun serverName(raw: String): String =
+        if (raw.all { it.isDigit() }) "Server $raw" else raw
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val (epId, audio) = parseEpisodeData(data) ?: return false
+        // cloudstream can glue mainUrl in front of non http ids, drop it so the
+        // epId|audio pair is found
+        val clean = data.removePrefix("$mainUrl/").removePrefix("/")
+        val (epId, audio) = parseEpisodeData(clean) ?: return false
         if (epId.isBlank()) return false
         val sources = XanimeApi.sources(epId).filter { it.type == audio }
         if (sources.isEmpty()) return false
@@ -159,7 +191,8 @@ class Xanime : MainAPI() {
             if (!master.contains("#EXTM3U")) continue
 
             val count = sameNameCount.merge(source.name, 1, Int::plus) ?: 1
-            val nameLabel = if (count > 1) "${source.name} $count" else source.name
+            val base = serverName(source.name)
+            val nameLabel = if (count > 1) "$base $count" else base
             val label = "$nameLabel (${audioLabel(audio)})"
 
             callback.invoke(
