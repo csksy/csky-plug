@@ -26,7 +26,8 @@ object SenshiVhost {
     private const val GATEWAY = "https://s.vidcloud.se"
     private const val BOOTSTRAP_PATH = "/i/73918463"
     private const val SOURCES_PATH = "/q7m4x9"
-    private const val RUNTIME_INFO = "vhost/runtime/56a572f99f"
+    private const val RUNTIME_INFO = "vhost/runtime/355afc0cfa"
+    private const val CHUNK_NAME = "pOXA"
     private const val ORIGIN = "https://senshi.to"
 
     private val ua =
@@ -96,7 +97,7 @@ object SenshiVhost {
             Log.d(TAG, "vhost sources response carries no chunk")
             return null
         }
-        if (!matches(chunk, 0, "SKDQ") || chunk[4].toInt() != 1) {
+        if (chunk.size < 17 || chunk[4].toInt() != 1) {
             Log.d(TAG, "vhost sources response not recognized")
             return null
         }
@@ -140,7 +141,7 @@ object SenshiVhost {
             Log.d(TAG, "vhost bootstrap carries no chunk")
             return null
         }
-        if (chunk.size < 23 || !matches(chunk, 0, "BBZC") || chunk[4].toInt() != 1) {
+        if (chunk.size < 23 || chunk[4].toInt() != 1) {
             Log.d(TAG, "vhost bootstrap not recognized")
             return null
         }
@@ -207,10 +208,10 @@ object SenshiVhost {
         return out.toByteArray()
     }
 
-    // [RNRG] [version, sessionFlag, 0, 0] [epoch u64] [pubLen u16] [pub] [capLen u16] [cap]
+    // [RRNI] [version, sessionFlag, 0, 0] [epoch u64] [pubLen u16] [pub] [capLen u16] [cap]
     private fun buildRequestHeader(session: Session, capability: ByteArray): ByteArray {
         val out = ByteArrayOutputStream()
-        out.write("RNRG".toByteArray(Charsets.US_ASCII))
+        out.write("RRNI".toByteArray(Charsets.US_ASCII))
         out.write(byteArrayOf(1, 0, 0, 0))
         out.write(packU64(session.epoch))
         out.write(packU16(session.publicKey.size))
@@ -267,15 +268,26 @@ object SenshiVhost {
     private fun pngChunk(png: ByteArray): ByteArray? {
         if (png.size < 12 || !matches(png, 1, "PNG")) return null
         var pos = 8
+        var fallback: ByteArray? = null
         while (pos + 12 <= png.size) {
             val len = readU32(png, pos)
             if (len < 0 || pos + 12 + len > png.size) return null
-            if (matches(png, pos + 4, "pZLU")) {
+            if (matches(png, pos + 4, CHUNK_NAME)) {
                 return png.copyOfRange(pos + 8, pos + 8 + len)
+            }
+            // the gateway renames its metadata chunk now and then, it stays the only
+            // chunk in the image besides the standard png ones
+            if (fallback == null && !isStandardChunk(png, pos + 4)) {
+                fallback = png.copyOfRange(pos + 8, pos + 8 + len)
             }
             pos += 12 + len
         }
-        return null
+        return fallback
+    }
+
+    private fun isStandardChunk(data: ByteArray, offset: Int): Boolean {
+        val standard = arrayOf("IHDR", "PLTE", "IDAT", "IEND", "tRNS", "gAMA", "pHYs", "tEXt", "zTXt", "iTXt", "bKGD", "cHRM", "sRGB", "sBIT", "hIST", "tIME")
+        return standard.any { matches(data, offset, it) }
     }
 
     private fun matches(data: ByteArray, offset: Int, text: String): Boolean {

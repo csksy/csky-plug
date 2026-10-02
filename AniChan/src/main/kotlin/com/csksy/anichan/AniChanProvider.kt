@@ -208,9 +208,12 @@ class AniChanProvider : MainAPI() {
             val label = serverLabel(server)
             if (server.type.equals("embed", true) && !server.embed.isNullOrBlank()) {
                 if (server.embed!!.contains("vidhawk")) {
-                    val vidServer = Regex("[?&]server=([^&]+)").find(server.embed!!)?.groupValues?.get(1)
+                    val embedUrl = server.embed!!
+                    val vidServer = Regex("[?&]server=([^&]+)").find(embedUrl)?.groupValues?.get(1)
                         ?: "kari"
-                    for (link in VidhawkResolver.resolveAll(ref.anilistId, ref.ep, category, vidServer)) {
+                    val embedAudio = Regex("/embed/ani/\\d+/\\d+/([a-z]+)/").find(embedUrl)?.groupValues?.get(1)
+                        ?: category
+                    for (link in VidhawkResolver.resolveAll(ref.anilistId, ref.ep, embedAudio, vidServer)) {
                         callback.invoke(
                             newExtractorLink(name, "${link.label}", link.src, type = ExtractorLinkType.M3U8) {
                                 this.headers = linkHeaders
