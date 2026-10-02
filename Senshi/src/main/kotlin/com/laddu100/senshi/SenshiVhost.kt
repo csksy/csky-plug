@@ -18,11 +18,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-// s.vidcloud.se dropped its plain json sources endpoint and moved to an
-// envelope protocol. a fixed bootstrap path hands out an ecdh point and a
-// challenge hidden inside a 1x1 png chunk, every source request is sealed
-// with aes-gcm over that handshake and the answer comes back as another png
-// whose inner body is wrapped in a xorshift stream
+// s.vidcloud.se moved its sources endpoint behind an ecdh handshake carried in png chunks
 object SenshiVhost {
 
     private const val TAG = "Senshi"
@@ -53,8 +49,7 @@ object SenshiVhost {
 
     private class Bootstrap(val epoch: Long, val publicKey: ByteArray, val challenge: ByteArray)
 
-    // one attempt, the caller owns the retry pacing since the gateway and
-    // the cdn edges both like to answer 403 when asked too quickly
+    // single attempt, the caller owns retry pacing to avoid gateway 403s
     suspend fun fetchSources(sourceId: Int): String? {
         val boot = fetchBootstrap() ?: return null
         val session = deriveKey(boot) ?: return null

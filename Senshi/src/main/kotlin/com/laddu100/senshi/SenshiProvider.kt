@@ -60,9 +60,7 @@ class SenshiProvider : MainAPI() {
         "Referer" to "$mainUrl/browse"
     )
 
-    // mirrors the header set the site player sends on cross-origin XHRs to the
-    // stream api and cdn, the waf there rejects plain requests without them
-    // (the sources endpoint started requiring Origin, same pattern as the cdn)
+    // the waf rejects cross-origin player requests without the full browser header set
     private val cdnHeaders = mapOf(
         "User-Agent" to ua,
         "Accept" to "*/*",
@@ -203,8 +201,7 @@ class SenshiProvider : MainAPI() {
         var hasSub = (anime.sub_count ?: 0) > 0
         var hasDub = (anime.dub_count ?: 0) > 0
         if (!hasSub && !hasDub && sorted.isNotEmpty()) {
-            // counts can be stale on freshly uploaded entries, fall back to the
-            // first episode's embed list
+            // counts can be stale on fresh uploads, probe the first episode
             hasSub = true
             probeEmbeds(malId, sorted.first().ep_id!!)?.let { statuses ->
                 hasSub = statuses.any { it.isSub() }
@@ -233,9 +230,7 @@ class SenshiProvider : MainAPI() {
         }
     }
 
-    // dub episodes normally run from episode 1 up to dub_count, but on ongoing
-    // shows the count can lag behind the episode list, so the last few trailing
-    // episodes are checked for dub embeds before cutting the list short
+    // dub_count can lag behind the episode list on ongoing shows, trailing episodes get probed
     private suspend fun buildDubEpisodes(
         malId: Int,
         episodes: List<SenshiEpisode>,
@@ -291,8 +286,7 @@ class SenshiProvider : MainAPI() {
         val matching = embeds.filter { if (wantDub) it.isDub() else it.isSub() }
             .ifEmpty { embeds }
 
-        // sub and dub entries usually point at the same multi-audio stream, so
-        // the source api is only hit once per unique id
+        // sub and dub entries usually share one multi-audio stream, hit each id once
         val sourceIds = matching.mapNotNull { it.remote_source_id }.distinct()
         if (sourceIds.isEmpty()) {
             Log.e(TAG, "loadLinks: embeds carry no source ids")
@@ -323,9 +317,7 @@ class SenshiProvider : MainAPI() {
         return found
     }
 
-    // stream playlists come back as plain hls masters now, older ones may
-    // still arrive as EM3U8v1 aes-gcm payloads, both are served through a
-    // rewriting proxy so every link can pin one resolution and one audio track
+    // masters arrive as plain hls or EM3U8v1 payloads, the proxy pins one resolution and audio track per link
     private suspend fun emitStreamLinks(
         master: String,
         modeLabel: String,
@@ -333,8 +325,7 @@ class SenshiProvider : MainAPI() {
         apiQuality: String?,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // the cdn edges answer 403 when a burst of playlist fetches lands at
-        // once, so give it a couple of quiet retries before giving up
+        // cdn edges answer 403 on burst fetches, retry quietly a couple of times
         var masterText: String? = null
         for (attempt in 0..2) {
             if (attempt > 0) {
@@ -472,8 +463,7 @@ class SenshiProvider : MainAPI() {
         }
     }
 
-    // movie types hide the sub/dub switcher in the app, so dual-audio movies are
-    // typed as regular anime to keep both tracks reachable
+    // dual-audio movies are typed as anime so the sub/dub switcher stays reachable
     private fun SenshiAnime.tvType(dualAudio: Boolean = false): TvType = when (type?.uppercase()) {
         "MOVIE" -> if (dualAudio) TvType.Anime else TvType.AnimeMovie
         "OVA", "ONA", "SPECIAL", "MUSIC" -> TvType.OVA
@@ -516,9 +506,7 @@ class SenshiProvider : MainAPI() {
         return null
     }
 
-    // dub mode keeps the dub captions (they match the english audio), sub mode
-    // keeps the regular translation tracks; each falls back to the other set
-    // when the stream only carries one kind
+    // dub mode keeps dub captions, sub mode the translation tracks, with fallback to the other set
     private fun VidcloudSource.subtitlesFor(wantDub: Boolean): List<VidcloudTrack> {
         val usable = tracks.filter { it.trackLabel() != null }
         val dub = usable.filter { it.isDubTrack() }

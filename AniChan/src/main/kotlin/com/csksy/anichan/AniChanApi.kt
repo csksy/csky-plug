@@ -4,17 +4,15 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
-import kotlinx.coroutines.delay
 
 object AniChanApi {
 
-    const val MAIN_URL = "https://anichan.net"
+    const val MAIN_URL = "https://anichan.to"
     private const val TAG = "AniChan"
-    private const val SESSION_ATTEMPTS = 4
 
     private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
-    private const val USER_AGENT =
+    const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
     val BASE_HEADERS = mapOf(
@@ -26,6 +24,7 @@ object AniChanApi {
         try {
             mapper.readValue(text, T::class.java)
         } catch (e: Exception) {
+            Log.e(TAG, "parse failed: ${e.message}")
             null
         }
 
@@ -33,6 +32,7 @@ object AniChanApi {
         val resp = app.get(url, headers = BASE_HEADERS)
         if (resp.isSuccessful) resp.text else null
     } catch (e: Exception) {
+        Log.e(TAG, "GET $url failed: ${e.message}")
         null
     }
 
@@ -59,49 +59,6 @@ object AniChanApi {
     suspend fun watchInfo(id: Int): WatchInfo? {
         val body = getJson("$MAIN_URL/api/watch/episodes?anilistId=$id") ?: return null
         return parse<WatchInfo>(body)
-    }
-
-    // The watch session cookie is single use: the server answers the first
-    // /api/watch/servers call and 401s the rest, so every attempt mints a
-    // fresh one. The site does the same from the browser.
-    private suspend fun newWatchSession(): String? {
-        return try {
-            val resp = app.post(
-                "$MAIN_URL/api/watch/session",
-                headers = BASE_HEADERS + mapOf("Origin" to MAIN_URL),
-                json = mapOf("token" to "")
-            )
-            if (!resp.isSuccessful) return null
-            for (cookie in resp.headers.values("set-cookie")) {
-                if (cookie.startsWith("anichan_ws=")) {
-                    return cookie.substringBefore(";").substringAfter("anichan_ws=")
-                }
-            }
-            null
-        } catch (e: Exception) {
-            Log.d(TAG, "watch session failed: ${e.message}")
-            null
-        }
-    }
-
-    suspend fun watchServers(anilistId: Int, ep: Int, category: String): List<Server> {
-        val url = "$MAIN_URL/api/watch/servers?anilistId=$anilistId&ep=$ep&category=$category"
-        repeat(SESSION_ATTEMPTS) {
-            val cookie = newWatchSession() ?: return emptyList()
-            try {
-                val resp = app.get(
-                    url,
-                    headers = BASE_HEADERS + mapOf("Cookie" to "anichan_ws=$cookie")
-                )
-                if (resp.isSuccessful) {
-                    return parse<ServersEnvelope>(resp.text)?.servers ?: emptyList()
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "watch servers failed: ${e.message}")
-            }
-            delay(400)
-        }
-        return emptyList()
     }
 
     fun urlEncode(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")

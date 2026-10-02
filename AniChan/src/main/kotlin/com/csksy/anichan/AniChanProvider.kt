@@ -1,5 +1,6 @@
 package com.csksy.anichan
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageResponse
@@ -22,11 +23,13 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import com.raghav.donation.DonationManager
 
 class AniChanProvider : MainAPI() {
 
@@ -52,6 +55,7 @@ class AniChanProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse? {
+        DonationManager.checkAndShow()
         val items = when (request.data) {
             "trending" -> AniChanApi.trending(page)
             "airing" -> AniChanApi.airing(page)
@@ -91,16 +95,24 @@ class AniChanProvider : MainAPI() {
         val epNumbers = collectEpisodeNumbers(anime, info)
         if (epNumbers.isEmpty()) return null
 
-        val tvType = if (anime.format == "MOVIE") TvType.AnimeMovie else TvType.Anime
+        // the watch endpoint is the dub source of truth but can lie on a cold cache, the selfhost dub list covers that
+        val dubAvailable = info?.dubAvailable == true ||
+            anime.selfhost?.cachedDub?.isNotEmpty() == true
+
+        val subEps = epNumbers.map { it.toEpisode(anilistId, false, epMeta) }
+        val dubEps = if (dubAvailable) epNumbers.map { it.toEpisode(anilistId, true, epMeta) } else emptyList()
+
+        // dual audio movies are typed as anime so the sub/dub switcher stays reachable
+        val tvType = when {
+            anime.format == "MOVIE" && dubEps.isNotEmpty() -> TvType.Anime
+            anime.format == "MOVIE" -> TvType.AnimeMovie
+            else -> TvType.Anime
+        }
         val showStatus = when (anime.status) {
             "RELEASING" -> ShowStatus.Ongoing
             "FINISHED" -> ShowStatus.Completed
             else -> null
         }
-        val dubAvailable = info?.dubAvailable == true
-
-        val subEps = epNumbers.map { it.toEpisode(anilistId, false, epMeta) }
-        val dubEps = if (dubAvailable) epNumbers.map { it.toEpisode(anilistId, true, epMeta) } else emptyList()
 
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = anime.poster
@@ -116,9 +128,7 @@ class AniChanProvider : MainAPI() {
         }
     }
 
-    // The episode grid mirrors the site: episodes already aired plus any
-    // self hosted ones, so currently airing shows do not list unaired
-    // episodes the player cannot load yet.
+    // only list episodes that already aired, the player cannot load unaired ones
     private fun collectEpisodeNumbers(anime: CatalogItem, info: WatchInfo?): List<Int> {
         val today = todayUtc()
         val eps = sortedSetOf<Int>()
@@ -173,15 +183,22 @@ class AniChanProvider : MainAPI() {
         val ref = try {
             parseJson<EpisodeRef>(data)
         } catch (e: Exception) {
+            Log.e("AniChan", "bad episode data: ${e.message}")
             null
         } ?: return false
         val category = if (ref.isDub) "dub" else "sub"
 
-        val servers = AniChanApi.watchServers(ref.anilistId, ref.ep, category)
+        val raw = AniChanWebView.fetchServers(ref.anilistId, ref.ep, category) ?: return false
+        val servers = try {
+            parseJson<ServersEnvelope>(raw).servers ?: emptyList()
+        } catch (e: Exception) {
+            Log.e("AniChan", "bad servers payload: ${e.message}")
+            emptyList()
+        }
         if (servers.isEmpty()) return false
 
         val linkHeaders = mapOf(
-            "User-Agent" to AniChanApi.BASE_HEADERS["User-Agent"]!!,
+            "User-Agent" to AniChanApi.USER_AGENT,
             "Referer" to "$mainUrl/"
         )
         val seenSubs = HashSet<String>()
@@ -189,20 +206,23 @@ class AniChanProvider : MainAPI() {
 
         for (server in servers) {
             val label = serverLabel(server)
-            if (server.type == "embed") {
-                val embed = server.embed ?: continue
-                val vidServer = Regex("[?&]server=([^&]+)").find(embed)?.groupValues?.get(1)
-                    ?: "kari"
-                val result = VidhawkResolver.resolve(ref.anilistId, ref.ep, category, vidServer)
-                    ?: continue
-                val track = result.trackFor(category) ?: continue
-                val src = track.src?.takeIf { it.startsWith("http") } ?: continue
-                callback.invoke(
-                    newExtractorLink(name, label, src, type = ExtractorLinkType.M3U8) {
-                        this.headers = linkHeaders
+            if (server.type.equals("embed", true) && !server.embed.isNullOrBlank()) {
+                if (server.embed!!.contains("vidhawk")) {
+                    val vidServer = Regex("[?&]server=([^&]+)").find(server.embed!!)?.groupValues?.get(1)
+                        ?: "kari"
+                    for (link in VidhawkResolver.resolveAll(ref.anilistId, ref.ep, category, vidServer)) {
+                        callback.invoke(
+                            newExtractorLink(name, "${link.label}", link.src, type = ExtractorLinkType.M3U8) {
+                                this.headers = linkHeaders
+                            }
+                        )
+                        found = true
                     }
-                )
-                found = true
+                } else {
+                    if (loadExtractor(server.embed!!, "$mainUrl/", subtitleCallback, callback)) {
+                        found = true
+                    }
+                }
             } else {
                 val stream = server.stream?.takeIf { it.startsWith("http") }
                     ?: server.stream?.takeIf { it.startsWith("/") }?.let { "$mainUrl$it" }

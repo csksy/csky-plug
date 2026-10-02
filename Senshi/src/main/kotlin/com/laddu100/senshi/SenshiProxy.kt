@@ -430,8 +430,7 @@ object SenshiProxy {
     }
 
     private fun fetchText(url: String, entry: StreamEntry): String? {
-        // the cdn edges occasionally answer 403 when renditions land in a
-        // burst, one short retry keeps the player from seeing a dead track
+        // cdn edges occasionally 403 on burst rendition fetches, one short retry helps
         for (attempt in 0..1) {
             try {
                 val text = client.newCall(buildUpstream(url, entry).build()).execute().use { resp ->

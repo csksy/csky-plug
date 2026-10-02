@@ -1,4 +1,4 @@
-version = 11
+version = 12
 
 android {
     buildFeatures {
@@ -6,9 +6,13 @@ android {
     }
 }
 
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+}
+
 cloudstream {
     description = "Watch Anime in HD with Sub, Dub and Hardsub"
-    authors = listOf("csksy")
+    authors = listOf("raghav")
 
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie")
