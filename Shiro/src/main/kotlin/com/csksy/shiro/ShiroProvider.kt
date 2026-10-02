@@ -226,7 +226,22 @@ class Shiro : MainAPI() {
     ): Boolean {
         val absolute = if (source.url.startsWith("http")) source.url else "https://shiro.so" + source.url
         val headers = ShiroApi.streamHeaders(cookie)
-        val ok = if (source.isHls) {
+
+        fun emit(url: String, name: String, quality: Int, type: ExtractorLinkType) {
+            callback.invoke(
+                ExtractorLink(
+                    source = "Shiro",
+                    name = name,
+                    url = url,
+                    referer = "https://shiro.so/",
+                    quality = quality,
+                    type = type,
+                    headers = headers
+                )
+            )
+        }
+
+        if (source.isHls) {
             val master = ShiroApi.fetchMaster(absolute, cookie)
             val text = if (master != null && master.isSuccessful) {
                 try {
@@ -236,43 +251,33 @@ class Shiro : MainAPI() {
                 }
             } else null
             val variants = text?.let { ShiroApi.parseMaster(it, absolute) }.orEmpty()
-            if (variants.isEmpty()) {
-                Log.d("Shiro", "${source.label} has no playable variants")
-                false
-            } else {
+            if (variants.isNotEmpty()) {
                 for (v in variants) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = "Shiro",
-                            name = labelFor(source, v.height, variant),
-                            url = v.url,
-                            referer = "https://shiro.so/",
-                            quality = qualityOf(v.height),
-                            type = ExtractorLinkType.M3U8,
-                            headers = headers
-                        )
-                    )
+                    emit(v.url, labelFor(source, v.height, variant), qualityOf(v.height), ExtractorLinkType.M3U8)
                 }
-                true
+                return true
             }
-        } else if (ShiroApi.probe(absolute, cookie)) {
-            callback.invoke(
-                ExtractorLink(
-                    source = "Shiro",
-                    name = labelFor(source, null, variant),
-                    url = absolute,
-                    referer = "https://shiro.so/",
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.VIDEO,
-                    headers = headers
-                )
-            )
-            true
-        } else {
-            Log.d("Shiro", "${source.label} is unreachable")
-            false
+            // a master the call could not read, or a plain media playlist with
+            // no stream-inf entries, still plays straight in the player, only
+            // an endpoint that answered with a hard 4xx of its own is dead
+            val code = master?.code
+            if (code == null || code !in 400..499) {
+                emit(absolute, labelFor(source, null, variant), Qualities.Unknown.value, ExtractorLinkType.M3U8)
+                return true
+            }
+            Log.d("Shiro", "${source.label} answered $code")
+            return false
         }
-        return ok
+
+        val code = ShiroApi.probe(absolute, cookie)
+        // a refused probe means the network blinked, the file may still be
+        // there once the player asks for it itself
+        if (code != null && code !in 200..299 && code != 416) {
+            Log.d("Shiro", "${source.label} is unreachable")
+            return false
+        }
+        emit(absolute, labelFor(source, null, variant), Qualities.Unknown.value, ExtractorLinkType.VIDEO)
+        return true
     }
 
     override suspend fun loadLinks(
@@ -317,7 +322,12 @@ class Shiro : MainAPI() {
             }.flatten().awaitAll().any { it }
         }
 
-        emitSubtitles(wanted, cookie, subtitleCallback)
+        // subtitles are only worth their probe calls when something plays
+        // under them, on a network that refuses the site they would only
+        // hold the failure toast back
+        if (emitted) {
+            emitSubtitles(wanted, cookie, subtitleCallback)
+        }
         return emitted
     }
 
@@ -343,7 +353,7 @@ class Shiro : MainAPI() {
         }
         if (byLabel.isEmpty()) return
 
-        val candidates = byLabel.values.flatten().distinct()
+        val candidates = byLabel.values.flatten().distinct().take(12)
         val isVtt = ConcurrentHashMap<String, Boolean>()
         coroutineScope {
             candidates.chunked(6).map { batch ->

@@ -103,6 +103,7 @@ object ShiroApi {
         if (!::prefs.isInitialized) {
             prefs = context.applicationContext.getSharedPreferences("shiro", Context.MODE_PRIVATE)
             watchCookie = prefs.getString("watch_cookie", null)
+            flavorOffset = prefs.getInt("body_flavor", 0).coerceIn(0, 2)
         }
         appContext = context.applicationContext
     }
@@ -592,8 +593,8 @@ object ShiroApi {
     private fun emptyStreams() = EpisodeStreams(emptyList(), emptyList(), emptyList())
 
     // the watch cookie is handed out by any /anime/{slug}/{n} page, a made
-    // up slug works too, it stays valid for around a year and is never
-    // rotated so one fetch per install is usually enough
+    // up slug works too, it expires after a day so a stored one goes stale
+    // between sessions and gets rotated by the 403 handler
     private suspend fun fetchCookie(): String? {
         val res = try {
             app.get("$SITE/anime/one-piece/1", headers = mapOf("User-Agent" to USER_AGENT), timeout = 15L)
@@ -607,6 +608,9 @@ object ShiroApi {
                 return c.substringBefore(";").trim()
             }
         }
+        // a page that hands out no cookie was answered by a block or
+        // challenge proxy, the caller falls back to the browser stack
+        if (set.isNotEmpty()) Log.d(TAG, "watch page gave no cookie")
         return null
     }
 
@@ -673,26 +677,38 @@ object ShiroApi {
         return EpisodeStreams(sub, hsub, dub)
     }
 
-    // some carriers shred json request bodies on their filtering proxies and
-    // the episode endpoint answers those with a 400, the site parses the same
-    // body sent as text/plain so that flavour is the working one there while
-    // clean networks are free to keep the canonical json. whichever flavour
-    // last got a 200 is remembered and tried first
-    @Volatile
-    private var plainBodyWorks: Boolean = false
+    // the episode api parses whatever json text arrives, it does not look at
+    // the content type header. mobile carriers run filtering proxies that
+    // shred bodies labelled application/json while letting form posts and
+    // plain text through, so the same json travels under three labels and the
+    // one that last got a 200 is tried first
+    private val bodyFlavors = arrayOf(
+        "application/json",
+        "text/plain;charset=utf-8",
+        "application/x-www-form-urlencoded"
+    )
 
-    private fun rememberFlavor(asText: Boolean) {
-        if (plainBodyWorks == asText) return
-        plainBodyWorks = asText
-        prefs.edit().putBoolean("plain_body", asText).apply()
+    @Volatile
+    private var flavorOffset: Int = 0
+
+    private fun rememberFlavor(index: Int) {
+        if (flavorOffset == index) return
+        flavorOffset = index
+        prefs.edit().putInt("body_flavor", index).apply()
     }
 
-    private suspend fun postEpisode(payload: JSONObject, cookie: String, asText: Boolean): NiceResponse? {
-        val type = if (asText) "text/plain" else "application/json"
+    private fun flavorOrder(): List<Int> =
+        (flavorOffset until bodyFlavors.size).plus(0 until flavorOffset)
+
+    private suspend fun postEpisode(
+        payload: JSONObject,
+        cookie: String,
+        flavor: Int
+    ): NiceResponse? {
         return try {
             app.post(
                 "$SITE/api/episode",
-                requestBody = payload.toString().toRequestBody(type.toMediaType()),
+                requestBody = payload.toString().toRequestBody(bodyFlavors[flavor].toMediaType()),
                 headers = mapOf(
                     "Origin" to SITE,
                     "Referer" to "$SITE/",
@@ -700,7 +716,7 @@ object ShiroApi {
                     "User-Agent" to USER_AGENT,
                     "Accept" to "*/*"
                 ),
-                timeout = 30L
+                timeout = 20L
             )
         } catch (e: Exception) {
             Log.d(TAG, "episode request failed: ${e.message}")
@@ -729,10 +745,18 @@ object ShiroApi {
         null
     }
 
-    // the episode endpoint hands out twenty answers per watch cookie and then
-    // answers 429 for about a minute, a fresh cookie starts the count over so
-    // the limit is rotated away instead of waited out
-    suspend fun streams(anilistId: Int, malId: Int?, episode: Int): StreamsAnswer? {
+    // the episode endpoint hands out eighteen answers per watch cookie and
+    // then answers 429 for about a minute, a fresh cookie starts the count
+    // over so the limit is rotated away instead of waited out. the webview
+    // pass is the last resort for networks that answer the direct calls with
+    // block pages or shred every POST body, it is skipped while browsing so a
+    // broken network cannot stall the detail page
+    suspend fun streams(
+        anilistId: Int,
+        malId: Int?,
+        episode: Int,
+        allowWebview: Boolean = true
+    ): StreamsAnswer? {
         val payload = JSONObject().put("anilistId", anilistId).put("episode", episode)
         malId?.let { payload.put("malId", it) }
 
@@ -742,10 +766,19 @@ object ShiroApi {
         var rotatedJustNow = false
 
         for (round in 0 until 4) {
-            val cookie = cookie() ?: break
-            val flavors = if (plainBodyWorks) listOf(true, false) else listOf(false, true)
-            for (asText in flavors) {
-                val res = postEpisode(payload, cookie, asText)
+            val cookie = cookie()
+            if (cookie == null) {
+                // no cookie means the watch page was answered by something
+                // other than the site, the browser stack gets a chance when
+                // the user is actually waiting on playback
+                if (allowWebview) {
+                    webviewEpisode(payload)?.let { return it }
+                }
+                break
+            }
+            var deadCookie = false
+            for (flavor in flavorOrder()) {
+                val res = postEpisode(payload, cookie, flavor)
                 if (res == null) {
                     // the network refused the call outright, the webview gets
                     // a chance with its own browser stack later
@@ -756,31 +789,41 @@ object ShiroApi {
                     res.isSuccessful -> {
                         val body = jsonOf(res)
                         if (body != null && body.optString("status") == "ready") {
-                            rememberFlavor(asText)
+                            rememberFlavor(flavor)
                             val parsed = parseStreams(body)
                             if (parsed != null) return StreamsAnswer(parsed, cookie)
                             sawBadAnswer = true
-                        } else if (body != null && body.optString("status") == "unavailable") {
+                        } else if (body != null && body.optString("status") == "unavailable"
+                            && body.optString("reason").isBlank()
+                        ) {
                             // the site itself says this episode has nothing,
                             // no amount of retrying changes that answer
-                            rememberFlavor(asText)
+                            rememberFlavor(flavor)
                             return StreamsAnswer(emptyStreams(), cookie)
                         } else {
                             sawBadAnswer = true
                         }
                     }
+                    res.code == 400 -> {
+                        // the body arrived mangled, the next label goes out
+                        sawBadAnswer = true
+                    }
                     res.code == 429 -> {
                         // a fresh cookie starts a clean answer budget, so the
-                        // limit is rotated away instead of waited out, the
-                        // retry-after only matters when even a fresh cookie
-                        // lands on a hot edge for this ip
-                        clearCookie()
-                        if (rotatedJustNow && !waitedOnce) {
-                            waitedOnce = true
-                            val wait = (res.headers["retry-after"]?.trim()?.toLongOrNull() ?: 5L)
-                                .coerceIn(3L, 15L)
-                            delay(wait * 1000L)
-                            if (cookie() == null) break
+                        // limit is rotated away instead of waited out, only
+                        // when even a fresh cookie keeps landing on a hot edge
+                        // is the retry-after worth its wait, and after that
+                        // the browser stack gets the last word
+                        deadCookie = true
+                        if (rotatedJustNow) {
+                            if (!waitedOnce && allowWebview) {
+                                waitedOnce = true
+                                val wait = (res.headers["retry-after"]?.trim()?.toLongOrNull() ?: 5L)
+                                    .coerceIn(3L, 15L)
+                                delay(wait * 1000L)
+                            } else {
+                                sawBadAnswer = true
+                            }
                         }
                         rotatedJustNow = true
                         break
@@ -791,7 +834,7 @@ object ShiroApi {
                         } else {
                             // the cookie went stale mid session, a fresh one
                             // is fetched and the call goes out again
-                            clearCookie()
+                            deadCookie = true
                         }
                         break
                     }
@@ -800,10 +843,11 @@ object ShiroApi {
                     }
                 }
             }
+            if (deadCookie) clearCookie()
             if (sawChallenge) break
         }
 
-        if (sawChallenge || sawBadAnswer) {
+        if ((sawChallenge || sawBadAnswer) && allowWebview) {
             webviewEpisode(payload)?.let { return it }
         }
         return null
@@ -812,7 +856,9 @@ object ShiroApi {
     // last resort when every direct call is refused: a throwaway webview
     // opens a watch page of the site, which plants a fresh watch cookie in
     // its own jar, and the episode call runs from inside that page with the
-    // browser stack, the same path the site's own player takes
+    // browser stack, the same path the site's own player takes. the in page
+    // fetch walks the same body labels as the direct calls because the
+    // filtering proxies that shred the app's posts shred the browser's too
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun webviewEpisode(payload: JSONObject): StreamsAnswer? {
         val context = appContext ?: return null
@@ -856,25 +902,44 @@ object ShiroApi {
 
                 fun askOnce(view: WebView) {
                     if (done.get() || !asked.compareAndSet(false, true)) return
+                    val flavorsJson = JSONArray().apply {
+                        for (f in flavorOrder()) put(bodyFlavors[f])
+                    }
                     val js = """
                         (function(){
                             window.__ep = null;
-                            fetch('/api/episode', {
-                                method: 'POST',
-                                credentials: 'include',
-                                headers: {'Content-Type': 'application/json', 'Accept': '*/*'},
-                                body: ${payload}
-                            }).then(function(r){
-                                return r.text().then(function(t){
-                                    window.__ep = JSON.stringify({code: r.status, body: t});
+                            var labels = ${flavorsJson};
+                            var body = JSON.stringify(${payload});
+                            var i = 0;
+                            function attempt(){
+                                if (i >= labels.length){
+                                    window.__ep = JSON.stringify({code: 0, body: 'every label refused'});
+                                    return;
+                                }
+                                fetch('/api/episode', {
+                                    method: 'POST',
+                                    credentials: 'include',
+                                    headers: {'Content-Type': labels[i], 'Accept': '*/*'},
+                                    body: body
+                                }).then(function(r){
+                                    return r.text().then(function(t){
+                                        if (r.status === 200 || i === labels.length - 1){
+                                            window.__ep = JSON.stringify({code: r.status, body: t});
+                                        } else {
+                                            i = i + 1;
+                                            attempt();
+                                        }
+                                    });
+                                }).catch(function(e){
+                                    i = i + 1;
+                                    attempt();
                                 });
-                            }).catch(function(e){
-                                window.__ep = JSON.stringify({code: 0, body: String(e)});
-                            });
+                            }
+                            attempt();
                         })();
                     """.trimIndent()
                     view.evaluateJavascript(js) {}
-                    for (i in 1..30) {
+                    for (i in 1..40) {
                         handler.postDelayed({
                             if (done.get()) return@postDelayed
                             view.evaluateJavascript(
@@ -910,7 +975,7 @@ object ShiroApi {
                                     finish(null)
                                 }
                             }
-                        }, i * 500L)
+                        }, i * 400L)
                     }
                 }
 
@@ -927,7 +992,7 @@ object ShiroApi {
                                 // call goes out a beat later once it is set
                                 handler.postDelayed({
                                     if (view != null) askOnce(view)
-                                }, 600L)
+                                }, 500L)
                             }
                         }
                         loadUrl("$SITE/anime/one-piece/1")
@@ -938,7 +1003,7 @@ object ShiroApi {
                     return@suspendCancellableCoroutine
                 }
 
-                handler.postDelayed({ finish(null) }, 25000L)
+                handler.postDelayed({ finish(null) }, 20000L)
             }
         }
     }
@@ -952,7 +1017,10 @@ object ShiroApi {
         dubCache[anilistId]?.let { (at, dub) ->
             if (now - at < 12 * 60 * 60 * 1000L) return dub
         }
-        val dub = streams(anilistId, malId, 1)?.streams?.dub?.isNotEmpty() == true
+        // browsing only gets the direct calls, the webview pass would hold
+        // the detail page hostage on a network that refuses the site
+        val dub = streams(anilistId, malId, 1, allowWebview = false)
+            ?.streams?.dub?.isNotEmpty() == true
         dubCache[anilistId] = Pair(now, dub)
         return dub
     }
@@ -1001,16 +1069,18 @@ object ShiroApi {
         }
     }
 
-    suspend fun probe(url: String, cookie: String): Boolean {
+    // null means the call itself broke, an http code means the endpoint
+    // answered and 2xx plus 416 say the file is there
+    suspend fun probe(url: String, cookie: String): Int? {
         return try {
             val res = app.get(
                 url,
                 headers = streamHeaders(cookie) + mapOf("Range" to "bytes=0-1023"),
-                timeout = 15L
+                timeout = 12L
             )
-            res.isSuccessful
+            res.code
         } catch (e: Exception) {
-            false
+            null
         }
     }
 
@@ -1021,7 +1091,7 @@ object ShiroApi {
             val res = app.get(
                 url,
                 headers = streamHeaders(cookie) + mapOf("Range" to "bytes=0-15"),
-                timeout = 15L
+                timeout = 8L
             )
             if (res.isSuccessful) res.text else null
         } catch (e: Exception) {
