@@ -10,6 +10,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
@@ -144,10 +145,9 @@ object AniChanWebView {
 """
     }
 
-    private suspend fun evaluate(script: String): String? {
+    private suspend fun evaluate(script: String, token: String): String? {
         return withTimeoutOrNull(FETCH_TIMEOUT) {
             suspendCancellableCoroutine { cont ->
-                val token = UUID.randomUUID().toString()
                 pending[token] = { json -> if (cont.isActive) cont.resume(json) }
                 cont.invokeOnCancellation { pending.remove(token) }
                 mainHandler.post {
@@ -177,21 +177,31 @@ object AniChanWebView {
         }
 
         val url = "https://anichan.to/api/watch/servers?anilistId=$anilistId&ep=$ep&category=$category"
-        val token = UUID.randomUUID().toString()
-        val result = evaluate(fetchScript(url, token)) ?: run {
+        val firstToken = UUID.randomUUID().toString()
+        var result = evaluate(fetchScript(url, firstToken), firstToken) ?: run {
             Log.e(TAG, "servers fetch timed out for $key")
             return null
         }
 
-        var empty = true
-        try {
-            val parsed = parseJson<ServersEnvelope>(result)
-            empty = parsed.servers.isNullOrEmpty()
-        } catch (e: Exception) {
-            Log.d(TAG, "servers parse check failed: ${e.message}")
+        // the site serves empty lists under burst load too and retries itself, mirror that once
+        if (isEmptyList(result)) {
+            delay(2500L)
+            val retryToken = UUID.randomUUID().toString()
+            result = evaluate(fetchScript(url, retryToken), retryToken) ?: result
         }
+
+        val empty = isEmptyList(result)
         cache[key] = CacheEntry(result, System.currentTimeMillis(), empty)
         if (empty) Log.d(TAG, "empty server list for $key")
         return result
+    }
+
+    private fun isEmptyList(json: String): Boolean {
+        return try {
+            parseJson<ServersEnvelope>(json).servers.isNullOrEmpty()
+        } catch (e: Exception) {
+            Log.d(TAG, "servers parse check failed: ${e.message}")
+            true
+        }
     }
 }
