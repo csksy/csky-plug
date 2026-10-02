@@ -47,6 +47,8 @@ private val cfBlockerPhrases = listOf(
 
 private const val COOKIE_TTL_MS = 45 * 60 * 1000L
 
+// cookies are stored per host, senshi.to, the vidcloud api and the stream cdn
+// each run their own challenge
 private object SenshiCookieStore {
     private const val PREFS_NAME = "SenshiCFBypass"
 
@@ -79,6 +81,7 @@ private object SenshiCookieStore {
         }
         return entry
     }
+
     @Synchronized
     fun save(host: String, cookies: String, ua: String) {
         saved[host] = Saved(host, cookies, ua, System.currentTimeMillis())
@@ -379,7 +382,6 @@ internal suspend fun cfGet(
     var response = app.get(url, headers = senshiHeaders(headers, url), timeout = timeout)
 
     if (!isCloudflareBlocked(response)) return response
-    Log.d("Senshi", "cloudflare block on $host, starting bypass")
 
     cfBypassMutex.withLock {
         if (SenshiCookieStore.get(host) != null) {
@@ -415,7 +417,6 @@ internal suspend fun cfPost(
     var response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers, url), timeout = timeout)
 
     if (!isCloudflareBlocked(response)) return response
-    Log.d("Senshi", "cloudflare block on post to $host, starting bypass")
 
     cfBypassMutex.withLock {
         if (SenshiCookieStore.get(host) != null) {
@@ -432,7 +433,7 @@ internal suspend fun cfPost(
             response = app.post(url, requestBody = requestBody(), headers = senshiHeaders(headers, url), timeout = timeout)
             if (!isCloudflareBlocked(response)) return response
         }
-        Log.e("Senshi", "still blocked on post to $host after bypass")
+        Log.e("Senshi", "still blocked on $host after bypass")
     }
 
     return response

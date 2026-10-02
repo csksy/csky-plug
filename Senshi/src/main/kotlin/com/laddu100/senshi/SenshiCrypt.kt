@@ -21,21 +21,19 @@ object SenshiCrypt {
     fun isEncrypted(text: String?): Boolean = text != null && text.startsWith(MARKER)
 
     fun decrypt(text: String): String? {
-        try {
-            val payload = text.substring(MARKER.length).trim()
-            val raw = Base64.decode(payload, Base64.DEFAULT)
+        return try {
+            val raw = Base64.decode(text.substring(MARKER.length).trim(), Base64.DEFAULT)
             if (raw.size < 29) {
                 Log.e(TAG, "playlist payload truncated: ${raw.size} bytes")
                 return null
             }
             val iv = raw.copyOfRange(0, 12)
-            val cipherText = raw.copyOfRange(12, raw.size)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(KEY, "AES"), GCMParameterSpec(128, iv))
-            return String(cipher.doFinal(cipherText), Charsets.UTF_8)
+            String(cipher.doFinal(raw.copyOfRange(12, raw.size)), Charsets.UTF_8)
         } catch (e: Exception) {
             Log.e(TAG, "playlist decrypt failed: ${e.message}")
-            return null
+            null
         }
     }
 }

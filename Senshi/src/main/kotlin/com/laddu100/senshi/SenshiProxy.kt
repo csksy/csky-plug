@@ -98,7 +98,6 @@ object SenshiProxy {
             }
             streams[id] = StreamEntry(id, masterUrl, masterContent, headers)
         }
-        Log.d(TAG, "proxy stream $id registered (${masterContent.length} chars, port $port)")
         return "http://127.0.0.1:$port/$id"
     }
 
@@ -177,7 +176,6 @@ object SenshiProxy {
     private val uriAttr = Regex("""URI="([^"]+)"""")
     private val languageAttr = Regex("""LANGUAGE="([^"]*)"""")
     private val nameAttr = Regex("""NAME="([^"]*)"""")
-    private val resolutionAttr = Regex("""RESOLUTION=(\d+)x(\d+)""")
 
     private fun isEnglishAudio(line: String, uri: String): Boolean {
         val lang = languageAttr.find(line)?.groupValues?.get(1)?.lowercase() ?: ""
@@ -225,11 +223,6 @@ object SenshiProxy {
                         else keepAudio.addAll(audioIdx)
                     }
                 }
-                Log.d(
-                    TAG,
-                    "master audio renditions=${audioIdx.size} english=${english.size} " +
-                        "mode=$mode kept=${keepAudio.size}"
-                )
             }
 
             val variantBlocks = mutableListOf<Pair<Int, Int>>()
@@ -332,14 +325,13 @@ object SenshiProxy {
                     send404(conn)
                     return
                 }
-                Log.d(TAG, "playlist decrypted ok: ${shortUrl(target)} (${plain.length} chars)")
                 plain
             } else {
                 body
             }
 
             if (!playlist.startsWith("#EXTM3U")) {
-                Log.w(TAG, "playlist not m3u8: ${shortUrl(target)} starts ${playlist.take(30)}")
+                Log.w(TAG, "playlist not m3u8: ${shortUrl(target)}")
                 sendBytes(conn, playlist.toByteArray(Charsets.UTF_8), "application/octet-stream")
                 return
             }
@@ -438,14 +430,21 @@ object SenshiProxy {
     }
 
     private fun fetchText(url: String, entry: StreamEntry): String? {
-        return try {
-            client.newCall(buildUpstream(url, entry).build()).execute().use { resp ->
-                if (resp.isSuccessful) resp.body?.string() else null
+        // the cdn edges occasionally answer 403 when renditions land in a
+        // burst, one short retry keeps the player from seeing a dead track
+        for (attempt in 0..1) {
+            try {
+                val text = client.newCall(buildUpstream(url, entry).build()).execute().use { resp ->
+                    if (resp.isSuccessful) resp.body?.string() else null
+                }
+                if (text != null) return text
+            } catch (e: Exception) {
+                Log.d(TAG, "upstream fetch failed: ${e.message}")
+                return null
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "upstream fetch failed: ${e.message}")
-            null
+            if (attempt == 0) Thread.sleep(700)
         }
+        return null
     }
 
     private fun fetchBytes(url: String, entry: StreamEntry): ByteArray? {
