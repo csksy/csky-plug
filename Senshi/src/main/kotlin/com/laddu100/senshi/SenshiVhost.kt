@@ -28,11 +28,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-// the gateway speaks a wasm handshake whose constants and user-agent rules rotate
-// server side, so nothing can be pinned. the site's own player bundle runs in a
-// hidden webview instead, and the webview talks to the gateway with its genuine
-// chromium stack the same way the site itself does. an okhttp relay exists as a
-// fallback for devices where the in-page runtime cannot run
+// the gateway rotates its handshake constants server side, so the site's own
+// player bundle runs in a hidden webview and talks to it for us
 object SenshiVhost {
 
     private const val TAG = "Senshi"

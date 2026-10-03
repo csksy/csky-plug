@@ -28,11 +28,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-// the senshi gateway speaks a wasm handshake whose constants and user-agent rules
-// rotate server side, so nothing can be pinned. the site's own player bundle runs
-// in a hidden webview and the webview talks to the gateway with its genuine
-// chromium stack the same way the site itself does. an okhttp relay exists as a
-// fallback for devices where the in-page runtime cannot run
+// the gateway rotates its handshake constants server side, so the site's own
+// player bundle runs in a hidden webview and talks to it for us
 object RaghavSenshiVhost {
 
     private const val TAG = "RaghavAnime"
@@ -510,97 +507,96 @@ object RaghavSenshiVhost {
         }
     }
 
-    suspend fun fetchSources(sourceId: Int): List<RaghavSenshi.VidcloudSource>? =
-        RaghavPerf.withWebView {
-            openMutex.withLock {
-                val cached = openCache[sourceId]
-                if (cached != null && System.currentTimeMillis() - cached.ts < OPEN_CACHE_TTL) {
-                    return@withLock cached.sources
-                }
-                openCache.remove(sourceId)
-
-                var nativeMode = System.currentTimeMillis() >= nativeMutedUntil
-                var fresh = false
-                var authFails = 0
-                for (attempt in 0..2) {
-                    if (!ensurePage(fresh, nativeMode)) {
-                        if (nativeMode) {
-                            nativeMutedUntil = System.currentTimeMillis() + NATIVE_MUTE_MS
-                            nativeMode = false
-                        }
-                        fresh = true
-                        continue
-                    }
-                    if (!probeRuntime()) {
-                        mainHandler.post { destroyPage() }
-                        if (nativeMode) {
-                            nativeMutedUntil = System.currentTimeMillis() + NATIVE_MUTE_MS
-                            nativeMode = false
-                        }
-                        fresh = true
-                        continue
-                    }
-                    val token = UUID.randomUUID().toString()
-                    val deferred = CompletableDeferred<String>()
-                    pending[token] = deferred
-                    val wv = webView
-                    if (wv == null) {
-                        pending.remove(token)
-                        continue
-                    }
-                    mainHandler.post {
-                        try {
-                            wv.evaluateJavascript(
-                                "window.__bridgeOpen&&window.__bridgeOpen(\"$token\",$sourceId);",
-                                null
-                            )
-                        } catch (e: Exception) {
-                            Log.d(TAG, "open eval failed: ${e.message}")
-                            pending.remove(token)?.complete("")
-                        }
-                    }
-                    val json = withTimeoutOrNull(OPEN_TIMEOUT) { deferred.await() }
-                    pending.remove(token)
-                    if (json != null) {
-                        val reply = try {
-                            parseJson<BridgeReply>(json)
-                        } catch (_: Exception) {
-                            null
-                        }
-                        if (reply != null && reply.ok) {
-                            val parsed = parseSources(reply.r)
-                            if (parsed != null) {
-                                if (nativeMode) nativeMutedUntil = 0L
-                                cacheOpen(sourceId, parsed)
-                                return@withLock parsed
-                            }
-                        }
-                        val err = (reply?.e ?: "").lowercase()
-                        when {
-                            nativeMode && nativeFailureMarks.any { err.contains(it) } -> {
-                                // the page cannot talk to the gateway at all, use the relay
-                                nativeMutedUntil = System.currentTimeMillis() + NATIVE_MUTE_MS
-                                nativeMode = false
-                            }
-                            err.contains("authorization failed") -> {
-                                // the session hit its budget, a fresh one starts clean,
-                                // but a second refusal means the transport itself is the problem
-                                authFails++
-                                if (authFails >= 2) nativeMode = !nativeMode
-                            }
-                            else -> nativeMode = !nativeMode
-                        }
-                    } else {
-                        nativeMode = !nativeMode
-                    }
-                    // stale session or bundle, drop the page so the next attempt rebuilds
-                    bundleTs = 0L
-                    fresh = true
-                    mainHandler.post { destroyPage() }
-                }
-                null
-            }
+    // stays off the shared webview gate on purpose, the other sources would queue
+    // ahead of it and the 35s source window is over before it gets a turn
+    suspend fun fetchSources(sourceId: Int): List<RaghavSenshi.VidcloudSource>? = openMutex.withLock {
+        val cached = openCache[sourceId]
+        if (cached != null && System.currentTimeMillis() - cached.ts < OPEN_CACHE_TTL) {
+            return@withLock cached.sources
         }
+        openCache.remove(sourceId)
+
+        var nativeMode = System.currentTimeMillis() >= nativeMutedUntil
+        var fresh = false
+        var authFails = 0
+        for (attempt in 0..2) {
+            if (!ensurePage(fresh, nativeMode)) {
+                if (nativeMode) {
+                    nativeMutedUntil = System.currentTimeMillis() + NATIVE_MUTE_MS
+                    nativeMode = false
+                }
+                fresh = true
+                continue
+            }
+            if (!probeRuntime()) {
+                mainHandler.post { destroyPage() }
+                if (nativeMode) {
+                    nativeMutedUntil = System.currentTimeMillis() + NATIVE_MUTE_MS
+                    nativeMode = false
+                }
+                fresh = true
+                continue
+            }
+            val token = UUID.randomUUID().toString()
+            val deferred = CompletableDeferred<String>()
+            pending[token] = deferred
+            val wv = webView
+            if (wv == null) {
+                pending.remove(token)
+                continue
+            }
+            mainHandler.post {
+                try {
+                    wv.evaluateJavascript(
+                        "window.__bridgeOpen&&window.__bridgeOpen(\"$token\",$sourceId);",
+                        null
+                    )
+                } catch (e: Exception) {
+                    Log.d(TAG, "open eval failed: ${e.message}")
+                    pending.remove(token)?.complete("")
+                }
+            }
+            val json = withTimeoutOrNull(OPEN_TIMEOUT) { deferred.await() }
+            pending.remove(token)
+            if (json != null) {
+                val reply = try {
+                    parseJson<BridgeReply>(json)
+                } catch (_: Exception) {
+                    null
+                }
+                if (reply != null && reply.ok) {
+                    val parsed = parseSources(reply.r)
+                    if (parsed != null) {
+                        if (nativeMode) nativeMutedUntil = 0L
+                        cacheOpen(sourceId, parsed)
+                        return@withLock parsed
+                    }
+                }
+                val err = (reply?.e ?: "").lowercase()
+                when {
+                    nativeMode && nativeFailureMarks.any { err.contains(it) } -> {
+                        // the page cannot talk to the gateway at all, use the relay
+                        nativeMutedUntil = System.currentTimeMillis() + NATIVE_MUTE_MS
+                        nativeMode = false
+                    }
+                    err.contains("authorization failed") -> {
+                        // the session hit its budget, a fresh one starts clean,
+                        // but a second refusal means the transport itself is the problem
+                        authFails++
+                        if (authFails >= 2) nativeMode = !nativeMode
+                    }
+                    else -> nativeMode = !nativeMode
+                }
+            } else {
+                nativeMode = !nativeMode
+            }
+            // stale session or bundle, drop the page so the next attempt rebuilds
+            bundleTs = 0L
+            fresh = true
+            mainHandler.post { destroyPage() }
+        }
+        null
+    }
 
     private fun cacheOpen(sourceId: Int, sources: List<RaghavSenshi.VidcloudSource>) {
         if (openCache.size >= 8) {
