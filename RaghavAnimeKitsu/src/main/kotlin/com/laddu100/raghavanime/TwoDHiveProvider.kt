@@ -1,5 +1,4 @@
 package com.laddu100.raghavanime
-import com.lagradost.api.Log
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.JsonNode
@@ -14,6 +13,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.CancellationException
+import com.raghav.donation.DonationManager
 
 class RaghavTwoDHive : MainAPI() {
     override var mainUrl = "https://2dhive.com"
@@ -83,6 +84,7 @@ class RaghavTwoDHive : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("twodhive") ?: mainUrl
         val url = if (page > 1) {
             "$mainUrl/?list=${request.data}&page=$page"
@@ -123,7 +125,7 @@ class RaghavTwoDHive : MainAPI() {
         return node
     }
 
-    override suspend fun load(url: String): LoadResponse? {
+    override suspend fun load(url: String): LoadResponse? = coroutineScope {
         mainUrl = FirebaseDomainHelper.getDomain("twodhive") ?: mainUrl
         val malId = url.substringAfter("anime=").substringBefore("&").substringBefore("/").toIntOrNull()
         val html = quickGet(url)
@@ -145,6 +147,21 @@ class RaghavTwoDHive : MainAPI() {
             poster = soup.selectFirst("meta[property=og:image]")?.attr("content")
         }
 
+        val summary = if (malId != null) {
+            async {
+                try {
+                    mapper.readTree(quickGet("$mainUrl/api/anime/summary?malId=$malId"))
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    null
+                }
+            }
+        } else null
+
+        val dubProbe = if (malId != null) {
+            async { probeDub(malId) }
+        } else null
+
         var plot = ""
         val summaryLabel = soup.select("p").firstOrNull { it.text().trim() == "Synopsis" }
         if (summaryLabel != null) {
@@ -153,26 +170,19 @@ class RaghavTwoDHive : MainAPI() {
                 plot = summaryP.text().trim()
             }
         }
-        if (plot.isBlank() && malId != null) {
-            try {
-                val apiResp = quickGet("$mainUrl/api/anime/summary?malId=$malId")
-                val apiJson = mapper.readTree(apiResp)
-                plot = apiJson.get("anime")?.get("synopsis")?.asText() ?: ""
-            } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
-        }
 
         val genres = mutableListOf<String>()
         var year: Int? = null
-        if (malId != null) {
-            try {
-                val apiResp = quickGet("$mainUrl/api/anime/summary?malId=$malId")
-                val apiJson = mapper.readTree(apiResp)
-                val genresNode = apiJson.get("anime")?.get("genres")
-                if (genresNode != null && genresNode.isArray) {
-                    genresNode.forEach { g -> genres.add(g.asText()) }
-                }
-                year = apiJson.get("anime")?.get("year")?.asInt()
-            } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+        val summaryNode = summary?.await()
+        if (summaryNode != null) {
+            if (plot.isBlank()) {
+                plot = summaryNode.get("anime")?.get("synopsis")?.asText() ?: ""
+            }
+            val genresNode = summaryNode.get("anime")?.get("genres")
+            if (genresNode != null && genresNode.isArray) {
+                genresNode.forEach { g -> genres.add(g.asText()) }
+            }
+            year = summaryNode.get("anime")?.get("year")?.asInt()
         }
         if (year == null) {
             soup.select("div, span, p, small").forEach { el ->
@@ -208,7 +218,7 @@ class RaghavTwoDHive : MainAPI() {
                             }
                         }
                     }
-                } catch (e: Exception) { Log.e("RaghavAnime", "2DHive: ${e.message}") }
+                } catch (e: Exception) { if (e is CancellationException) throw e }
             }
         }
 
@@ -234,8 +244,7 @@ class RaghavTwoDHive : MainAPI() {
                 this.posterUrl = ep.posterUrl
             }
         }
-        // the dub tab just ends in "no links" when megaplay has no dub track
-        val hasDub = malId != null && probeDub(malId)
+        val hasDub = dubProbe?.await() == true
         val dubEpisodes = if (hasDub) {
             episodes.map { ep ->
                 newEpisode("${ep.data}|dub") {
@@ -246,7 +255,7 @@ class RaghavTwoDHive : MainAPI() {
             }
         } else emptyList()
 
-        return newAnimeLoadResponse(title, url, TvType.Anime) {
+        return@coroutineScope newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
             this.year = year
             this.plot = plot
@@ -261,12 +270,11 @@ class RaghavTwoDHive : MainAPI() {
             val html = app.get(
                 "https://megaplay.buzz/stream/mal/$malId/1/dub",
                 headers = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/"),
-                timeout = 15_000L
+                timeout = 15L
             ).text
             val hasDub = html.contains("data-id=") || html.contains("data-realid=")
             hasDub
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[2DHive] probeDub malId=$malId failed: ${e.message}")
             false
         }
     }
@@ -285,7 +293,6 @@ class RaghavTwoDHive : MainAPI() {
         val html = quickGet(epUrl)
         val soup = Jsoup.parse(html)
 
-        // the island was renamed from MultiServerPlayer to EpisodePlayer, match both
         val island = soup.select("astro-island").firstOrNull {
             val cu = it.attr("component-url")
             cu.contains("EpisodePlayer", ignoreCase = true) || cu.contains("MultiServerPlayer", ignoreCase = true)
@@ -309,7 +316,6 @@ class RaghavTwoDHive : MainAPI() {
             try {
                 resolveMegaPlay(malId, epNum, type, epUrl, subtitleCallback, callback)
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[2DHive] MegaPlay failed: ${e.message}")
                 false
             }
         })
@@ -318,7 +324,6 @@ class RaghavTwoDHive : MainAPI() {
             try {
                 resolveBabaStream(malId, epNum, type, epUrl, callback)
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[2DHive] BabaStream failed: ${e.message}")
                 false
             }
         })
@@ -334,12 +339,10 @@ class RaghavTwoDHive : MainAPI() {
         val playerUrl = "https://megaplay.buzz/stream/mal/$malId/$epNum/$type"
         val stream = MegaPlayHelper.resolveStream(playerUrl, epUrl, "2DHive")
         if (stream == null) {
-            Log.e("RaghavAnime", "[2DHive] MegaPlay gave no stream (malId=$malId ep=$epNum type=$type)")
             return false
         }
 
         val label = if (type == "dub") "MegaPlay Dub" else "MegaPlay Sub"
-        // the megap cdn rejects requests without a megaplay referer
         return MegaPlayHelper.emitLinks(
             "2DHive", label, stream.m3u8, "https://megaplay.buzz/",
             stream.subtitles, subtitleCallback, callback
@@ -438,11 +441,8 @@ class RaghavTwoDHive : MainAPI() {
             if (!r.u) throw new Error(r.m || "no stream url");
             var url = new URL(r.u, location.origin).href;
             if (/\.(m3u8|mp4)([?#]|$)/i.test(url)) {
-                // the host app watches for media requests leaving the webview
                 fetch(url, { mode: "no-cors" }).catch(function () {});
             } else {
-                // some titles hand back a third-party embed page instead, let
-                // that player load and ask for its own media
                 location.href = url;
             }
         }
@@ -469,8 +469,7 @@ class RaghavTwoDHive : MainAPI() {
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:[?#]|$)"""),
                 script = babaSolverScript,
-                // the cap pow solve alone can take half a minute on slow hardware
-                useOkhttp = false, timeout = 120_000L
+                useOkhttp = false, timeout = 30_000L
             )
             val resolved = RaghavPerf.withWebView { app.get(embedUrl, referer = epUrl, interceptor = resolver).url }
             if (resolved.contains(".m3u8") || resolved.contains(".mp4")) {
@@ -485,7 +484,6 @@ class RaghavTwoDHive : MainAPI() {
                 false
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[2DHive] BabaStream failed: ${e.message}")
             false
         }
     }

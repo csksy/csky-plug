@@ -16,12 +16,13 @@ object VidhawkResolver {
 
     suspend fun resolveAll(anilistId: Int, ep: Int, audio: String, server: String): List<VidhawkLink> {
         return try {
+            val parentHost = java.net.URI(AniChanApi.url()).host ?: "anichan.to"
             val headers = mapOf(
                 "User-Agent" to AniChanApi.USER_AGENT,
-                "Referer" to "${AniChanApi.MAIN_URL}/"
+                "Referer" to "${AniChanApi.url()}/"
             )
             val raceUrl = "$MAIN_URL/api/stream/race?episode=$ep&audio=$audio&server=$server" +
-                "&anilistId=$anilistId&parentHost=anichan.to"
+                "&anilistId=$anilistId&parentHost=$parentHost"
             val raceResp = app.get(raceUrl, headers = headers, timeout = 12L)
             val race = mapper.readValue(raceResp.text, VidhawkRace::class.java)
 
@@ -60,14 +61,11 @@ object VidhawkResolver {
             }
             links
         } catch (e: Exception) {
-            Log.d(TAG, "vidhawk resolve failed: ${e.message}")
             emptyList()
         }
     }
 
-    // the proxies sit in front of third party upstreams that die for days, a quick
-    // ranged request tells the difference between a mirror that answers and one
-    // that would just hand the player an error
+    // third party upstreams die for days, one ranged request filters dead mirrors
     private suspend fun streamAlive(url: String, headers: Map<String, String>): Boolean {
         return try {
             val resp = app.get(

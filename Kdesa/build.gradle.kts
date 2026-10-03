@@ -1,11 +1,11 @@
-version = 2
+version = 3
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
 }
 
 cloudstream {
-    description = "KDesa - Movies, TV Shows & Anime from kdesa.stream. Multi-source: TQQ (AniKoto), Anidap, FSOnline, CornClick, Cuevana3, 7Movies, 1Embed, Nova, VixSrc (Italian). Multi-audio + subtitles."
+    description = "KDesa - Movies, TV Shows & Anime Multi-source,Multi-audio"
     authors = listOf("KSHITIJ8473")
     status = 1
     tvTypes = listOf("Movie", "TvSeries", "Anime")

@@ -16,9 +16,7 @@ internal const val STORE_HOST = "store.animetoonhindi.com"
 internal const val CODEDEW_HOST = "codedew.com"
 internal const val ARGON_HOST = "argon.razorshell.space"
 
-// The argon CDN signs every stream and download URL against the exact
-// User-Agent and Accept-Language of the request that generated it, so every
-// hop of an argon session and the player link itself must carry these two.
+// argon signs every URL against the exact UA and Accept-Language that requested it
 internal const val ARGON_AL = "en-US,en;q=0.9"
 internal const val HUBCLOUD_HOST = "hubcloud.ist"
 internal const val PIXELDRAIN_HOST = "pixeldrain.net"
@@ -236,35 +234,6 @@ internal class CodedewResolver {
         }
     }
 
-    private suspend fun chaseDataHrefs(startUrl: String, referer: String): String {
-        var current = startUrl
-        var ref = referer
-        for (hop in 0 until 8) {
-            val resp = raiGet(
-                current,
-                headers = mapOf("Referer" to ref),
-                allowRedirects = false
-            )
-            if (resp.code in 300..399) {
-                val loc = resp.headers["location"] ?: return current
-                current = absolutize(current, htmlUnescape(loc))
-                ref = current
-                classifyUrl(current)?.let { return current }
-                continue
-            }
-            if (resp.code != 200) throw CodedewChainException("codedew hop $hop returned ${resp.code}")
-            val body = resp.text
-            val m = DATA_HREF.find(body) ?: return current
-            current = absolutize(current, htmlUnescape(m.groupValues[1]))
-            ref = current
-            classifyUrl(current)?.let { return current }
-            if (isForeignAdLink(current)) {
-                throw CodedewChainException("codedew step button leads to ad site ${hostOf(current)}")
-            }
-        }
-        return current
-    }
-
     suspend fun resolve(url: String): ResolvedTarget {
         classifyUrl(url)?.let { return it }
         val current = when {
@@ -317,10 +286,7 @@ internal class CodedewResolver {
         throw CodedewChainException("codedew chain too deep")
     }
 
-    // The codedew step pages sometimes hand their button to a plain
-    // advertisement host such as wikipedia or a social site. Those
-    // destinations are never part of the real chain, so stop instead of
-    // burning hops and request quota on them.
+    // step buttons sometimes point at plain ad sites, those never lead anywhere
     private fun isForeignAdLink(url: String): Boolean {
         val host = hostOf(url)
         if (host.isBlank()) return false

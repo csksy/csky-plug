@@ -1,6 +1,5 @@
 package com.laddu100.animeworldindia
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -12,6 +11,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
 import java.net.URLEncoder
+import com.raghav.donation.DonationManager
 
 class AnimeWorldProvider : MainAPI() {
     override var mainUrl = "https://watchanimeworld.top"
@@ -20,8 +20,6 @@ class AnimeWorldProvider : MainAPI() {
     override val hasMainPage = true
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.Cartoon)
-
-    private val TAG = "AnimeWorld"
 
     @Volatile
     private var isUrlLoaded = false
@@ -47,7 +45,7 @@ class AnimeWorldProvider : MainAPI() {
             val url = config.animeworldindia_url ?: config.animeworld_url ?: config.awi_url
             if (!url.isNullOrBlank()) mainUrl = url.removeSuffix("/")
             isUrlLoaded = true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             isUrlLoaded = true
         }
     }
@@ -60,6 +58,7 @@ class AnimeWorldProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         loadFirebaseUrl()
         return try {
             val response = animeWorldGet(mainUrl)
@@ -96,8 +95,7 @@ class AnimeWorldProvider : MainAPI() {
                 "popular" -> newHomePageResponse("Popular Series", allItems.reversed().take(20), hasNext = false)
                 else -> newHomePageResponse(request.name, emptyList())
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "getMainPage: ${e.message}")
+        } catch (_: Exception) {
             newHomePageResponse(request.name, emptyList())
         }
     }
@@ -128,8 +126,7 @@ class AnimeWorldProvider : MainAPI() {
                 results.addAll(items)
             }
             results.distinctBy { it.url }
-        } catch (e: Exception) {
-            Log.e(TAG, "search: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -219,8 +216,7 @@ class AnimeWorldProvider : MainAPI() {
                 this.plot = plot
                 this.tags = genres
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "load: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -250,8 +246,7 @@ class AnimeWorldProvider : MainAPI() {
             ))
             val doc = Jsoup.parse(response.text)
             doc.select("a[href*=/episode/]").map { it.attr("href") }.distinct()
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchSeasonEpisodes: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -280,8 +275,7 @@ class AnimeWorldProvider : MainAPI() {
                 }
             }
             found
-        } catch (e: Exception) {
-            Log.e(TAG, "loadLinks: ${e.message}")
+        } catch (_: Exception) {
             false
         }
     }
@@ -319,8 +313,7 @@ class AnimeWorldProvider : MainAPI() {
             ) {
                 this.quality = Qualities.Unknown.value
                 this.referer = "$playerBase/"
-                // the player host rejects requests without an Accept header and the
-                // segment cdn requires the player referer, so send both on every request
+                // stream cdn rejects requests that lack a browser UA and Accept header
                 this.headers = mapOf(
                     "Accept" to "*/*",
                     "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -328,8 +321,7 @@ class AnimeWorldProvider : MainAPI() {
             }
             callback.invoke(link)
             true
-        } catch (e: Exception) {
-            Log.e(TAG, "resolveZephyrix: ${e.message}")
+        } catch (_: Exception) {
             false
         }
     }

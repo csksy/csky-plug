@@ -17,13 +17,10 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
-// the watch api binds its answer to a session cookie handed to real browser clients, seals the
-// payload with a key derived from the session nonce and hides the servers behind a tier split,
-// so the fetch runs inside a real webview the same way the site's own player does
+// the watch api only answers real browser clients so the fetch runs inside a webview
 object AniChanWebView {
 
     private const val TAG = "AniChan"
-    private const val PAGE_URL = "https://anichan.to/watch-session-probe"
     private const val FETCH_TIMEOUT = 40_000L
     private const val CACHE_TTL = 10 * 60 * 1000L
     private const val EMPTY_CACHE_TTL = 60 * 1000L
@@ -31,6 +28,8 @@ object AniChanWebView {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var appContext: Context? = null
     private var webView: WebView? = null
+    @Volatile
+    private var loadedHost: String? = null
     @Volatile
     private var pageReady = false
     private val readyWaiters = java.util.concurrent.CopyOnWriteArrayList<(Boolean) -> Unit>()
@@ -52,17 +51,26 @@ object AniChanWebView {
     }
 
     private suspend fun waitForPage(): Boolean {
-        if (pageReady && webView != null) return true
+        val host = AniChanApi.url()
+        if (pageReady && webView != null && loadedHost == host) return true
         val ok = suspendCancellableCoroutine { cont ->
             readyWaiters.add { ok -> if (cont.isActive) cont.resume(ok) }
-            mainHandler.post { createIfNeeded() }
+            mainHandler.post { createIfNeeded(host) }
         }
         return ok
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createIfNeeded() {
-        if (webView != null) return
+    private fun createIfNeeded(host: String) {
+        val current = webView
+        if (current != null) {
+            if (loadedHost == host) return
+            // domain changed under us, reload the probe page on the new host
+            loadedHost = host
+            pageReady = false
+            current.loadUrl("$host/watch-session-probe")
+            return
+        }
         val ctx = appContext ?: run {
             readyWaiters.forEach { it(false) }
             readyWaiters.clear()
@@ -77,7 +85,8 @@ object AniChanWebView {
             wv.addJavascriptInterface(Bridge(), "anichanBridge")
             wv.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    if (url != null && url.startsWith("https://anichan.to")) {
+                    if (url != null && url.startsWith(AniChanApi.url())) {
+                        loadedHost = AniChanApi.url()
                         pageReady = true
                         readyWaiters.forEach { it(true) }
                         readyWaiters.clear()
@@ -85,7 +94,8 @@ object AniChanWebView {
                 }
             }
             webView = wv
-            wv.loadUrl(PAGE_URL)
+            loadedHost = host
+            wv.loadUrl("$host/watch-session-probe")
         } catch (e: Exception) {
             Log.e(TAG, "webview init failed: ${e.message}")
             readyWaiters.forEach { it(false) }
@@ -115,8 +125,7 @@ object AniChanWebView {
     let sealMisses = 0;
     let emptyMisses = 0;
 
-    // the site keeps one session alive for hours and reuses it, minting a new one per
-    // episode only feeds the "slow down" limiter, so the session is cached the same way
+    // the site keeps one session alive for hours, reuse it or the limiter kicks in
     const newSession = async (force) => {
         if (!force) {
             const cached = window.__anichanSession;
@@ -148,8 +157,7 @@ object AniChanWebView {
         return [keys[0], hmacKey];
     };
 
-    // each bundle ships its own key triple, picking it straight out of the site chunks
-    // survives a rotation without waiting for a plugin update
+    // every bundle ships its own key triple, scanning the chunks survives a rotation
     const findBundleKeys = async () => {
         if (scans >= 2) return false;
         scans++;
@@ -177,7 +185,6 @@ object AniChanWebView {
                     const m = triple.exec(t);
                     if (m && b64(m[2]).length === 32 && b64(m[3]).length === 32) {
                         const found = [m[1], m[2], m[3]];
-                        // the bundle still carries the pair that just failed, nothing to gain
                         if (found.join() === keys.join()) return false;
                         keys = found;
                         window.__anichanKeys = keys;
@@ -196,15 +203,12 @@ object AniChanWebView {
         return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name: "AES-GCM", iv: b64(j.i)}, ak, b64(j.d))));
     };
 
-    // the api answers 401 and a stale sealed payload whenever the request lands on a worker
-    // that does not know the session, a fresh session fixes both so retry that way
     const load = async (cat, tier) => {
         for (let i = 0; i < 4; i++) {
             if (!session || !session.n) {
                 session = await newSession(false);
                 if (!session || !session.n) {
-                    // the api answers 429 "slow down" once too many sessions are minted,
-                    // backing off harder each miss keeps the loop from feeding it
+                    // 429 "slow down" once too many sessions are minted, back off harder each miss
                     sessionMisses++;
                     await sleep(400 * Math.min(sessionMisses, 4));
                     continue;
@@ -216,12 +220,12 @@ object AniChanWebView {
                 const r = await fetch("/api/watch/servers?anilistId=$anilistId&ep=$ep&category=" + cat + "&tier=" + tier,
                     {headers: {"X-Wk": pair[0]}, cache: "no-store"});
                 if (r.status === 401) {
+                    // stale worker session, a fresh one fixes it
                     session = await newSession(true);
                     await sleep(250);
                     continue;
                 }
                 if (r.status === 429 || r.status >= 500) {
-                    // the session is not the problem here, keep it and let the burst pass
                     await sleep(r.status === 429 ? 1500 : 400);
                     continue;
                 }
@@ -233,8 +237,7 @@ object AniChanWebView {
                         opened = await openSealed(j, session.n, pair[1]);
                     } catch (e) { opened = null; }
                     if (!opened) {
-                        // a payload sealed for a different session heals with a fresh one,
-                        // only a key rotation needs the bundle scan
+                        // a key rotation needs the bundle scan, anything else heals with a new session
                         sealMisses++;
                         if (sealMisses >= 2) await findBundleKeys();
                         session = await newSession(true);
@@ -245,9 +248,7 @@ object AniChanWebView {
                     emptyMisses = 0;
                     j = opened;
                 } else if (!j || !j.servers || j.servers.length === 0) {
-                    // a burst empty and an unknown key version answer with the same empty
-                    // list, the second empty in a row is worth a bundle scan because that
-                    // is the only way a rotation ever surfaces
+                    // a rotation answers with the same empty list as a burst, scan on the second empty
                     emptyMisses++;
                     if (emptyMisses >= 2 && await findBundleKeys()) {
                         emptyMisses = 0;
@@ -281,7 +282,7 @@ object AniChanWebView {
         }
     }
 
-    // download mirrors live on their own endpoint outside the tier split
+    // download mirrors sit on their own endpoint outside the tier split
     try {
         if (!session) session = await newSession(false);
         let r = await fetch("/api/watch/ext-downloads?anilistId=$anilistId&ep=$ep", {cache: "no-store"});
@@ -323,8 +324,7 @@ object AniChanWebView {
         }
     }
 
-    // a second run is cheap once the bundle keys are cached, it only ever matters
-    // when the first shot burned its budget hunting for fresh keys
+    // a second run is cheap once the bundle keys are cached
     private suspend fun runFetch(anilistId: Int, ep: Int, categories: List<String>): String? {
         val token = UUID.randomUUID().toString()
         return evaluate(fetchScript(anilistId, ep, categories, token), token)
@@ -353,7 +353,7 @@ object AniChanWebView {
             return null
         }
 
-        // the site serves empty lists under burst load too and retries itself, mirror that once
+        // the site serves empty lists under burst load too, mirror its own retry once
         if (isEmptyList(result)) {
             delay(2500L)
             result = runFetch(anilistId, ep, categories) ?: result
@@ -361,7 +361,6 @@ object AniChanWebView {
 
         val empty = isEmptyList(result)
         cache[key] = CacheEntry(result, System.currentTimeMillis(), empty)
-        if (empty) Log.d(TAG, "empty server list for $key")
         return result
     }
 

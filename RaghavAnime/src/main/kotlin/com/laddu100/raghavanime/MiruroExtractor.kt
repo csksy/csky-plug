@@ -1,6 +1,5 @@
 package com.laddu100.raghavanime
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.network.WebViewResolver
@@ -35,9 +34,6 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
             return
         }
 
-        // the megaplay family occasionally hides the playlist behind a player
-        // only a real browser can drive, so fall back to interception
-        Log.e("RaghavAnime", "[Miruro][${name}] direct extraction failed, trying WebViewResolver fallback")
         runCatching {
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""\.m3u8"""),
@@ -55,7 +51,6 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
                 generateM3u8(name, m3u8, mainUrl, headers = headers).forEach(callback)
             }
         }.onFailure { error ->
-            Log.e("RaghavAnime", "[Miruro][${name}] WebViewResolver fallback failed: ${error.message}")
         }
     }
 }
@@ -100,7 +95,6 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 }
             }
         }.onFailure { error ->
-            Log.e("RaghavAnime", "[Miruro][WebView] getUrl failed: ${error.message}")
         }
     }
 }

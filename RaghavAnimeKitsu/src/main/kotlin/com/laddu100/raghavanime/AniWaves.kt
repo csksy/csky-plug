@@ -1,6 +1,5 @@
 package com.laddu100.raghavanime
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageResponse
@@ -26,6 +25,8 @@ import org.jsoup.Jsoup
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
+import com.raghav.donation.DonationManager
 
 class AniWaves : MainAPI() {
     override var mainUrl = "https://aniwaves.ru"
@@ -54,6 +55,7 @@ class AniWaves : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
         val category = request.data
         val url = "$mainUrl/home"
@@ -294,7 +296,23 @@ class AniWaves : MainAPI() {
                     if (!isNew) return@async
 
                     val loaded = when {
-                        embedUrl.contains("echovideo") || embedUrl.contains("weneverbeenfree.com") || embedUrl.contains("filemoon") || embedUrl.contains("myvidplay.com") -> {
+                        embedUrl.contains("megaplay") -> {
+                            val stream = MegaPlayHelper.resolveStream(embedUrl, watchUrl, "AniWaves")
+                            if (stream != null) {
+                                MegaPlayHelper.emitLinks(
+                                    "AniWaves $displayName",
+                                    "$displayName (${targetType.uppercase()})",
+                                    stream.m3u8,
+                                    embedUrl,
+                                    stream.subtitles,
+                                    subtitleCallback,
+                                    linkCallback
+                                )
+                            } else {
+                                false
+                            }
+                        }
+                        embedUrl.contains("echovideo") || embedUrl.contains("weneverbeenfree.com") || embedUrl.contains("filemoon") || embedUrl.contains("mfw09.org") || embedUrl.contains("myvidplay.com") || embedUrl.contains("playmogo") -> {
                             AniWavesWebView("$displayName (${targetType.uppercase()})", embedUrl.baseUrl()).getUrl(embedUrl, watchUrl, subtitleCallback, linkCallback)
                             true
                         }
@@ -308,7 +326,7 @@ class AniWaves : MainAPI() {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e("RaghavAnimeKitsu", "[AniWaves] server $displayName ($targetType) failed: ${e.message}")
+                    if (e is CancellationException) throw e
                 }
             }
         }

@@ -2,7 +2,6 @@ package com.laddu100
 
 import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -12,11 +11,8 @@ import java.net.URLEncoder
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import com.raghav.donation.DonationManager
 
-// AniSuge provider — anisuge.tv
-// Sources flow (2026-09): episodes -> ajax/episode/list (vrf) ->
-// per-episode sources from mapper.nekostream.site (mapper.js) with the
-// legacy ajax/server/list path kept as fallback. See AniSugeResolver.kt.
 class AniSugeProvider : MainAPI() {
     override var mainUrl = "https://anisuge.tv"
     override var name = "AniSuge"
@@ -39,7 +35,6 @@ class AniSugeProvider : MainAPI() {
     private val cfKiller = CloudflareKiller()
     private val kwikExtractor by lazy { KwikExtractor() }
 
-    // VRF Hashing helpers
     private fun rc4(key: ByteArray, input: ByteArray): ByteArray {
         val s = IntArray(256) { it }
         var j = 0
@@ -104,6 +99,7 @@ class AniSugeProvider : MainAPI() {
         return result.toString()
     }
 
+    // vrf token the ajax endpoints expect, matching the site's client js
     private fun generateVrf(input: String): String {
         val encoded = URLEncoder.encode(input, "UTF-8").replace("+", "%20")
         val key = "ysJhV6U27FVIjjuk".toByteArray(Charsets.UTF_8)
@@ -126,6 +122,7 @@ class AniSugeProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("anisuge") ?: mainUrl
         if (page > 1) return newHomePageResponse(request.name, emptyList())
         val html = quickGet("$mainUrl/home")
@@ -238,8 +235,7 @@ class AniSugeProvider : MainAPI() {
                 ?: 1
             val epTitle = epLink.attr("data-num")?.takeIf { it.isNotBlank() } ?: "Episode $epNum"
             val dataIds = epLink.attr("data-ids") ?: return@forEach
-            // mapper API coords (assets/js/mapper.js) — kept blank-safe so episodes
-            // without them still load via the legacy server path
+            // episodes without mapper coords fall back to the legacy server path
             val malId = epLink.attr("data-mal").trim()
             val slug = epLink.attr("data-slug").takeIf { it.isNotBlank() } ?: epNum.toString()
             val timestamp = epLink.attr("data-timestamp").trim()
@@ -260,9 +256,7 @@ class AniSugeProvider : MainAPI() {
             }
         }
 
-        val tvType = TvType.Anime
-
-        return newAnimeLoadResponse(title, url, tvType) {
+        return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
             this.backgroundPosterUrl = banner
             this.year = year
@@ -273,12 +267,8 @@ class AniSugeProvider : MainAPI() {
         }
     }
 
-    /**
-     * Episode data (new format):
-     *   baseUrl|animeId|epNum|dataIds|malId|slug|timestamp|sub|dub
-     * dataIds feeds the legacy ajax/server/list flow; mal/slug/timestamp feed
-     * the mapper.nekostream.site API the site now uses for its sources.
-     */
+    // episode data: baseUrl|animeId|epNum|dataIds|malId|slug|timestamp|sub|dub
+    // dataIds feeds the legacy server flow, mal/slug/timestamp the mapper api
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -291,7 +281,6 @@ class AniSugeProvider : MainAPI() {
         val baseUrl = parts[0]
         val epNum = parts[2]
         val dataIds = parts[3]
-        // mapper coords live at parts 4..6 in the new 8-part format
         val malId = parts.getOrNull(4)
         val slug = parts.getOrNull(5) ?: epNum
         val timestamp = parts.getOrNull(6)
@@ -299,32 +288,25 @@ class AniSugeProvider : MainAPI() {
 
         var anyLoaded = false
 
-        // ---- Path A: legacy native servers (ajax/server/list) ----
-        // The site currently returns an empty server-wrapper here, but this is
-        // kept so sources reappear instantly if the site restores them.
+        // legacy native servers, currently empty on the site but kept so
+        // sources reappear instantly if it restores them
         try {
             if (loadLegacyServers(baseUrl, dataIds, selectedType, subtitleCallback, callback)) {
                 anyLoaded = true
             }
-        } catch (e: Exception) {
-            Log.d("AniSuge", "legacy server path failed: ${e.message}")
-        }
+        } catch (_: Exception) {}
 
-        // ---- Path B: mapper API (current primary source of links) ----
         if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
             try {
                 if (loadMapperSources(baseUrl, malId, slug, timestamp, selectedType, subtitleCallback, callback)) {
                     anyLoaded = true
                 }
-            } catch (e: Exception) {
-                Log.d("AniSuge", "mapper path failed: ${e.message}")
-            }
+            } catch (_: Exception) {}
         }
 
         anyLoaded
     }
 
-    /** Legacy flow: ajax/server/list -> ajax/server?get -> embed resolution. */
     private suspend fun loadLegacyServers(
         baseUrl: String,
         dataIds: String,
@@ -332,7 +314,7 @@ class AniSugeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        // '+' in the base64 blob MUST be URL-encoded or the API mangles it
+        // '+' in the base64 blob must be url-encoded or the api mangles it
         val encodedIds = URLEncoder.encode(dataIds, "UTF-8")
         val serverListResponseText = app.get(
             url = "$baseUrl/ajax/server/list?servers=$encodedIds",
@@ -393,9 +375,7 @@ class AniSugeProvider : MainAPI() {
                     if (resolveEmbed(playerUrl, baseUrl, serverName, subtitleCallback, wrappedCallback)) {
                         loadedSingle = true
                     }
-                } catch (e: Exception) {
-                    Log.e("AniSuge", "Failed loading links from server $serverName: ${e.message}")
-                }
+                } catch (_: Exception) {}
                 loadedSingle
             }
         }.awaitAll()
@@ -403,10 +383,6 @@ class AniSugeProvider : MainAPI() {
         loadedResults.any { it }
     }
 
-    /**
-     * Mapper flow (assets/js/mapper.js): per-episode providers from
-     * mapper.nekostream.site with streaming urls and download entries.
-     */
     private suspend fun loadMapperSources(
         baseUrl: String,
         malId: String,
@@ -424,7 +400,6 @@ class AniSugeProvider : MainAPI() {
             val entry = if (selectedType == "dub") subDub.second else subDub.first
             if (entry == null) continue
 
-            // 1. streaming url — the site resolves it through ajax/server?get=
             val streamUrl = entry.url
             if (streamUrl != null) {
                 var embedUrl: String? = null
@@ -439,22 +414,18 @@ class AniSugeProvider : MainAPI() {
                     ).text
                     val serverInfoJson = parseJson<ServerInfoResponse>(serverInfoText)
                     embedUrl = serverInfoJson.result?.url
-                } catch (e: Exception) {
-                    Log.d("AniSuge", "mapper url via ajax/server failed: ${e.message}")
+                } catch (_: Exception) {
+                    // the site may not wrap this one, use the mapper url directly
                 }
-                // fall back to treating the mapper url as the embed itself
                 if (embedUrl.isNullOrBlank()) embedUrl = streamUrl
 
                 try {
                     if (resolveEmbed(embedUrl, baseUrl, displayName, subtitleCallback, callback)) {
                         anyLoaded = true
                     }
-                } catch (e: Exception) {
-                    Log.d("AniSuge", "mapper embed $displayName failed: ${e.message}")
-                }
+                } catch (_: Exception) {}
             }
 
-            // 2. download entries — pahe.nekostream.site -> workers.dev -> kwik.cx
             for ((qualityLabel, paheUrl) in entry.downloads) {
                 try {
                     val kwikUrl = PaheDownloadResolver.resolveKwikUrl(paheUrl) ?: continue
@@ -463,8 +434,8 @@ class AniSugeProvider : MainAPI() {
                     val qualityInt = qualityLabel.filter { it.isDigit() }.toIntOrNull()
                     callback.invoke(
                         newExtractorLink(
-                            "AniSuge",
-                            "AniSuge $displayName $qualityLabel",
+                            name,
+                            "$name $displayName $qualityLabel",
                             playUrl,
                             if (playUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) {
@@ -474,15 +445,12 @@ class AniSugeProvider : MainAPI() {
                         }
                     )
                     anyLoaded = true
-                } catch (e: Exception) {
-                    Log.d("AniSuge", "download $displayName $qualityLabel failed: ${e.message}")
-                }
+                } catch (_: Exception) {}
             }
         }
         return anyLoaded
     }
 
-    /** Resolves an embed URL: megaplay clones, plyr.php base64, or generic extractor. */
     private suspend fun resolveEmbed(
         playerUrl: String,
         baseUrl: String,
@@ -490,19 +458,18 @@ class AniSugeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // plyr.php#<base64> style direct links
         if (playerUrl.contains("plyr.php#")) {
             val b64 = playerUrl.substringAfter("#").substringBefore("#")
             val decodedUrl = try {
-                String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT), Charsets.UTF_8)
-            } catch (e: Exception) {
+                String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
+            } catch (_: Exception) {
                 ""
             }
             if (decodedUrl.isNotBlank()) {
                 callback.invoke(
                     newExtractorLink(
                         serverName,
-                        "AniSuge $serverName",
+                        "$name $serverName",
                         decodedUrl,
                         if (decodedUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     ) {
@@ -523,20 +490,17 @@ class AniSugeProvider : MainAPI() {
         if (isMegaplayClone) {
             val stream = MegaPlayResolver.resolveStream(playerUrl, "$baseUrl/")
             if (stream != null) {
-                val label = "AniSuge $serverName"
                 return MegaPlayResolver.emitLinks(
-                    "AniSuge", label, stream.m3u8, "https://$embedHost/",
+                    name, "$name $serverName", stream.m3u8, "https://$embedHost/",
                     stream.subtitles, subtitleCallback, callback
                 )
             }
-            Log.e("AniSuge", "megaplay resolution failed for $serverName: $playerUrl")
             return false
         }
 
-        // generic extractor or WebView fallback
         val loaded = try {
             loadExtractor(playerUrl, "$baseUrl/", subtitleCallback, callback)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
         if (!loaded) {
@@ -552,7 +516,7 @@ class AniSugeProvider : MainAPI() {
                 when {
                     resolved.contains(".m3u8", ignoreCase = true) -> {
                         M3u8Helper.generateM3u8(
-                            source = "AniSuge",
+                            source = name,
                             streamUrl = resolved,
                             referer = playerUrl,
                             headers = mapOf(
@@ -565,8 +529,8 @@ class AniSugeProvider : MainAPI() {
                     resolved.contains(".mp4", ignoreCase = true) -> {
                         callback.invoke(
                             newExtractorLink(
-                                source = "AniSuge",
-                                name = "AniSuge $serverName",
+                                source = name,
+                                name = "$name $serverName",
                                 url = resolved,
                                 type = ExtractorLinkType.VIDEO
                             ) {
@@ -577,9 +541,7 @@ class AniSugeProvider : MainAPI() {
                         return true
                     }
                 }
-            } catch (e: Exception) {
-                Log.e("AniSuge", "WebView fallback failed for $serverName: ${e.message}")
-            }
+            } catch (_: Exception) {}
         }
         return loaded
     }

@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.raghav.donation.DonationManager
 
 class Xanime : MainAPI() {
 
@@ -65,6 +66,9 @@ class Xanime : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
+        XanimeApi.refreshDomain()
+        mainUrl = XanimeApi.host()
         val filters = parseFilters(request.data)
         val items = XanimeApi.browse(
             sortby = filters["sort"],
@@ -77,11 +81,13 @@ class Xanime : MainAPI() {
         return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
     }
 
-    override suspend fun search(query: String): List<SearchResponse> =
-        XanimeApi.search(query).mapNotNull { toSearch(it) }
+    override suspend fun search(query: String): List<SearchResponse> {
+        XanimeApi.refreshDomain()
+        mainUrl = XanimeApi.host()
+        return XanimeApi.search(query).mapNotNull { toSearch(it) }
+    }
 
-    // the audio tab the episode was opened from rides along in the id so
-    // loadLinks only hands out streams matching that tab
+    // the audio tab rides along in the id so loadLinks only emits matching streams
     private fun episodeData(epId: String, audio: String): String = "$epId|$audio"
 
     private fun parseEpisodeData(raw: String): Pair<String, String>? {
@@ -91,8 +97,9 @@ class Xanime : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // cloudstream hands over the id as a full mainUrl link, only the tail
-        // segment is the ani id
+        XanimeApi.refreshDomain()
+        mainUrl = XanimeApi.host()
+        // cloudstream can glue mainUrl in front of the id, only the tail is the ani id
         val aniId = url.substringBefore('?').substringAfterLast('/')
             .takeIf { it.isNotBlank() } ?: return null
         val detail = XanimeApi.detail(aniId) ?: return null
@@ -131,9 +138,7 @@ class Xanime : MainAPI() {
         val tags = ArrayList<String>()
         detail.genres.forEach { tags.add(it.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }) }
 
-        // the dub and sub chips only render on series pages, a movie carrying
-        // both tracks is presented as a single episode series so the switcher
-        // stays reachable, single audio movies keep the real movie layout
+        // dual audio movies are typed as anime so the sub/dub switcher stays reachable
         val tvType = if (siteType == TvType.AnimeMovie && dubEps.isNotEmpty()) {
             TvType.Anime
         } else {
@@ -172,8 +177,7 @@ class Xanime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // cloudstream can glue mainUrl in front of non http ids, drop it so the
-        // epId|audio pair is found
+        // cloudstream can glue mainUrl in front of non http ids, drop it
         val clean = data.removePrefix("$mainUrl/").removePrefix("/")
         val (epId, audio) = parseEpisodeData(clean) ?: return false
         if (epId.isBlank()) return false
@@ -185,13 +189,12 @@ class Xanime : MainAPI() {
         var anyEmitted = false
 
         for (source in sources) {
-            // the tokens are minted per api call so links are always fresh, a
-            // quick master probe keeps dead cdns out of the list
+            // tokens are minted per api call so links stay fresh, probe to skip dead cdns
             val master = XanimeApi.fetchText(source.path) ?: continue
             if (!master.contains("#EXTM3U")) continue
 
             val count = sameNameCount.merge(source.name, 1, Int::plus) ?: 1
-            val base = serverName(source.name)
+            val base = "Xanime ${serverName(source.name)}"
             val nameLabel = if (count > 1) "$base $count" else base
             val label = "$nameLabel (${audioLabel(audio)})"
 
@@ -203,8 +206,7 @@ class Xanime : MainAPI() {
                     type = ExtractorLinkType.M3U8
                 ) {
                     this.headers = playHeaders
-                    // master playlist carries every resolution, the player
-                    // quality picker exposes them as tracks
+                    // the master playlist carries every resolution as tracks
                     this.quality = Qualities.Unknown.value
                 }
             )

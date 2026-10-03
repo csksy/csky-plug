@@ -1,4 +1,4 @@
-version = 3
+version = 6
 
 android {
     buildFeatures {
@@ -11,9 +11,8 @@ dependencies {
 }
 
 cloudstream {
-    description = "watch Multi source - Movies and Series"
-    authors = listOf("csksy")
-
+    description = "Movies and series from multiple sources"
+    authors = listOf("KSHITIJ8473")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     language = "en"

@@ -27,6 +27,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
+import com.raghav.donation.DonationManager
 
 class AniWaves : MainAPI() {
     override var mainUrl = "https://aniwaves.ru"
@@ -57,6 +58,7 @@ class AniWaves : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("aniwaves") ?: mainUrl
         val path = request.data
         val url = if (path.startsWith("filter")) {
@@ -203,11 +205,11 @@ class AniWaves : MainAPI() {
         val parts = data.split("|")
         if (parts.size < 4) return@coroutineScope false
 
-        val dubOrSub = parts[1].trim()
-        val animeId = parts[2].trim()
-        val epNum = parts[3].trim()
-        val dataIds = parts[4].trim().replace("&amp;", "&")
-        val watchUrl = parts[0].trim()
+        val dubOrSub = parts[1]
+        val animeId = parts[2]
+        val epNum = parts[3]
+        val dataIds = parts[4].replace("&amp;", "&")
+        val watchUrl = parts[0]
 
         val serverResponse = app.get(
             "$mainUrl/ajax/server/list?servers=$dataIds",
@@ -275,7 +277,23 @@ class AniWaves : MainAPI() {
                     if (!isNew) return@async
 
                     val loaded = when {
-                        embedUrl.contains("echovideo") || embedUrl.contains("weneverbeenfree.com") || embedUrl.contains("filemoon") || embedUrl.contains("myvidplay.com") -> {
+                        embedUrl.contains("megaplay") -> {
+                            val stream = MegaPlayHelper.resolveStream(embedUrl, watchUrl, "AniWaves")
+                            if (stream != null) {
+                                MegaPlayHelper.emitLinks(
+                                    "AniWaves $displayName",
+                                    "$displayName (${targetType.uppercase()})",
+                                    stream.m3u8,
+                                    embedUrl,
+                                    stream.subtitles,
+                                    subtitleCallback,
+                                    linkCallback
+                                )
+                            } else {
+                                false
+                            }
+                        }
+                        embedUrl.contains("echovideo") || embedUrl.contains("weneverbeenfree.com") || embedUrl.contains("filemoon") || embedUrl.contains("mfw09.org") || embedUrl.contains("myvidplay.com") || embedUrl.contains("playmogo") -> {
                             AniWavesWebView("$displayName (${targetType.uppercase()})", embedUrl.baseUrl()).getUrl(embedUrl, watchUrl, subtitleCallback, linkCallback)
                             true
                         }
@@ -288,8 +306,7 @@ class AniWaves : MainAPI() {
                             foundAnySources = true
                         }
                     }
-                } catch (_: Exception) {
-                }
+                } catch (_: Exception) {}
             }
         }
 

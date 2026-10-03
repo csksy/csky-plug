@@ -12,7 +12,6 @@ import android.widget.TextView
 import android.widget.Button
 import android.widget.ScrollView
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -30,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.raghav.donation.DonationManager
 
 class RaghavAnime : MainAPI() {
     override var mainUrl = "https://graphql.anilist.co"
@@ -151,7 +151,7 @@ class RaghavAnime : MainAPI() {
                 dialog.show()
                 dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "showAniListDownPopup: ${e.message}")
+                if (e is CancellationException) throw e
             }
         }
     }
@@ -165,6 +165,7 @@ class RaghavAnime : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         if (request.data == "RECOMMEND") {
             if (!RaghavAnimeFeatures.isEnabled("recommendations")) {
                 return newHomePageResponse(request.name, emptyList())
@@ -181,7 +182,6 @@ class RaghavAnime : MainAPI() {
                 }
                 newHomePageResponse(request.name, home)
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[Recommendations] failed: ${e.message}")
                 newHomePageResponse(request.name, emptyList())
             }
         }
@@ -267,7 +267,6 @@ class RaghavAnime : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "search '$query' failed: ${e.message}")
             emptyList()
         }
         return results
@@ -419,33 +418,9 @@ class RaghavAnime : MainAPI() {
                     AniWaves().loadLinks(epData, false, subtitleCallback, callback)
                 }
             },
-            "Anikai" to {
-                val epData = SourceCache.episodeData("Anikai", animeKey, isDub, episode) {
-                    resolveAnikai(searchTitles, targetTitles, episode, isDub, linkData.year)
-                }
-                if (epData != null) {
-                    Anikai().loadLinks(epData, false, subtitleCallback, callback)
-                }
-            },
-            "AniDb" to {
-                val epData = SourceCache.episodeData("AniDb", animeKey, isDub, episode) {
-                    resolveAniDb(searchTitles, targetTitles, episode, isDub, linkData.year)
-                }
-                if (epData != null) {
-                    AniDb().loadLinks(epData, false, subtitleCallback, callback)
-                }
-            },
             "AniKage" to {
                 val anikage = RaghavAniKage()
                 anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
-            },
-            "Anineko" to {
-                val epData = SourceCache.episodeData("Anineko", animeKey, isDub, episode) {
-                    resolveAnineko(searchTitles, targetTitles, episode, isDub, linkData.year)
-                }
-                if (epData != null) {
-                    Anineko().loadLinks(epData, false, subtitleCallback, callback)
-                }
             },
             "2DHive" to {
                 val epData = SourceCache.episodeData("2DHive", animeKey, isDub, episode) {
@@ -463,9 +438,13 @@ class RaghavAnime : MainAPI() {
                     RaghavAnikoto().loadLinks(epData, false, subtitleCallback, callback)
                 }
             },
-            "Enma" to {
-                val enma = RaghavEnma()
-                enma.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+            "GoTaku" to {
+                val epData = SourceCache.episodeData("GoTaku", animeKey, isDub, episode) {
+                    resolveGoTaku(searchTitles, targetTitles, episode, isDub, linkData.year)
+                }
+                if (epData != null) {
+                    RaghavGoTaku().loadLinks(epData, false, subtitleCallback, callback)
+                }
             },
             "Animo" to {
                 val epData = SourceCache.episodeData("Animo", animeKey, isDub, episode) {
@@ -499,17 +478,17 @@ class RaghavAnime : MainAPI() {
                     RaghavAniNami().loadLinks(epData, false, subtitleCallback, callback)
                 }
             },
-            "AniDao" to {
-                val epData = SourceCache.episodeData("AniDao", animeKey, isDub, episode) {
-                    resolveAniDao(searchTitles, targetTitles, episode, isDub, linkData.year)
-                }
-                if (epData != null) {
-                    RaghavAniDao().loadLinks(epData, false, subtitleCallback, callback)
-                }
-            },
             "AniChan" to {
                 val anichan = RaghavAniChan()
                 anichan.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+            },
+            "Xanime" to {
+                val epData = SourceCache.episodeData("Xanime", animeKey, isDub, episode) {
+                    resolveXanime(searchTitles, targetTitles, episode, isDub, linkData.year)
+                }
+                if (epData != null) {
+                    RaghavXanime().loadLinks(epData, false, subtitleCallback, callback)
+                }
             },
             "Kyren" to {
                 val kyren = RaghavKyren()
@@ -521,20 +500,13 @@ class RaghavAnime : MainAPI() {
             },
         )
 
-        // fast and reliable sources start first (flaky ones are merely queued
-        // later, never skipped) so usable links show up as early as possible
         val ordered = sources
             .mapIndexed { idx, src -> Triple(RaghavSourceStats.priority(src.first), idx, src) }
             .sortedByDescending { it.first }
             .map { it.third }
 
         val concurrency = RaghavPerf.sourceConcurrency()
-        Log.d(
-            "RaghavAnime",
-            "loading ${ordered.size} sources on ${RaghavPerf.profile()} (concurrency $concurrency, prioritized by success rate)"
-        )
 
-        // slow sources keep resolving in the background, but the player never waits past the cap
         linksJob?.cancel()
         linksJob = loadScope.launch {
             RaghavPerf.runLimitedAsync(concurrency, ordered.map { (name, task) ->
@@ -546,7 +518,6 @@ class RaghavAnime : MainAPI() {
         return true
     }
 
-    /** One source inside the bounded queue: timed, retried once, scored. */
     private suspend fun runBoundedSource(tag: String, task: suspend () -> Unit) {
         val start = System.currentTimeMillis()
         var ok = false
@@ -557,7 +528,6 @@ class RaghavAnime : MainAPI() {
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Throwable) {
-                Log.w("RaghavAnime", "[$tag] failed (${e.message}), retrying once")
                 delay(2000)
                 task()
                 ok = true
@@ -567,7 +537,6 @@ class RaghavAnime : MainAPI() {
             throw c
         } catch (e: Throwable) {
             RaghavSourceStats.record(tag, ok, System.currentTimeMillis() - start)
-            Log.e("RaghavAnime", "[$tag] failed: ${e.message}")
         }
     }
 
@@ -624,9 +593,7 @@ class RaghavAnime : MainAPI() {
             SourceCache.warm(provider, animeKey, isDub, resolve)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            Log.d("RaghavAnime", "[$provider] warm failed: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
     private fun prefetchSources(anilistId: Int, title: String, jpTitle: String?, year: Int?) {
@@ -637,19 +604,18 @@ class RaghavAnime : MainAPI() {
 
         prefetchJob?.cancel()
         prefetchJob = prefetchScope.launch {
-            // let the show page finish rendering before any background work starts
             delay(750)
             for (isDub in listOf(false, true)) {
                 if (!isActive) return@launch
                 RaghavPerf.runLimitedAsync(RaghavPerf.prefetchConcurrency(), listOf(
                     { warmSource("AniWaves", animeKey, isDub) { resolveAniWaves(titles, targets, null, isDub)?.episodes } },
-                    { warmSource("Anikai", animeKey, isDub) { resolveAnikai(titles, targets, null, isDub, year)?.episodes } },
-                    { warmSource("Anineko", animeKey, isDub) { resolveAnineko(titles, targets, null, isDub, year)?.episodes } },
                     { warmSource("2DHive", animeKey, isDub) { resolveTwoDHive(titles, targets, null, isDub, year)?.episodes } },
                     { warmSource("AniKoto", animeKey, isDub) { resolveAniKoto(titles, targets, null, isDub, year)?.episodes } },
+                    { warmSource("GoTaku", animeKey, isDub) { resolveGoTaku(titles, targets, null, isDub, year)?.episodes } },
                     { warmSource("Animo", animeKey, isDub) { resolveAnimo(titles, targets, null, isDub, year)?.episodes } },
                     { warmSource("AniNami", animeKey, isDub) { resolveAniNami(anilistId, null, isDub)?.episodes } },
-                    { warmSource("AniDao", animeKey, isDub) { resolveAniDao(titles, targets, null, isDub, year)?.episodes } }
+                    { warmSource("Xanime", animeKey, isDub) { resolveXanime(titles, targets, null, isDub, year)?.episodes } },
+                    { RaghavAniChan().warm() }
                 ))
             }
         }
@@ -687,30 +653,6 @@ class RaghavAnime : MainAPI() {
             sourceTag = "AniSuge")
     }
 
-    private suspend fun resolveAnikai(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
-        val anikai = Anikai()
-        return findEpisodeMap(titles, targets, episode, isDub, year,
-            doSearch = { anikai.search(it) },
-            doLoad = { anikai.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
-            sourceTag = "Anikai")
-    }
-
-    private suspend fun resolveAniDb(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
-        val aniDb = AniDb()
-        return findEpisodeMap(titles, targets, episode, isDub, year,
-            doSearch = { q -> aniDb.search(q, 1).items },
-            doLoad = { aniDb.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
-            sourceTag = "AniDb")
-    }
-
-    private suspend fun resolveAnineko(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
-        val anineko = Anineko()
-        return findEpisodeMap(titles, targets, episode, isDub, year,
-            doSearch = { anineko.search(it) },
-            doLoad = { anineko.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
-            sourceTag = "Anineko")
-    }
-
     private suspend fun resolveTwoDHive(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
         val twoDHive = RaghavTwoDHive()
         return findEpisodeMap(titles, targets, episode, isDub, year,
@@ -735,6 +677,14 @@ class RaghavAnime : MainAPI() {
             sourceTag = "Animo")
     }
 
+    private suspend fun resolveGoTaku(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
+        val gotaku = RaghavGoTaku()
+        return findEpisodeMap(titles, targets, episode, isDub, year,
+            doSearch = { gotaku.search(it) },
+            doLoad = { gotaku.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
+            sourceTag = "GoTaku")
+    }
+
     private suspend fun resolveSenshi(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
         val senshi = RaghavSenshi()
         return findEpisodeMap(titles, targets, episode, isDub, year,
@@ -743,12 +693,12 @@ class RaghavAnime : MainAPI() {
             sourceTag = "Senshi")
     }
 
-    private suspend fun resolveAniDao(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
-        val aniDao = RaghavAniDao()
+    private suspend fun resolveXanime(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
+        val xanime = RaghavXanime()
         return findEpisodeMap(titles, targets, episode, isDub, year,
-            doSearch = { aniDao.search(it) },
-            doLoad = { aniDao.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
-            sourceTag = "AniDao")
+            doSearch = { xanime.search(it) },
+            doLoad = { xanime.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
+            sourceTag = "Xanime")
     }
 
     private suspend fun resolveAniWaves(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean): SourceCache.Match? {
@@ -759,7 +709,6 @@ class RaghavAnime : MainAPI() {
         for (t in titles) {
             val searchResults = try { aniWaves.search(t) } catch (e: Throwable) {
                 failedSearches++
-                Log.e("RaghavAnime", "[AniWaves] search failed for '$t': ${e.message}")
                 continue
             }
             val candidates = searchResults.filter { r -> cleanedTargets.contains(cleanTitle(r.name)) }
@@ -778,7 +727,6 @@ class RaghavAnime : MainAPI() {
                         return SourceCache.Match(map, episode != null)
                     }
                 } catch (e: Throwable) {
-                    Log.e("RaghavAnime", "[AniWaves] load failed for '${result.name}': ${e.message}")
                     continue
                 }
             }
@@ -812,7 +760,6 @@ class RaghavAnime : MainAPI() {
         for (t in searchTitles) {
             val searchResults = try { doSearch(t) } catch (e: Throwable) {
                 failedSearches++
-                Log.e("RaghavAnime", "[$sourceTag] search failed for '$t': ${e.message}")
                 continue
             }
             for (r in searchResults) {
@@ -849,7 +796,7 @@ class RaghavAnime : MainAPI() {
                     return SourceCache.Match(map, episode != null)
                 }
             } catch (e: Throwable) {
-                Log.e("RaghavAnime", "[$sourceTag] load failed for '${cand.result.name}': ${e.message}")
+                if (e is CancellationException) throw e
             }
         }
 

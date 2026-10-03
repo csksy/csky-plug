@@ -1,10 +1,4 @@
-// use an integer for version numbers
-// v21: ported NATIVE decryption algorithm (b64->reverse->swap->b64->AES)
-//      from deployed PlayZTV into LIVETVCryptoUtils so the live API's
-//      events.txt / categories.txt payloads decrypt correctly. Also
-//      hardened LIVETVPlugin so settings always shows providers even
-//      if the initial fetch at plugin load failed.
-version = 21
+version = 37
 
 android {
     namespace = "com.laddu100"
@@ -26,15 +20,7 @@ dependencies {
 cloudstream {
     language = "en"
     description = "Watch LIVE TV channels & sports via LIVE TV"
-    authors = listOf("raghav")
-
-    /**
-     * Status int as the following:
-     * 0: Down
-     * 1: Ok
-     * 2: Slow
-     * 3: Beta only
-     * */
+    authors = listOf("raghav,cnc")
     status = 1
     tvTypes = listOf(
         "Live",

@@ -1,24 +1,12 @@
 package com.laddu100
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
-/**
- * Cineverse source (modiplay embeds).
- *
- * The embed page lists servers via
- * switchServer('embedUrl','platform','Name','code','title'). Packer embed
- * pages (streamhg/earnvids style) expose "hls2"/"hls3"/"hls4" after jsunpack
- * plus vtt subtitle tracks; everything else falls back to the site's own
- * proxy.php which serves a rewritten master playlist.
- */
 object MMModiplay {
-
-    private const val TAG = "MM_Modiplay"
 
     data class CineServer(
         val embed: String,
@@ -33,7 +21,7 @@ object MMModiplay {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): String? {
-        // returns the modiplay origin (needed by gdmirror proxy fallback)
+        // the returned origin feeds gdmirror's proxy fallback
         val base = MMNet.originOf(embedUrl)
         if (base.isBlank()) return null
         val html = MMNet.getText(embedUrl, referer = "https://multimovies.casa/") ?: return base
@@ -44,7 +32,7 @@ object MMModiplay {
             }.distinctBy { it.code }.toList()
 
         if (servers.isEmpty()) {
-            // no server list - maybe a bare packer page
+            // no server list - treat it as a bare packer page
             MMPacker.resolvePackerEmbed(embedUrl, label, subtitleCallback, callback)
             return base
         }
@@ -59,14 +47,14 @@ object MMModiplay {
                     handled = MMPacker.resolvePackerEmbed(
                         server.embed, linkLabel, subtitleCallback, callback,
                     )
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     handled = false
                 }
             }
             if (!handled) {
                 try {
-                    resolveProxyFile(base, server.platform, server.code, linkLabel, subtitleCallback, callback)
-                } catch (e: Exception) {
+                    resolveProxyFile(base, server.platform, server.code, linkLabel, callback)
+                } catch (_: Exception) {
                     continue
                 }
             }
@@ -74,17 +62,11 @@ object MMModiplay {
         return base
     }
 
-    /**
-     * modiplay's proxy endpoint: /proxy.php?p={platform}&c={code}...
-     * returns var src="..." + var SEG_REF="..." pointing at a rewritten
-     * master playlist served through the proxy.
-     */
     suspend fun resolveProxyFile(
         base: String,
         platform: String,
         fileCode: String,
         linkLabel: String,
-        @Suppress("UNUSED_PARAMETER") subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val proxyUrl = "$base/proxy.php?p=$platform&c=$fileCode&title=&site_ref=&noredirect=1"
@@ -105,7 +87,7 @@ object MMModiplay {
         return true
     }
 
-    /** site subtitle api - often null, purely best-effort */
+    // the subtitle api answers null more often than not - best effort only
     private suspend fun loadSubs(base: String, embedUrl: String, subtitleCallback: (SubtitleFile) -> Unit) {
         try {
             val imdbId = Regex("[?&]id=(tt\\d+)").find(embedUrl)?.groupValues?.get(1) ?: ""
@@ -128,18 +110,11 @@ object MMModiplay {
                     subtitleCallback(newSubtitleFile(langName, url) {})
                 }
             }
-        } catch (e: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 }
 
-/**
- * Shared jsunpacked embed resolution (streamhg / earnvids style pages used by
- * both modiplay and gdmirror) + master playlist emission.
- */
 object MMPacker {
-
-    private const val TAG = "MM_Packer"
 
     suspend fun resolvePackerEmbed(
         embedUrl: String,
@@ -151,10 +126,8 @@ object MMPacker {
         val unpacked = JsPacker.parseAndUnpack(html) ?: return false
         val base = MMNet.originOf(embedUrl)
 
-        // hls2 is a direct CDN url with an embedded token - it works from any
-        // http client. hls4 is a site-relative /stream/ path that only plays
-        // in the site's own browser context (403 otherwise), so it is the last
-        // resort. hls3 behaves like hls2 but with .txt extensions.
+        // hls2/hls3 are direct cdn urls; hls4 is site-relative and 403s
+        // outside the site's browser context, so it stays the last resort
         val hls2 = Regex("\"hls2\"\\s*:\\s*\"([^\"]+)\"").find(unpacked)?.groupValues?.get(1)
         val hls3 = Regex("\"hls3\"\\s*:\\s*\"([^\"]+)\"").find(unpacked)?.groupValues?.get(1)
         val hls4 = Regex("\"hls4\"\\s*:\\s*\"([^\"]+)\"").find(unpacked)?.groupValues?.get(1)
@@ -171,7 +144,6 @@ object MMPacker {
             }
         )
 
-        // vtt subtitle tracks declared alongside the stream
         val seen = mutableSetOf<String>()
         for (m in Regex("file\\s*:\\s*\"(https?[^\"]+\\.vtt)\"").findAll(unpacked)) {
             val url = MMNet.deEsc(m.groupValues[1])
@@ -193,11 +165,6 @@ object MMPacker {
         return true
     }
 
-    /**
-     * Parse a master playlist and emit links: per-audio-track variants when
-     * every track has audio-specific playlists, else the best variant (or the
-     * master itself when nothing is parsable).
-     */
     suspend fun emitMaster(
         master: String,
         masterUrl: String,
@@ -214,7 +181,7 @@ object MMPacker {
             }.toList()
 
         if (audioTracks.isNotEmpty()) {
-            // urlset style: index-f1-v1-a1 / index-f2-v1-a1 ... audio N maps to -aN
+            // urlset naming: index-f1-v1-a1, index-f2-v1-a1 ... audio N maps to -aN
             val audioSpecific = variants.isNotEmpty() &&
                 audioTracks.indices.all { idx -> variants.any { it.third.contains("-a${idx + 1}") } }
             if (audioSpecific) {
@@ -237,7 +204,7 @@ object MMPacker {
                 }
                 return
             }
-            // muxed master with selectable audio - emit master directly
+            // muxed master with selectable audio
             callback(
                 newExtractorLink(
                     label,

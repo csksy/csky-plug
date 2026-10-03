@@ -3,7 +3,6 @@ package com.laddu100
 import android.util.Base64
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
@@ -18,32 +17,9 @@ import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * MegaPlay (megaplay.buzz and clones) — fully rewritten 2026-09-15.
- *
- * VERIFIED LIVE against megaplay.buzz:
- *  - /stream/getSourcesNew?id=<dataId>&type=<sub|dub> answers
- *    {"tracks":[..],"t":1,"intro":{..},"outro":{..},"server":4,"enc":"<base64url>"}
- *  - "enc" = AES-CBC(key seed "i?LMTAx0Q6,:}50U" zero-padded to 32B, IV "W0;27ToaUpl_P%'c")
- *    of {"file":"https://fetch.nexabloom.top/anime/<id1>/<id2>/master.m3u8"}
- *  - the ?s= query param selects the CDN and MUST NOT be forwarded:
- *      default/bcdn -> fetch.nexabloom.top (variant playlists hold ABSOLUTE segment
- *                      urls on clean Cloudflare CDNs: qx-01.quavex.top,
- *                      tx-01.tyrionx.top, cdn-XXX.streamzone1.site ... plain MPEG-TS,
- *                      no byte prefix, only need Referer)
- *      tcdn         -> megap.shiora.site (segments are absolute tiktokcdn.com urls
- *                      with a 252-byte PNG header prepended -> UNPLAYABLE in
- *                      ExoPlayer + tiktokcdn is ISP-blocked in India)
- *  - ONLY the master.m3u8 request requires an HMAC token (openresty 403 otherwise):
- *        payload = "<unix-expires>|<id1>/<id2>"   (ids lowercased from the path)
- *        token   = b64url(payload) + "." + b64url(HMAC-SHA256("MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s", payload))
- *        url     = url + (has query ? "&" : "?") + "token=" + token
- *    The real web player signs with a 90s expiry, but the server only checks
- *    expires > now, so we sign a long-lived (7 day) token. Variant playlists and
- *    segments are served WITHOUT any token (Referer only).
- */
+// megaplay clones encrypt the enc field of their sources response; the key
+// material sits in lib/newclient.min.js, with pinned fallbacks
 object MegaPlayCipher {
-    private const val TAG = "MegaPlayCipher"
     private const val FALLBACK_KEY_SEED = "i?LMTAx0Q6,:}50U"
     private const val FALLBACK_IV_SEED = "W0;27ToaUpl_P%'c"
 
@@ -85,8 +61,7 @@ object MegaPlayCipher {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
-        } catch (e: Exception) {
-            Log.d(TAG, "token decrypt failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -101,7 +76,6 @@ object MegaPlayCipher {
 }
 
 object MegaPlayResolver {
-    private const val TAG = "MegaPlayResolver"
     private val mapper = ObjectMapper()
 
     private const val USER_AGENT =
@@ -112,11 +86,8 @@ object MegaPlayResolver {
     fun audioTypeFromUrl(url: String): String? =
         Regex("""/(dub|sub)(?:[/?#]|$)""").find(url)?.groupValues?.get(1)
 
-    /**
-     * Resolves a megaplay embed page to the playable master m3u8 (default CDN).
-     * The ?s= param is deliberately NOT forwarded — s=tcdn selects a CDN whose
-     * segments are tiktokcdn urls with a 252-byte junk prefix (unplayable).
-     */
+    // the ?s= param is never forwarded: the tcdn flavor serves segments with
+    // a 252-byte prefix ExoPlayer cannot parse, the default cdn plays clean
     suspend fun resolveStream(embedUrl: String, referer: String?): MegaPlayStream? {
         val host = Regex("""https?://([^/]+)""").find(embedUrl)?.groupValues?.get(1) ?: return null
         val pageHeaders = mapOf(
@@ -126,8 +97,7 @@ object MegaPlayResolver {
 
         val pageHtml = try {
             app.get(embedUrl, headers = pageHeaders).text
-        } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] embed page failed for $host: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
 
@@ -153,7 +123,6 @@ object MegaPlayResolver {
                 "Referer" to embedUrl
             )
             for (endpoint in listOf("getSourcesNew", "getSources")) {
-                // NOTE: no &s= param — always the default (nexabloom) CDN.
                 val url = "$base/stream/$endpoint?id=$streamId&type=$audioType"
                 val root = fetchJson(url, ajaxHeaders) ?: continue
                 val streamUrl = extractStream(root, base)
@@ -194,32 +163,25 @@ object MegaPlayResolver {
     }
 
     private suspend fun fetchJson(url: String, headers: Map<String, String>): JsonNode? {
-        val text = try {
-            app.get(url, headers = headers, timeout = 15_000L).text
-        } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] sources request failed: ${e.message}")
-            return null
-        }
         return try {
-            mapper.readTree(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] sources json parse failed: ${e.message}")
+            mapper.readTree(app.get(url, headers = headers, timeout = 15_000L).text)
+        } catch (_: Exception) {
             null
         }
     }
 
-    // --- HMAC url token (openresty on the CDN requires it for master.m3u8) ---
+    // the cdn's openresty layer 403s master.m3u8 without a token; the web
+    // player signs for 90s but the server only rejects tokens already expired
     private const val TOKEN_KEY = "MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s"
-    private const val TOKEN_LIFETIME_SECONDS = 7L * 24L * 60L * 60L // 7 days (server only checks expires > now)
+    private const val TOKEN_LIFETIME_SECONDS = 7L * 24L * 60L * 60L
     private val hexIdsRegex = Regex("""/([a-f0-9]{32})/([a-f0-9]{32})/""", RegexOption.IGNORE_CASE)
 
     private fun b64url(bytes: ByteArray): String =
         Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
-    /** Signs a megaplay CDN url with a long-lived HMAC token (verified live). */
-    fun signUrl(url: String, lifetimeSeconds: Long = TOKEN_LIFETIME_SECONDS): String {
+    fun signUrl(url: String): String {
         val m = hexIdsRegex.find(url) ?: return url
-        val expires = System.currentTimeMillis() / 1000L + lifetimeSeconds
+        val expires = System.currentTimeMillis() / 1000L + TOKEN_LIFETIME_SECONDS
         val payload = "$expires|${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}"
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(TOKEN_KEY.toByteArray(Charsets.UTF_8), "HmacSHA256"))
@@ -231,12 +193,7 @@ object MegaPlayResolver {
 
     private data class VariantEntry(val url: String, val quality: Int?)
 
-    /**
-     * Splits the (signed) master playlist into its video variants.
-     * Skips trick-play (i-frame) entries naturally: their URI is an inline
-     * attribute of #EXT-X-I-FRAME-STREAM-INF, never the line after
-     * #EXT-X-STREAM-INF.
-     */
+    // i-frame entries only appear as attributes of #EXT-X-I-FRAME-STREAM-INF, never on their own line
     private fun parseVariants(masterUrl: String, masterText: String): List<VariantEntry> {
         val base = masterUrl.substringBefore('?').let { it.substringBeforeLast('/') + "/" }
         val out = mutableListOf<VariantEntry>()
@@ -263,11 +220,8 @@ object MegaPlayResolver {
         return out
     }
 
-    /**
-     * Emits quality-labelled, HMAC-signed links for every variant of the master
-     * playlist (plus the signed master itself as a fallback). Variant playlists
-     * and segments only need the Referer header.
-     */
+    // emits one signed link per quality variant of the master playlist, with
+    // the signed master itself as fallback when it cannot be fetched or parsed
     suspend fun emitLinks(
         source: String,
         label: String,
@@ -285,8 +239,7 @@ object MegaPlayResolver {
         val signedMaster = signUrl(m3u8)
         val masterText = try {
             app.get(signedMaster, headers = playHeaders, timeout = 15_000L).text
-        } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] signed master fetch failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
 
@@ -294,11 +247,11 @@ object MegaPlayResolver {
         val variants = masterText?.let { parseVariants(m3u8, it) } ?: emptyList()
         if (variants.isNotEmpty()) {
             for (v in variants) {
-                val qualitySuffix = v.quality?.let { "${it}p" } ?: ""
+                val suffix = v.quality?.let { "${it}p" } ?: ""
                 callback.invoke(
                     newExtractorLink(
                         source,
-                        if (qualitySuffix.isEmpty()) label else "$label $qualitySuffix",
+                        if (suffix.isEmpty()) label else "$label $suffix",
                         signUrl(v.url),
                         type = ExtractorLinkType.M3U8
                     ) {
@@ -310,7 +263,6 @@ object MegaPlayResolver {
                 found = true
             }
         } else {
-            // master could not be fetched/parsed — hand out the signed url as-is
             callback.invoke(
                 newExtractorLink(source, label, signedMaster, type = ExtractorLinkType.M3U8) {
                     this.referer = referer
@@ -331,25 +283,9 @@ object MegaPlayResolver {
     }
 }
 
-/**
- * AniSuge moved its per-episode sources to an external "mapper" API
- * (loaded via assets/js/mapper.js on the watch page):
- *
- *   https://mapper.nekostream.site/api/mal/{data-mal}/{data-slug}/{data-timestamp}
- *
- * Response: { "<provider>": { "sub": { "url": ..., "download": {quality: url} },
- *                             "dub":  { ... } }, "status": {...} }
- *
- * Provider display names follow the site's mapper.js mapping:
- * gogoanime -> Vidstream, anivibe -> vibe-Stream, animepahe -> Kiwi-Stream.
- *
- * Download urls (pahe.nekostream.site/{id}) lead to a workers.dev redirect
- * which 302s to a kwik.cx file page.
- *
- * Verified live 2026-09-14.
- */
+// per-episode sources come from the mapper api the watch page loads via assets/js/mapper.js
+//   https://mapper.nekostream.site/api/mal/{data-mal}/{data-slug}/{data-timestamp}
 object AniSugeMapper {
-    private const val TAG = "AniSugeMapper"
     private val json = ObjectMapper()
     private const val MAPPER_API = "https://mapper.nekostream.site/api/mal/"
 
@@ -365,14 +301,12 @@ object AniSugeMapper {
                 ),
                 timeout = 15_000L
             ).text
-        } catch (e: Exception) {
-            Log.d(TAG, "mapper fetch failed: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
         val root = try {
             json.readTree(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "mapper json parse failed: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
         if (!root.isObject) return null
@@ -403,6 +337,7 @@ object AniSugeMapper {
         return MapperEntry(url, downloads)
     }
 
+    // display names match the site's mapper.js
     fun displayProviderName(key: String): String = when (key.lowercase()) {
         "gogoanime" -> "Vidstream"
         "anivibe" -> "vibe-Stream"
@@ -411,12 +346,9 @@ object AniSugeMapper {
     }
 }
 
-/**
- * Resolves pahe.nekostream.site/{id} download pages to the final kwik.cx file URL.
- * Page JS builds: const url = "https://<workers.dev>/" + id  -> 302 -> kwik.cx/f/{fileId}
- */
+// pahe download pages build a workers.dev url client-side; requesting it
+// redirects to the kwik.cx file page
 object PaheDownloadResolver {
-    private const val TAG = "PaheDownloadResolver"
     private val workersUrlRegex = Regex("""const\s+url\s*=\s*"(https?://[^"]+)"""")
     private val anyHttpsRegex = Regex(""""(https?://[^"]*workers\.dev[^"]*)"""")
 
@@ -429,8 +361,7 @@ object PaheDownloadResolver {
                 ),
                 timeout = 15_000L
             ).text
-        } catch (e: Exception) {
-            Log.d(TAG, "pahe page failed: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
 
@@ -443,18 +374,14 @@ object PaheDownloadResolver {
             val res = app.get(redirector, allowRedirects = false)
             val loc = res.headers["location"]
             if (loc != null && loc.startsWith("http")) loc else null
-        } catch (e: Exception) {
-            Log.d(TAG, "workers redirect failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
 }
 
-/**
- * kwik.cx file pages (kwik.cx/f/{id}) carry a p/a/c/k/e/d script that unpacks
- * to the playable source. Handles both the direct `source='...'` form and the
- * form-POST (action + _token -> 302 direct file) form.
- */
+// kwik.cx file pages pack their player script; the unpacked script either
+// holds the source directly or a form whose action 302s to it
 class KwikExtractor : ExtractorApi() {
     override val name = "Kwik"
     override val mainUrl = "https://kwik.cx"
@@ -481,11 +408,9 @@ class KwikExtractor : ExtractorApi() {
                 }
             )
         } ?: run {
-            Log.e("Kwik", "extraction failed for $url")
         }
     }
 
-    /** Returns (playableUrl, kwikPageUrl) or null. */
     suspend fun resolve(url: String, referer: String?): Pair<String, String>? {
         val page = try {
             app.get(
@@ -496,36 +421,23 @@ class KwikExtractor : ExtractorApi() {
                 ),
                 timeout = 20_000L
             )
-        } catch (e: Exception) {
-            Log.d("Kwik", "page fetch failed: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
         val html = page.text
 
-        // packed script -> unpack once, reuse for both source & form patterns
-        val packedScript = try {
-            Jsoup.parse(html).selectFirst("script:containsData(function(p,a,c,k,e,d))")?.data()
+        val unpacked = try {
+            val packed = Jsoup.parse(html).selectFirst("script:containsData(function(p,a,c,k,e,d))")?.data()
+            packed?.let { getAndUnpack(it) }
         } catch (_: Exception) {
             null
         }
-        val unpacked = packedScript?.let {
-            try {
-                getAndUnpack(it)
-            } catch (e: Exception) {
-                Log.d("Kwik", "unpack failed: ${e.message}")
-                null
-            }
-        }
 
-        // Form 1: unpacked script contains source='...'
         if (unpacked != null) {
             sourceRegex.find(unpacked)?.groupValues?.get(1)?.let { src ->
                 if (src.startsWith("http")) return src to page.url
             }
-        }
 
-        // Form 2: unpacked script holds a form; POST action + _token -> 302 file
-        if (unpacked != null) {
             val action = formActionRegex.find(unpacked)?.groupValues?.get(1)
             val token = formTokenRegex.find(unpacked)?.groupValues?.get(1)
             if (action != null && token != null) {
@@ -533,7 +445,7 @@ class KwikExtractor : ExtractorApi() {
             }
         }
 
-        // Form 3: raw html (no packer) — some mirrors inline the source directly
+        // some mirrors inline the source without a packer
         sourceRegex.find(html)?.groupValues?.get(1)?.let { src ->
             if (src.startsWith("http") && (src.contains(".m3u8") || src.contains(".mp4"))) {
                 return src to page.url
@@ -559,9 +471,7 @@ class KwikExtractor : ExtractorApi() {
                 )
                 code = res.code
                 if (code == 302) location = res.headers["location"] ?: ""
-            } catch (e: Exception) {
-                Log.d("Kwik", "post attempt failed: ${e.message}")
-            }
+            } catch (_: Exception) {}
             tries++
         }
         return location.takeIf { it.startsWith("http") }?.let { it to pageUrl }

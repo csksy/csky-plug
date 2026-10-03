@@ -2,7 +2,6 @@ package com.laddu100.raghavanime
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -12,6 +11,13 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
 import java.net.URLEncoder
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import com.raghav.donation.DonationManager
 
 class RaghavAnimo : MainAPI() {
     override var mainUrl = "https://4animo.xyz"
@@ -46,6 +52,7 @@ class RaghavAnimo : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("animo") ?: mainUrl
         return try {
             val url = "$apiUrl/anime/${request.data}?page=$page&limit=20"
@@ -53,7 +60,6 @@ class RaghavAnimo : MainAPI() {
             val home = items.mapNotNull { it.toSearchResponse() }
             newHomePageResponse(request.name, home, hasNext = home.size == 20)
         } catch (e: Exception) {
-            Log.e("RaghavAnimeKitsu", "[Animo] getMainPage ${request.name} failed: ${e.message}")
             newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
     }
@@ -63,7 +69,6 @@ class RaghavAnimo : MainAPI() {
         if (trimmed.startsWith("[")) parseJson(text)
         else parseJson<SearchResponseData>(text).data ?: emptyList()
     } catch (e: Exception) {
-        Log.e("RaghavAnimeKitsu", "[Animo] parseAnimeList failed (len=${text.length}): ${e.message}")
         emptyList()
     }
 
@@ -76,7 +81,6 @@ class RaghavAnimo : MainAPI() {
             val resp = parseJson<SearchResponseData>(app.get(url, headers = apiHeaders).text)
             resp.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
         } catch (e: Exception) {
-            Log.e("RaghavAnimeKitsu", "[Animo] search failed: ${e.message}")
             emptyList()
         }
     }
@@ -88,7 +92,6 @@ class RaghavAnimo : MainAPI() {
         val anime = try {
             parseJson<AnimeDetails>(app.get("$apiUrl/anime/$animeId", headers = apiHeaders).text)
         } catch (e: Exception) {
-            Log.e("RaghavAnimeKitsu", "[Animo] load: anime details fetch failed for $animeId: ${e.message}")
             return null
         }
         val title = anime.titles?.english ?: anime.titles?.romaji ?: return null
@@ -98,7 +101,6 @@ class RaghavAnimo : MainAPI() {
                 app.get("$apiUrl/anime/$animeId/episodes", headers = apiHeaders).text
             ).data ?: emptyList()
         } catch (e: Exception) {
-            Log.e("RaghavAnimeKitsu", "[Animo] load: episodes fetch failed for $animeId: ${e.message}")
             emptyList()
         }
 
@@ -154,7 +156,6 @@ class RaghavAnimo : MainAPI() {
         val epData = try {
             parseJson<EpisodeData>(data)
         } catch (e: Exception) {
-            Log.e("RaghavAnimeKitsu", "[Animo] loadLinks: failed to parse episode data: ${e.message}")
             return false
         }
 
@@ -170,30 +171,27 @@ class RaghavAnimo : MainAPI() {
             embeds.add("hd-2" to "$cdnUrl/embed/hd-2/ani/${epData.ani}/$type$query")
         }
 
-        var found = false
-        var subsAdded = false
+        val seenSubs = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
-        for ((key, embedUrl) in embeds) {
-            try {
-                if (!resolveSource(embedUrl, key, type, subsAdded, subtitleCallback, callback)) {
-                    Log.w("RaghavAnimeKitsu", "[Animo] embed $key resolved no links")
-                    continue
+        return coroutineScope {
+            embeds.map { (key, embedUrl) ->
+                async {
+                    try {
+                        resolveSource(embedUrl, key, type, seenSubs, subtitleCallback, callback)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        false
+                    }
                 }
-                found = true
-                subsAdded = true
-            } catch (e: Exception) {
-                Log.d("Animo", "source $key failed: ${e.message}")
-            }
+            }.awaitAll().any { it }
         }
-
-        return found
     }
 
     private suspend fun resolveSource(
         embedUrl: String,
         key: String,
         type: String,
-        subsAlreadyAdded: Boolean,
+        seenSubs: MutableSet<String>,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
@@ -201,7 +199,7 @@ class RaghavAnimo : MainAPI() {
             "User-Agent" to ua,
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language" to "en-US,en;q=0.7"
-        ), timeout = 15_000L)
+        ), timeout = 10L)
         if (embedResp.code != 200) return false
 
         val token = Regex("getSources\\?t=([A-Za-z0-9_.-]+)")
@@ -216,7 +214,7 @@ class RaghavAnimo : MainAPI() {
             "Sec-Fetch-Dest" to "empty"
         )
 
-        val sourcesResp = app.get("$cdnUrl/stream/getSources?t=$token", headers = reqHeaders, timeout = 15_000L)
+        val sourcesResp = app.get("$cdnUrl/stream/getSources?t=$token", headers = reqHeaders, timeout = 10L)
         if (sourcesResp.code != 200) return false
 
         val sourcesText = sourcesResp.text
@@ -226,7 +224,7 @@ class RaghavAnimo : MainAPI() {
         val masterFile = sources.sources?.firstOrNull()?.file ?: return false
         val masterUrl = if (masterFile.startsWith("http")) masterFile else "$cdnUrl/${masterFile.removePrefix("/")}"
 
-        val masterResp = app.get(masterUrl, headers = reqHeaders, timeout = 15_000L)
+        val masterResp = app.get(masterUrl, headers = reqHeaders, timeout = 10L)
         if (masterResp.code != 200 || !masterResp.text.trim().startsWith("#EXTM3U")) return false
 
         val playHeaders = mapOf(
@@ -244,10 +242,10 @@ class RaghavAnimo : MainAPI() {
             }
         )
 
-        if (!subsAlreadyAdded) {
-            sources.tracks?.forEach { t ->
-                val file = t.file ?: return@forEach
-                val subUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
+        sources.tracks?.forEach { t ->
+            val file = t.file ?: return@forEach
+            val subUrl = if (file.startsWith("http")) file else "$cdnUrl/${file.removePrefix("/")}"
+            if (seenSubs.add(subUrl)) {
                 subtitleCallback.invoke(newSubtitleFile(t.label ?: "English", subUrl) {
                     this.headers = playHeaders
                 })

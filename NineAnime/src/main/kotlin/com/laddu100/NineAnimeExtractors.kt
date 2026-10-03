@@ -15,13 +15,11 @@ import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import android.util.Base64
-import com.lagradost.api.Log
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 object MegaPlayCipher {
-    private const val TAG = "MegaPlayCipher"
     private const val FALLBACK_KEY_SEED = "i?LMTAx0Q6,:}50U"
     private const val FALLBACK_IV_SEED = "W0;27ToaUpl_P%'c"
 
@@ -63,8 +61,7 @@ object MegaPlayCipher {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
-        } catch (e: Exception) {
-            Log.d(TAG, "token decrypt failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -98,14 +95,12 @@ open class MegaPlayBaseExtractor(
     private suspend fun fetchSourcesRoot(endpoint: String, headers: Map<String, String>): JsonObject? {
         val text = try {
             app.get(endpoint, headers = headers).text
-        } catch (e: Exception) {
-            Log.e(name, "sources request failed ($endpoint): ${e.message}")
+        } catch (_: Exception) {
             return null
         }
         return try {
             JsonParser.parseString(text).asJsonObject
-        } catch (e: Exception) {
-            Log.e(name, "sources JSON parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -123,8 +118,7 @@ open class MegaPlayBaseExtractor(
 
         val doc = try {
             app.get(url, headers = pageHeaders).document
-        } catch (e: Exception) {
-            Log.e(name, "Failed to load player iframe: ${e.message}")
+        } catch (_: Exception) {
             return
         }
 
@@ -143,15 +137,13 @@ open class MegaPlayBaseExtractor(
             "Referer" to url,
         )
 
-        // getSourcesNew answers with a plain file url on the current megap cdn;
-        // legacy getSources still returns the encrypted payload pinned to the dead imgnex host
+        // legacy getSources still returns encrypted payloads pinned to the dead imgnex host
         val root = fetchSourcesRoot("$mainUrl/stream/getSourcesNew?id=$streamId&type=$type", ajaxHeaders)
             ?: fetchSourcesRoot("$mainUrl/stream/getSources?id=$streamId&type=$type", ajaxHeaders)
             ?: return
 
         val resolved = extractStreamUrl(root)
         if (resolved.isNullOrBlank()) {
-            Log.e(name, "No stream url in sources response for id=$streamId")
             return
         }
 
@@ -212,8 +204,7 @@ open class MegaPlayBaseExtractor(
                     }
                 )
             }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 }
 
@@ -236,8 +227,7 @@ class NineAnimeVidmoly : ExtractorApi() {
         )
         val res = try {
             app.get(url, headers = headers)
-        } catch (e: Exception) {
-            Log.e(name, "Failed to load Vidmoly iframe: ${e.message}")
+        } catch (_: Exception) {
             return
         }
         val html = res.text
@@ -246,7 +236,6 @@ class NineAnimeVidmoly : ExtractorApi() {
             ?.groupValues?.get(1)
             ?: Regex("""https?://[^'"\s]+?\.m3u8[^'"\s]*""").find(html)?.value
         if (m3u8 == null) {
-            Log.e(name, "No m3u8 found on Vidmoly page")
             return
         }
 
@@ -285,8 +274,7 @@ class NineAnimeMoon : ExtractorApi() {
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""(?i)\.(m3u8|mp4)(?:\?|$)"""),
                 additionalUrls = listOf(Regex("""(?i)\.(m3u8|mp4)(?:\?|$)""")),
-                // the byse player mounts inside a cross-origin iframe, clicking the
-                // outer container forwards the action to the inner play button
+                // the byse player mounts in a cross-origin iframe, the outer click forwards to the inner play button
                 script = """document.querySelector('button,[role="button"],.vjs-big-play-button,.jw-icon-display,.vds-play-button,[onclick]')?.click();""",
                 // the moon player handshake routinely takes over a minute to clear
                 useOkhttp = false,
@@ -311,7 +299,6 @@ class NineAnimeMoon : ExtractorApi() {
                 )
             }
         }.onFailure { error ->
-            Log.e(name, "WebView extraction failed: ${error.message}")
         }
     }
 }

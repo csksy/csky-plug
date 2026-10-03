@@ -1,4 +1,4 @@
-version = 20
+version = 25
 
 android {
     buildFeatures {

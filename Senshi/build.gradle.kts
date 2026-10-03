@@ -1,4 +1,4 @@
-version = 6
+version = 5
 
 dependencies {
     implementation("com.google.android.material:material:1.12.0")
@@ -7,7 +7,7 @@ dependencies {
 cloudstream {
     language = "en"
     description = "Anime with sub & dub, multi-language subtitles"
-    authors = listOf("csksy")
+    authors = listOf("raghav")
 
     status = 1
     tvTypes = listOf(

@@ -2,13 +2,14 @@ package com.laddu100.raghavanime
 
 import android.util.Base64
 import com.google.gson.JsonParser
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
+import com.raghav.donation.DonationManager
 
 class RaghavAnikoto : MainAPI() {
     override var mainUrl = "https://anikototv.to"
@@ -38,6 +39,7 @@ class RaghavAnikoto : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("anikoto") ?: mainUrl
         val doc = app.get("${request.data}?page=$page", headers = browserHeaders).document
         val items = doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
@@ -70,7 +72,6 @@ class RaghavAnikoto : MainAPI() {
         val isMovie = doc.selectFirst("#w-info a[href*='/type/movie']") != null ||
             doc.selectFirst(".bmeta")?.text()?.contains("Movie", ignoreCase = true) == true
 
-        // the page may render differently depending on the skin, try a few
         val animeId = doc.selectFirst("#watch-main")?.attr("data-id")
             ?: doc.selectFirst("[data-id]")?.attr("data-id")
             ?: Regex("""data-id=["'](\d+)["']""").find(doc.html())?.groupValues?.get(1)
@@ -112,11 +113,10 @@ class RaghavAnikoto : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e("AniKoto", "episode list failed: ${e.message}")
+                if (e is CancellationException) throw e
             }
         }
 
-        // last resort when the ajax list never answered: walk the episode links
         if (subEpisodes.isEmpty() && dubEpisodes.isEmpty()) {
             doc.select("a[href*='/ep-']").mapIndexed { i, el ->
                 subEpisodes.add(newEpisode(fixUrl(el.attr("href"))) {
@@ -142,8 +142,6 @@ class RaghavAnikoto : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // CloudStream can prefix the data with mainUrl when it does not start
-        // with http; strip it so the anikoto| marker is found
         val cleanData = when {
             data.startsWith("$mainUrl/anikoto|") -> data.removePrefix("$mainUrl/")
             data.startsWith("/anikoto|") -> data.removePrefix("/")
@@ -160,8 +158,6 @@ class RaghavAnikoto : MainAPI() {
             return resolveServers(serverIds, referer, audioType, subtitleCallback, callback)
         }
 
-        // the episode page carries the same data-id as the anime page, so the
-        // ajax list can be retried here when it failed during load
         return try {
             val doc = app.get(cleanData, headers = browserHeaders).document
             val animeId = doc.selectFirst("#watch-main")?.attr("data-id")
@@ -192,7 +188,6 @@ class RaghavAnikoto : MainAPI() {
 
             resolveServers(serverIds, data, audioType, subtitleCallback, callback)
         } catch (e: Exception) {
-            Log.e("AniKoto", "episode page fallback failed: ${e.message}")
             false
         }
     }
@@ -204,8 +199,6 @@ class RaghavAnikoto : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // serverIds is a base64 blob with '+', '=' and '/'; without encoding
-        // '+' turns into a space server-side and the api answers 500
         val encodedIds = URLEncoder.encode(serverIds, "UTF-8")
         val serverListJson = try {
             app.get("$mainUrl/ajax/server/list?servers=$encodedIds",
@@ -260,7 +253,7 @@ class RaghavAnikoto : MainAPI() {
                     found = true
                 }
             } catch (e: Exception) {
-                Log.e("AniKoto", "server $serverName failed: ${e.message}")
+                if (e is CancellationException) throw e
             }
         }
         return found
@@ -348,8 +341,6 @@ class RaghavAnikoto : MainAPI() {
         return proxyPlayerHost(decoded).takeIf { it.startsWith("http") && it.contains(".m3u8") }
     }
 
-    // the player hands out urls on hosts that 403 cross-origin requests;
-    // these mirrors serve the same files with permissive headers
     private fun proxyPlayerHost(url: String): String {
         return url
             .replace("vibeplayer.site", "nanobyte.bigdreamsmalldih.site")

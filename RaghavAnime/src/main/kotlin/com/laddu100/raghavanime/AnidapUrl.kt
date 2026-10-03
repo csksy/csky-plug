@@ -11,7 +11,6 @@ internal object AnidapUrl {
     private const val SHIRO_HOST = "https://hls.dramavideo.se"
     private val UWU_HOSTS = listOf("https://cdnx.aniwatchtv.site")
 
-    // providers the web client wraps into the cdnx uwu proxy with a fixed key
     private val UWU_PROXY_KEYS = mapOf(
         "sora" to "https://krussdomi.com",
         "yuki" to "https://megaplay.buzz",
@@ -20,7 +19,6 @@ internal object AnidapUrl {
         "miku" to "https://allanime.uns.bio",
     )
 
-    // these two serve their urls directly, the referer fallback never applies
     private val FALLBACK_EXCLUDE = setOf("vee", "neko")
 
     private val stripDomainRegex = Regex("^https?://[^/]+")
@@ -59,7 +57,6 @@ internal object AnidapUrl {
         }
     }
 
-    // mirrors the site's transformSourceUrl so plugin and web client land on the same url
     fun transform(url: String, providerId: String, referer: String?): String {
         val p = providerId.lowercase()
         var r = url
@@ -79,9 +76,6 @@ internal object AnidapUrl {
             "beep" -> r = beepRewrite(r)
         }
 
-        // the site falls back to the proxy keyed by the response referer for
-        // anything its handlers did not rewrite - that path is what makes
-        // zuna, loli and adp dub urls playable
         if (r == url && !referer.isNullOrBlank() && p !in FALLBACK_EXCLUDE) {
             return uwuProxy(url, referer)
         }
@@ -137,8 +131,6 @@ internal object AnidapUrl {
         return -1
     }
 
-    // megaplay cdns hide TS data behind a fake 1x1 PNG header; players resync
-    // to the 0x47 sync byte past it, so accept that shape here too
     fun isVideoBytes(d: ByteArray?): Boolean {
         if (d == null || d.isEmpty()) return false
         if (d[0] == 0x47.toByte()) return true
@@ -193,7 +185,6 @@ internal object AnidapUrl {
         return null
     }
 
-    // the site names some hls playlists ".txt", treat them the same
     fun looksLikeHls(url: String, declaredType: String?): Boolean {
         val t = (declaredType ?: "").lowercase()
         val path = url.substringBefore("?")

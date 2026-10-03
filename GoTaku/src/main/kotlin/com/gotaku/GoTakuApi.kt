@@ -1,16 +1,24 @@
 package com.gotaku
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import kotlinx.coroutines.delay
 
 object GoTakuApi {
 
-    private const val TAG = "GoTaku"
-    const val SITE = "https://gotaku.to"
-    private const val API = "$SITE/api/v1"
+    private const val DEFAULT_SITE = "https://gotaku.to"
+
+    @Volatile
+    private var site = DEFAULT_SITE
+
+    suspend fun refreshDomain() {
+        FirebaseDomainHelper.getDomain("gotaku")?.let { site = it }
+    }
+
+    fun site(): String = site
+
+    private fun api(): String = "${site()}/api/v1"
 
     // the video cdn rejects anything that does not look like a real browser
     val browserHeaders = mapOf(
@@ -27,15 +35,14 @@ object GoTakuApi {
 
     private fun siteHeaders(extra: Map<String, String> = emptyMap()): Map<String, String> {
         val headers = browserHeaders.toMutableMap()
-        headers["Referer"] = "$SITE/"
+        headers["Referer"] = "${site()}/"
         headers["Sec-Fetch-Site"] = "same-origin"
         headers["Accept"] = "application/json"
         headers.putAll(extra)
         return headers
     }
 
-    // sealed endpoints answer with a 426 when the edge gets moody, one short
-    // retry clears it
+    // the edge returns 426 now and then, one retry clears it
     private suspend fun getBody(url: String, headers: Map<String, String>, attempts: Int = 3): ByteArray? {
         repeat(attempts) { attempt ->
             try {
@@ -44,19 +51,15 @@ object GoTakuApi {
                     return response.body.bytes()
                 }
                 if (response.code != 426) {
-                    Log.d(TAG, "request $url answered ${response.code}")
                     return null
                 }
-            } catch (e: Exception) {
-                Log.d(TAG, "request failed: ${e.message}")
-            }
+            } catch (_: Exception) {}
             delay(700L + attempt * 500L)
         }
         return null
     }
 
-    // k endpoints answer sealed, the rest speak plain json, callers parse the
-    // text themselves so the concrete type always reaches parseJson
+    // k endpoints answer sealed, callers parse the text into their own type
     private suspend fun fetchText(url: String, k: Boolean = false): String? {
         val fullUrl = if (k) "$url${if (url.contains('?')) '&' else '?'}k=1" else url
         val body = getBody(fullUrl, siteHeaders()) ?: return null
@@ -98,8 +101,7 @@ object GoTakuApi {
                 stamp = node.stamp ?: stamp,
                 segmentBytes = node.obf?.segmentBytes ?: 0
             )
-        } catch (e: Exception) {
-            Log.d(TAG, "manifest parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -189,33 +191,30 @@ object GoTakuApi {
     }
 
     suspend fun fetchEmbed(episodeId: String, type: String): String? {
-        val text = fetchText("$API/episodes/$episodeId/embed?type=$type", k = true) ?: return null
+        val text = fetchText("${api()}/episodes/$episodeId/embed?type=$type", k = true) ?: return null
         val parsed = try {
             parseJson<EmbedResponse>(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "embed response parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
         return parsed?.data?.url?.takeIf { it.isNotBlank() }
     }
 
     suspend fun fetchEpisodes(titleId: String): List<EpisodeEntry> {
-        val text = fetchText("$API/titles/$titleId/episodes", k = true) ?: return emptyList()
+        val text = fetchText("${api()}/titles/$titleId/episodes", k = true) ?: return emptyList()
         val parsed = try {
             parseJson<EpisodesResponse>(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "episode list parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
         return parsed?.data.orEmpty()
     }
 
     suspend fun fetchTitleDetail(titleId: String): TitleEntry? {
-        val text = fetchText("$API/titles/$titleId") ?: return null
+        val text = fetchText("${api()}/titles/$titleId") ?: return null
         val parsed = try {
             parseJson<TitleDetailResponse>(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "title detail parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
         return parsed?.data?.title
@@ -223,11 +222,10 @@ object GoTakuApi {
 
     suspend fun fetchTitles(params: Map<String, String>): Pair<List<TitleEntry>, Boolean> {
         val query = params.entries.joinToString("&") { "${it.key}=${java.net.URLEncoder.encode(it.value, "UTF-8")}" }
-        val text = fetchText("$API/titles?$query") ?: return Pair(emptyList(), false)
+        val text = fetchText("${api()}/titles?$query") ?: return Pair(emptyList(), false)
         val parsed = try {
             parseJson<TitlesResponse>(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "titles parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
         return Pair(parsed?.data.orEmpty(), parsed?.meta?.has_more == true)

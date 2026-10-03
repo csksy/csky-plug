@@ -1,7 +1,9 @@
 package com.laddu100
 
-import com.lagradost.api.Log
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -10,22 +12,15 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
-/**
- * nxsha.space source.
- *
- * The Next.js player exposes three endpoints (/api/servers, /api/sources,
- * /api/subtitles) whose `q` parameter and `_hash` response are
- * CryptoJS-passphrase-AES encoded (see MMCrypto). Movies are keyed by TMDB id,
- * TV ids arrive in the embed url directly.
- */
 object MMNxsha {
 
-    private const val TAG = "MM_Nxsha"
     private const val PASSPHRASE = "S8x!Jk4ZP1uG8\$my"
     private const val BASE = "https://nxsha.space"
     private const val TMDB_PROXY = "https://db.speedracelight.com/3"
 
     private const val REFERER = "$BASE/"
+
+    private val json = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
     data class NxServer(
         val id: Int?,
@@ -58,8 +53,7 @@ object MMNxsha {
         val obj = payload.toMutableMap()
         obj["_req_ts"] = System.currentTimeMillis().toString()
         obj["_req_salt"] = (1..10).map { ('a' + (0..35).random()) }.joinToString("")
-        val json = com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(obj)
-        return MMCrypto.aesEncrypt(json, PASSPHRASE)
+        return MMCrypto.aesEncrypt(json.writeValueAsString(obj), PASSPHRASE)
             ?.replace("+", "-")
             ?.replace("/", "_")
             ?.replace("=", "")
@@ -73,21 +67,17 @@ object MMNxsha {
 
     private inline fun <reified T> decodeHash(body: String?): T? {
         if (body.isNullOrBlank()) return null
-        // response is {"_hash":"<base64url aes json>"}
+        // responses are {"_hash":"<base64url aes json>"}
         val hash = Regex("\"_hash\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
             ?: return null
-        val json = MMCrypto.aesDecrypt(hash, PASSPHRASE) ?: return null
+        val plain = MMCrypto.aesDecrypt(hash, PASSPHRASE) ?: return null
         return try {
-            com.fasterxml.jackson.databind.ObjectMapper()
-                .registerModule(com.fasterxml.jackson.module.kotlin.KotlinModule.Builder().build())
-                .readValue(json, T::class.java)
-        } catch (e: Exception) {
-            Log.d(TAG, "decode failed: ${e.message?.take(60)}")
+            json.readValue(plain, T::class.java)
+        } catch (_: Exception) {
             null
         }
     }
 
-    /** Resolve an imdb id to a tmdb id via the same TMDB proxy vidout uses. */
     suspend fun imdbToTmdb(imdbId: String, type: String): String? {
         val body = MMNet.getText("$TMDB_PROXY/find/$imdbId?external_source=imdb_id") ?: return null
         val arrayKey = if (type == "tv") "tv_results" else "movie_results"
@@ -96,11 +86,6 @@ object MMNxsha {
         return m.groupValues[1]
     }
 
-    /**
-     * embedUrl shapes:
-     *   https://nxsha.space/embed/movie/tt32820897
-     *   https://nxsha.space/embed/tv/61709/1/1
-     */
     suspend fun resolve(
         embedUrl: String,
         label: String,
@@ -159,13 +144,13 @@ object MMNxsha {
                                 ),
                                 embedUrl,
                             )
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             null
                         } ?: return@async
                         val sources = decodeHash<NxSourcesResp>(sourcesBody)?.sources ?: return@async
                         for (src in sources) {
                             val url = src.url?.trim()?.takeIf { it.startsWith("http") } ?: continue
-                            if (src.isEmbed == true) continue // nested embed - not resolvable here
+                            if (src.isEmbed == true) continue // nested embed, not resolvable here
                             val name = "$label • ${server.name}"
                             val qualityLabel = src.label ?: src.quality
                             val linkType = when (src.type?.lowercase()) {
@@ -178,7 +163,7 @@ object MMNxsha {
                                 .find(qualityLabel ?: "")?.groupValues?.get(1)?.toIntOrNull()
                             callback(
                                 newExtractorLink(name, name, url, type = linkType) {
-                                    // nitro 403s without the nxsha referer; others accept it
+                                    // nitro 403s without the nxsha referer, others accept it
                                     this.headers = mapOf("Referer" to REFERER)
                                     qualityNum?.let { this.quality = it }
                                 }
@@ -189,7 +174,6 @@ object MMNxsha {
                 }.forEach { it.join() }
             }
 
-            // subtitles (movies + tv)
             try {
                 val subsBody = apiGet(
                     "/api/subtitles",
@@ -204,16 +188,12 @@ object MMNxsha {
                     val uri = sub.uri?.trim()?.takeIf { it.startsWith("http") } ?: continue
                     val name = sub.title?.takeIf { it.isNotBlank() }
                         ?: sub.language?.takeIf { it.isNotBlank() } ?: "English"
-                    subtitleCallback(
-                        com.lagradost.cloudstream3.newSubtitleFile(name, uri) {}
-                    )
+                    subtitleCallback(newSubtitleFile(name, uri) {})
                 }
-            } catch (e: Exception) {
-            }
+            } catch (_: Exception) {}
 
             any
-        } catch (e: Exception) {
-            Log.d(TAG, "resolve failed: ${e.message?.take(80)}")
+        } catch (_: Exception) {
             false
         }
     }

@@ -17,7 +17,6 @@ import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.newSubtitleFile
-import com.lagradost.api.Log
 import android.os.Looper
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import kotlinx.coroutines.CancellationException
@@ -32,6 +31,7 @@ import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import com.netnaija.donation.DonationManager
 
 class NetNaija : MainAPI() {
     override var mainUrl = "https://netnaija.film"
@@ -49,7 +49,6 @@ class NetNaija : MainAPI() {
 
     private val apiUrl = "https://h5-api.aoneroom.com"
     private val bff = "$apiUrl/wefeed-h5api-bff"
-    private val TAG = "NetNaija"
 
     private val ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
@@ -99,9 +98,7 @@ class NetNaija : MainAPI() {
                 jwtToken = token
                 return token
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "x-user parse failed: ${e.message}")
-        }
+        } catch (_: Exception) {}
         return null
     }
 
@@ -115,8 +112,7 @@ class NetNaija : MainAPI() {
                 headers["X-Client-Token"] = generateXClientToken()
                 val response = app.get("$bff/subject/trending?page=1&perPage=1", headers = headers)
                 extractTokenFromResponse(response) ?: ""
-            } catch (e: Exception) {
-                Log.d(TAG, "token bootstrap failed: ${e.message}")
+            } catch (_: Exception) {
                 ""
             }
         }
@@ -168,9 +164,7 @@ class NetNaija : MainAPI() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 homeSections()
-            } catch (e: Exception) {
-                Log.d(TAG, "home refresh failed: ${e.message}")
-            } finally {
+            } catch (_: Exception) {} finally {
                 homeRowsFuture = null
                 future.complete(Unit)
             }
@@ -183,9 +177,7 @@ class NetNaija : MainAPI() {
         if (homeRowsFresh()) return
         try {
             refreshHomeRowsAsync().get(4000, TimeUnit.MILLISECONDS)
-        } catch (e: Exception) {
-            Log.d(TAG, "home rows wait failed: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
     private fun buildDynamicRows(byTitle: Map<String, List<NetNaijaSubject>>): List<MainPageData> {
@@ -210,8 +202,7 @@ class NetNaija : MainAPI() {
                 parseJson<NetNaijaHomeResponse>(response.text).data?.operatingList.orEmpty()
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                Log.d(TAG, "home fetch failed: ${e.message}")
+            } catch (_: Exception) {
                 emptyList()
             }
             val byTitle = LinkedHashMap<String, List<NetNaijaSubject>>()
@@ -272,6 +263,7 @@ class NetNaija : MainAPI() {
         title.replace(Regex("[^\\p{L}\\p{N} &+\\[\\]().'-]"), "").trim()
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("netnaija") ?: mainUrl
         val key = request.data
         return try {
@@ -321,8 +313,7 @@ class NetNaija : MainAPI() {
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            Log.d(TAG, "main page $key failed: ${e.message}")
+        } catch (_: Exception) {
             newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
     }
@@ -339,8 +330,7 @@ class NetNaija : MainAPI() {
                 headers = mapOf("User-Agent" to ua)
             ).text
             parseSearchPage(html)
-        } catch (e: Exception) {
-            Log.d(TAG, "search failed: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -354,8 +344,7 @@ class NetNaija : MainAPI() {
             )
             val parsed = parseJson<NetNaijaListResponse>(response.text)
             parsed.data?.items?.mapNotNull { it.toSearchResponse() }
-        } catch (e: Exception) {
-            Log.d(TAG, "api search failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -369,8 +358,7 @@ class NetNaija : MainAPI() {
         val match = nuxtDataRegex.find(html) ?: return emptyList()
         val root = try {
             mapper.readTree(match.groupValues[1])
-        } catch (e: Exception) {
-            Log.d(TAG, "search page json failed: ${e.message}")
+        } catch (_: Exception) {
             return emptyList()
         }
         if (root !is ArrayNode) return emptyList()
@@ -381,7 +369,7 @@ class NetNaija : MainAPI() {
                 return resolved.mapNotNull { entry ->
                     try {
                         mapper.convertValue(entry, NetNaijaSubject::class.java).toSearchResponse()
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         null
                     }
                 }
@@ -475,7 +463,7 @@ class NetNaija : MainAPI() {
             NetNaijaSources.register(dubs.mapNotNull { sourceLabel(it) })
 
             if (tvType == TvType.Movie || seasons.isEmpty()) {
-                // Movie - store all dub subjectIds so loadLinks can fetch each audio
+                // store all dub subjectIds so loadLinks can fetch each audio
                 val movieData = NetNaijaEpisodeData(dubs = dubs, season = 0, episode = 0).toJson()
                 return newMovieLoadResponse(title, url, tvType, movieData) {
                     this.posterUrl = poster
@@ -514,8 +502,7 @@ class NetNaija : MainAPI() {
                     if (trailer != null) addTrailer(trailer)
                 }
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "load failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -529,8 +516,7 @@ class NetNaija : MainAPI() {
             )
             val items = parseJson<NetNaijaListResponse>(response.text).data?.items.orEmpty()
             items.filter { it.detailPath != detailPath }.mapNotNull { it.toSearchResponse() }.take(12)
-        } catch (e: Exception) {
-            Log.d(TAG, "recommendations failed: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -543,8 +529,7 @@ class NetNaija : MainAPI() {
     ): Boolean {
         val epData = try {
             parseJson<NetNaijaEpisodeData>(data)
-        } catch (e: Exception) {
-            Log.d(TAG, "episode data parse failed: ${e.message}")
+        } catch (_: Exception) {
             return false
         }
 
@@ -580,8 +565,7 @@ class NetNaija : MainAPI() {
                 val resp = app.get(playUrl, headers = headers)
                 extractTokenFromResponse(resp)
                 parseJson<NetNaijaPlayResponse>(resp.text).data
-            } catch (e: Exception) {
-                Log.d(TAG, "play fetch failed for $label: ${e.message}")
+            } catch (_: Exception) {
                 return@forEach
             } ?: return@forEach
 
@@ -704,9 +688,7 @@ class NetNaija : MainAPI() {
                 val lang = caption.lanName ?: caption.lan ?: "Unknown"
                 subtitleCallback.invoke(newSubtitleFile(lang, url))
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "caption fetch failed: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
     private fun NetNaijaSubject.toSearchResponse(): SearchResponse? {

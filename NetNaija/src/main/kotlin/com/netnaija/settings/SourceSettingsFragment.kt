@@ -5,8 +5,8 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
@@ -26,12 +26,12 @@ import com.netnaija.NetNaijaSources
 
 class SourceSettingsFragment : DialogFragment() {
 
-    private val cText = Color.parseColor("#FFFFFF")
-    private val cSub = Color.parseColor("#9AA4B8")
-    private val cDim = Color.parseColor("#5C677D")
-    private val cAccent = Color.parseColor("#FF4757")
-    private val cAccentDeep = Color.parseColor("#E0243F")
-    private val cOnDark = Color.parseColor("#1A0508")
+    private val cText = Color.parseColor("#F4F4F6")
+    private val cSub = Color.parseColor("#8F8F98")
+    private val cDim = Color.parseColor("#5C5C66")
+    private val cAccent = Color.parseColor("#E50914")
+    private val cAccentDeep = Color.parseColor("#B91C1C")
+    private val cOnDark = Color.parseColor("#130D10")
 
     private val pending = HashSet<String>()
     private val switches = HashMap<String, SwitchCompat>()
@@ -43,11 +43,11 @@ class SourceSettingsFragment : DialogFragment() {
         super.onStart()
         dialog?.window?.apply {
             val dm = resources.displayMetrics
-            val maxW = (430 * dm.density).toInt()
+            val maxW = (500 * dm.density).toInt()
             val w = if (dm.widthPixels > maxW) maxW else (dm.widthPixels * 0.94f).toInt()
             val h = (dm.heightPixels * 0.84f).toInt()
             setLayout(w, h)
-            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         }
     }
 
@@ -61,19 +61,28 @@ class SourceSettingsFragment : DialogFragment() {
         val scroll = ScrollView(ctx)
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(22.dp(), 26.dp(), 22.dp(), 20.dp())
-            background = glassBackground(d)
+            setPadding(24.dp(), 26.dp(), 24.dp(), 20.dp())
+            background = GradientDrawable().apply {
+                setColor(cOnDark)
+                cornerRadius = 28 * d
+                setStroke(d.toInt(), Color.parseColor("#3A1E23"))
+            }
         }
         scroll.addView(root)
 
         root.addView(TextView(ctx).apply {
             text = "NETNAIJA"
-            textSize = 26f; setTextColor(cAccent); gravity = Gravity.CENTER
-            setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.08f
+            textSize = 11f; setTextColor(Color.parseColor("#FF2E3B"))
+            setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.24f
         })
         root.addView(TextView(ctx).apply {
-            text = "S O U R C E   M A N A G E R"
-            textSize = 11f; setTextColor(cDim); gravity = Gravity.CENTER
+            text = "Sources"
+            textSize = 26f; setTextColor(Color.parseColor("#FAFAFB"))
+            setTypeface(typeface, Typeface.BOLD)
+        })
+        root.addView(TextView(ctx).apply {
+            text = "Choose which audio tracks load"
+            textSize = 12.5f; setTextColor(cSub)
             setPadding(0, 3.dp(), 0, 18.dp())
         })
 
@@ -81,7 +90,7 @@ class SourceSettingsFragment : DialogFragment() {
             hint = "Search sources"; setHintTextColor(cDim); textSize = 14f
             setTextColor(cText); setSingleLine()
             setPadding(16.dp(), 12.dp(), 16.dp(), 12.dp())
-            background = glassPane(d, 24f)
+            background = rowBackground(d, 16f)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                 override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -94,17 +103,18 @@ class SourceSettingsFragment : DialogFragment() {
         root.addView(search)
         root.addView(LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(4.dp(), 14.dp(), 4.dp(), 10.dp())
+            setPadding(6.dp(), 14.dp(), 6.dp(), 10.dp())
             addView(TextView(ctx).apply {
                 text = "AUDIO TRACKS & HARDSUBS"
-                textSize = 11f; setTextColor(cSub); setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.06f
+                textSize = 11f; setTextColor(cSub); setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.14f
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
             countView = TextView(ctx).apply {
-                textSize = 11f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD)
+                textSize = 11f; setTextColor(Color.parseColor("#FF6B74"))
+                setTypeface(typeface, Typeface.BOLD)
                 background = GradientDrawable().apply {
-                    setStroke(1, Color.argb(0x30, 0xFF, 0x47, 0x57)); cornerRadius = 12 * d
-                    setColor(Color.argb(0x1A, 0xFF, 0x47, 0x57))
+                    setStroke(1, Color.argb(0x48, 0xE5, 0x09, 0x14)); cornerRadius = 12 * d
+                    setColor(Color.argb(0x24, 0xE5, 0x09, 0x14))
                 }
                 setPadding(10.dp(), 4.dp(), 10.dp(), 4.dp())
             }
@@ -119,7 +129,12 @@ class SourceSettingsFragment : DialogFragment() {
             text = "ENABLE ALL"
             setTextColor(cAccent); textSize = 13f; setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.04f
             setPadding(0, 13.dp(), 0, 13.dp())
-            background = glassPane(d, 16f)
+            stateListAnimator = null
+            background = GradientDrawable().apply {
+                setColor(Color.TRANSPARENT)
+                setStroke(d.toInt(), Color.parseColor("#4A252A"))
+                cornerRadius = 16 * d
+            }
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 16.dp() }
             setOnClickListener {
                 pending.clear()
@@ -131,7 +146,7 @@ class SourceSettingsFragment : DialogFragment() {
 
         root.addView(Button(ctx).apply {
             text = "SAVE & RESTART"
-            setTextColor(cOnDark); textSize = 15f; setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.03f
+            setTextColor(Color.WHITE); textSize = 15f; setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.03f
             setPadding(0, 15.dp(), 0, 15.dp())
             stateListAnimator = null
             background = GradientDrawable().apply {
@@ -145,7 +160,7 @@ class SourceSettingsFragment : DialogFragment() {
 
         root.addView(TextView(ctx).apply {
             text = "Changes apply after the app restarts"
-            textSize = 11f; setTextColor(cDim); gravity = Gravity.CENTER
+            textSize = 10.5f; setTextColor(cDim); gravity = Gravity.CENTER
             setPadding(0, 10.dp(), 0, 0)
         })
 
@@ -205,11 +220,11 @@ class SourceSettingsFragment : DialogFragment() {
                 isChecked = label !in pending
                 trackTintList = ColorStateList(
                     arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(cAccent, Color.argb(0xFF, 0x2A, 0x31, 0x45))
+                    intArrayOf(cAccent, Color.parseColor("#2A1A1D"))
                 )
                 thumbTintList = ColorStateList(
                     arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(Color.WHITE, Color.argb(0xFF, 0x7A, 0x84, 0x9C))
+                    intArrayOf(Color.WHITE, Color.parseColor("#7A7A82"))
                 )
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) pending.remove(label) else pending.add(label)
@@ -226,8 +241,8 @@ class SourceSettingsFragment : DialogFragment() {
 
             val row = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(16.dp(), 12.dp(), 14.dp(), 12.dp())
-                background = glassPane(d, 16f)
+                setPadding(16.dp(), 13.dp(), 14.dp(), 13.dp())
+                background = rowBackground(d, 18f)
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 8.dp() }
                 addView(LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
@@ -253,29 +268,9 @@ class SourceSettingsFragment : DialogFragment() {
         countView?.text = "$on/${sources.size} ON"
     }
 
-    private fun glassPane(d: Float, radiusDp: Float): GradientDrawable = GradientDrawable().apply {
-        orientation = GradientDrawable.Orientation.TOP_BOTTOM
-        colors = intArrayOf(Color.argb(0x20, 0xFF, 0xFF, 0xFF), Color.argb(0x0C, 0xFF, 0xFF, 0xFF))
-        setStroke(1, Color.argb(0x28, 0xFF, 0xFF, 0xFF))
+    private fun rowBackground(d: Float, radiusDp: Float): GradientDrawable = GradientDrawable().apply {
+        setColor(Color.parseColor("#1B1214"))
+        setStroke(1, Color.parseColor("#33191E"))
         cornerRadius = radiusDp * d
     }
-
-    private fun glassBackground(d: Float): LayerDrawable = LayerDrawable(arrayOf(
-        GradientDrawable().apply {
-            orientation = GradientDrawable.Orientation.TOP_BOTTOM
-            colors = intArrayOf(Color.parseColor("#070A12"), Color.parseColor("#0D1322"))
-        },
-        GradientDrawable().apply {
-            gradientType = GradientDrawable.RADIAL_GRADIENT
-            gradientRadius = 280f * d
-            setGradientCenter(0.15f, 0.05f)
-            colors = intArrayOf(Color.argb(0x26, 0xFF, 0x47, 0x57), Color.TRANSPARENT)
-        },
-        GradientDrawable().apply {
-            gradientType = GradientDrawable.RADIAL_GRADIENT
-            gradientRadius = 320f * d
-            setGradientCenter(0.9f, 0.95f)
-            colors = intArrayOf(Color.argb(0x20, 0x4D, 0x7C, 0xFE), Color.TRANSPARENT)
-        }
-    ))
 }

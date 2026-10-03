@@ -1,6 +1,5 @@
 package com.laddu100.raghavanime
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.network.WebViewResolver
@@ -53,7 +52,6 @@ class AniWavesWebView(private val sourceName: String, private val baseUrl: Strin
                 }
             }
         }.onFailure { error ->
-            Log.e("RaghavAnime", "[AniWaves][AniWavesWebView] getUrl failed: ${error.message}")
         }
     }
 }

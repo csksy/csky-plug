@@ -36,7 +36,7 @@ import com.raghav.donation.DonationManager
 
 class AniChanProvider : MainAPI() {
 
-    override var mainUrl = AniChanApi.MAIN_URL
+    override var mainUrl = AniChanApi.url()
     override var name = "AniChan"
     override val hasMainPage = true
     override var lang = "en"
@@ -59,6 +59,8 @@ class AniChanProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse? {
         DonationManager.checkAndShow()
+        AniChanApi.refreshDomain()
+        mainUrl = AniChanApi.url()
         val items = when (request.data) {
             "trending" -> AniChanApi.trending(page)
             "airing" -> AniChanApi.airing(page)
@@ -73,6 +75,8 @@ class AniChanProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
+        AniChanApi.refreshDomain()
+        mainUrl = AniChanApi.url()
         return AniChanApi.suggest(query).mapNotNull { it.toSearchResponse() }
     }
 
@@ -89,6 +93,8 @@ class AniChanProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        AniChanApi.refreshDomain()
+        mainUrl = AniChanApi.url()
         val anilistId = url.substringAfterLast("/").toIntOrNull() ?: return null
         val anime = AniChanApi.animeDetail(anilistId) ?: return null
         val title = anime.title ?: anime.titleRomaji ?: return null
@@ -98,7 +104,7 @@ class AniChanProvider : MainAPI() {
         val epNumbers = collectEpisodeNumbers(anime, info)
         if (epNumbers.isEmpty()) return null
 
-        // the watch endpoint is the dub source of truth but can lie on a cold cache, the selfhost dub list covers that
+        // the watch endpoint is the dub source of truth but can lie on a cold cache
         val dubAvailable = info?.dubAvailable == true ||
             anime.selfhost?.cachedDub?.isNotEmpty() == true
 
@@ -131,7 +137,7 @@ class AniChanProvider : MainAPI() {
         }
     }
 
-    // only list episodes that already aired, the player cannot load unaired ones
+    // the player cannot load unaired episodes, only list the ones already aired
     private fun collectEpisodeNumbers(anime: CatalogItem, info: WatchInfo?): List<Int> {
         val today = todayUtc()
         val eps = sortedSetOf<Int>()
@@ -207,8 +213,7 @@ class AniChanProvider : MainAPI() {
         val seenSubs = HashSet<String>()
         val found = AtomicBoolean(false)
 
-        // direct streams are ready the moment the list lands, embeds go out in parallel
-        // so a dead third party host cannot stall the rest of the list
+        // direct streams go out first, embeds in parallel so a dead host cannot stall the list
         val embeds = ArrayList<Server>()
         for (server in servers) {
             if (server.type.equals("embed", true) && !server.embed.isNullOrBlank()) {
@@ -301,8 +306,7 @@ class AniChanProvider : MainAPI() {
         return loadExtractor(embed, "$mainUrl/", subtitleCallback, callback)
     }
 
-    // voe hands the extractor one master playlist plus per quality variants, the master
-    // alone is enough, the player exposes every quality as a track from it
+    // voe hands out one master plus per quality variants, the master alone is enough
     private suspend fun emitVoeMaster(
         embed: String,
         label: String,

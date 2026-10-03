@@ -1,10 +1,10 @@
 package com.laddu100
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.raghav.donation.DonationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -12,18 +12,6 @@ import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-private const val TAG = "TMF"
-
-/**
- * themoviesflix - download site.
- *
- * post page -> one download group per quality, every group points at a drive
- * page on nexdrive/mobilejsr which carries the actual source buttons
- * (fastdl, vcloud, vegadrive, filepress) and an alternative sources box.
- *
- * series posts group by season, episode drive pages carry one button set per
- * episode under an episodes h4 header.
- */
 class TheMoviesFlix : MainAPI() {
     override var mainUrl = "https://themoviesflixhq.com"
     override var name = "TheMoviesFlix"
@@ -96,6 +84,7 @@ class TheMoviesFlix : MainAPI() {
         doc.select("article.latestpost a[id=featured-thumbnail]").mapNotNull { it.toSearchResponse() }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         val domain = TmfNet.domain()
         val path = request.data
         val url = if (path.isBlank()) {
@@ -120,9 +109,8 @@ class TheMoviesFlix : MainAPI() {
     private data class DownloadGroup(val label: String, val redirectUrl: String)
 
     // whole season packs arrive as zip archives, they are not playable so
-    // the button and its group are dropped before the drive page is ever
-    // fetched
-    private val packRegex = Regex("""(?i)\b(zip|ziP|rar|7z|batch)\b""")
+    // the button and its group are dropped before the drive page is fetched
+    private val packRegex = Regex("""(?i)\b(zip|rar|7z|batch)\b""")
 
     private fun extractDownloadGroups(entry: Element): List<DownloadGroup> {
         return entry.select("div.mfx-download-group").flatMap { div ->
@@ -287,8 +275,7 @@ class TheMoviesFlix : MainAPI() {
                             hrefs, page.quality, page.info,
                             "https://nexdrive.fit/", subtitleCallback, callback
                         )
-                    } catch (e: Exception) {
-                        Log.e(TAG, "loadLinks: ${e.message}")
+                    } catch (_: Exception) {
                         false
                     }
                 }

@@ -1,6 +1,5 @@
 package com.laddu100
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.base64Decode
@@ -15,23 +14,8 @@ import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 
-/**
- * Every host the drive pages link to, resolved through this plugin's own
- * logic so the result never depends on which other extension registered
- * last for the same host.
- *
- * fastdl          -> G-Direct, the drive file is inside the reurl variable
- * vcloud          -> V-Cloud, script variable on the page (atob double or plain)
- * vegadrive       -> V-Drive, a /s/ picker page with one bridge provider per
- *                    host (vegadrop serves the drive file directly, pixeldrain
- *                    hands out its own file id)
- * filebee/filepress -> FilePress, a react app whose json api is open while
- *                    the html pages sit behind an interactive cloudflare
- *                    turnstile, dotflix mirrors the drive file as an instant
- *                    link and telegram hands out a tgfiles redirect
- */
+// hosts are resolved here instead of through loadExtractor, whose result depends on extension order
 object TmfSources {
-    private const val TAG = "TMF"
 
     class Stream(
         val name: String,
@@ -39,13 +23,6 @@ object TmfSources {
         val type: ExtractorLinkType,
         val headers: Map<String, String> = emptyMap()
     )
-
-    private fun originOf(url: String): String = try {
-        val uri = URI(url)
-        "${uri.scheme}://${uri.host}"
-    } catch (e: Exception) {
-        url
-    }
 
     private fun absolute(link: String, base: String): String =
         if (link.startsWith("http")) link else base.trimEnd('/') + "/" + link.removePrefix("/")
@@ -64,25 +41,22 @@ object TmfSources {
                     allowRedirects = false,
                     timeout = 15L
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 return null
             }
             val loc = res.headers["location"]?.trim().orEmpty()
             if (loc.isEmpty()) return current
             current = when {
                 loc.startsWith("http") -> loc
-                loc.startsWith("/") -> originOf(current) + loc
+                loc.startsWith("/") -> TmfNet.originOf(current) + loc
                 else -> return null
             }
         }
         return current
     }
 
-    // ---------------------------------------------------------------- fastdl
-
-    // fastdl serves a tiny redirect stub, the google drive link always sits
-    // in the reurl variable, the hubcdn wiki host serves the same stub with
-    // one extra base64 hop inside the r parameter
+    // fastdl serves a redirect stub with the drive link in the reurl variable,
+    // the hubcdn wiki host serves the same stub with one extra base64 hop in r
     suspend fun resolveFastDl(url: String): List<Stream> {
         return try {
             val res = app.get(
@@ -109,19 +83,15 @@ object TmfSources {
                 ?: return emptyList()
             val direct = URLDecoder.decode(googleUrl, "UTF-8")
             if (!direct.startsWith("http")) return emptyList()
-            listOf(Stream("G-Direct", direct, ExtractorLinkType.VIDEO, mapOf("Referer" to originOf(url) + "/")))
-        } catch (e: Exception) {
-            Log.d(TAG, "fastdl: ${e.message}")
+            listOf(Stream("G-Direct", direct, ExtractorLinkType.VIDEO, mapOf("Referer" to TmfNet.originOf(url) + "/")))
+        } catch (_: Exception) {
             emptyList()
         }
     }
 
-    // ---------------------------------------------------------------- vcloud
-
-    // vcloud hides the file behind its own page, older pages carry a
-    // div.main h4 a hop first, the current ones keep the target in a script
-    // variable that is either double base64 or a plain url, the target page
-    // itself is a hub page when it is not the file directly
+    // older vcloud pages carry a div.main h4 a hop first, the current ones
+    // keep the target in a script variable that is either double base64 or a
+    // plain url, and when the target is not the file itself it is a hub page
     suspend fun resolveVCloud(url: String): List<Stream> {
         return try {
             val res = app.get(
@@ -130,18 +100,17 @@ object TmfSources {
                 timeout = 30L
             )
             if (!res.isSuccessful) return emptyList()
-            val base = originOf(res.url)
+            val base = TmfNet.originOf(res.url)
             val originalDoc = res.document
             var doc = originalDoc
             var link: String? = null
 
-            // older layout: a download hop page first
             val hop = originalDoc.selectFirst("div.main h4 a")?.attr("href")?.trim()
             if (!hop.isNullOrBlank()) {
                 val hopUrl = absolute(hop, base)
                 val hopRes = try {
                     app.get(hopUrl, headers = TmfNet.browserHeaders(base), timeout = 30L)
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     null
                 }
                 hopRes?.let {
@@ -149,11 +118,8 @@ object TmfSources {
                     link = extractVCloudLink(doc)
                 }
             }
-            // the current pages keep the target in their own script, the hop
-            // parse only wins when it actually found a link
             if (link.isNullOrBlank()) link = extractVCloudLink(originalDoc)
 
-            // video pages keep the file behind a center anchor
             if (link.isNullOrBlank() && res.url.contains("/video/")) {
                 link = doc.selectFirst("div.vd > center > a")?.attr("href")?.trim()
             }
@@ -162,21 +128,19 @@ object TmfSources {
             val target = absolute(link, base)
             if (!target.startsWith("http")) return emptyList()
 
-            // when the target is a hub page the real servers sit on it
             val targetRes = try {
                 app.get(target, headers = TmfNet.browserHeaders(base), timeout = 25L)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             }
             val targetDoc = targetRes?.document ?: return emptyList()
-            val hub = hubStreams(targetDoc, originOf(targetRes.url), targetRes.url, 0)
+            val hub = hubStreams(targetDoc, TmfNet.originOf(targetRes.url), targetRes.url, 0)
             if (hub.isNotEmpty()) return hub
             if (target.contains("drive.google.com") || target.contains("googleusercontent")) {
                 return listOf(Stream("V-Cloud", target, ExtractorLinkType.VIDEO))
             }
             emptyList()
-        } catch (e: Exception) {
-            Log.d(TAG, "vcloud: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -198,11 +162,10 @@ object TmfSources {
             ?.takeIf { it.startsWith("http") }
     }
 
-    // -------------------------------------------------------------- vegadrive
-
     // the vegadrive share page lists one bridge provider per host, vegadrop
-    // (skydrop) streams the drive file itself, pixeldrain hands out its own
-    // file id, everything else lands on the partner page
+    // (skydrop) streams the drive file itself and the rest land on their own
+    // partner pages, providers come and go so each result is checked against
+    // the host it is supposed to be on
     suspend fun resolveVegaDrive(url: String): List<Stream> {
         return try {
             val page = app.get(
@@ -210,14 +173,11 @@ object TmfSources {
                 headers = TmfNet.browserHeaders("https://nexdrive.fit/"),
                 timeout = 20L
             )
-            val base = originOf(page.url)
+            val base = TmfNet.originOf(page.url)
             val token = url.substringAfter("/s/").substringBefore("?")
 
             val out = mutableListOf<Stream>()
 
-            // vegadrop: the go link walks through the bridge and lands on
-            // the drive file directly, season packs arrive as zip archives
-            // and are skipped
             val drop = resolveVegaProvider(base, token, "skydrop")
             if (drop != null && drop.contains("googleusercontent") &&
                 !drop.substringAfterLast("/").contains(".zip", true)
@@ -225,10 +185,8 @@ object TmfSources {
                 out.add(Stream("V-Drive Vegadrop (10Gbps)", drop, ExtractorLinkType.VIDEO))
             }
 
-            // pixeldrain: bridge hands out the share page, the file id in it
-            // streams through the pixeldrain api
             val pixel = resolveVegaProvider(base, token, "pixeldrain")
-            if (pixel != null && pixel.contains("pixeldrain")) {
+            if (pixel != null && pixel.contains("pixeldrain.com/u/")) {
                 val id = pixel.substringBefore("?").substringBefore("#").substringAfterLast("/")
                 if (id.isNotBlank()) {
                     out.add(
@@ -241,19 +199,18 @@ object TmfSources {
                 }
             }
 
-            // buzzheavier and telegram serve the file through their own hosts
             val buzz = resolveVegaProvider(base, token, "buzzheavier")
             if (buzz != null && buzz.contains("bzzhr.co")) {
                 out.add(Stream("V-Drive Buzzheavier", buzz, ExtractorLinkType.VIDEO))
             }
+
             val telegram = resolveVegaProvider(base, token, "telegram")
             if (telegram != null && telegram.contains("tgfiles")) {
                 out.add(Stream("V-Drive Telegram", telegram, ExtractorLinkType.VIDEO))
             }
 
             out.distinctBy { it.url }
-        } catch (e: Exception) {
-            Log.d(TAG, "vegadrive: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -265,24 +222,19 @@ object TmfSources {
         token: String,
         provider: String
     ): String? {
-        return try {
-            val start = when (provider) {
-                "skydrop" -> "$base/go/$token/skydrop"
-                else -> "$base/d/$token/$provider"
-            }
-            redirectOf(start, "$base/", hops = 6)
-        } catch (e: Exception) {
-            null
+        val start = if (provider == "skydrop") {
+            "$base/go/$token/skydrop"
+        } else {
+            "$base/d/$token/$provider"
         }
+        return redirectOf(start, "$base/", hops = 6)
     }
-
-    // -------------------------------------------------------------- filepress
 
     private val FILEPRESS_ID = Regex("""/file/([a-f0-9]{16,40})""")
     private const val FILEBEE_API = "https://filebee.xyz/api"
 
-    // filepress is a react app now, the html pages sit behind an interactive
-    // turnstile but the json api is open: file/get describes the file (the
+    // filepress is a react app whose html pages sit behind an interactive
+    // turnstile while the json api is open: file/get describes the file (its
     // name is the only reliable zip pack detector), downlaod/ queues a task
     // or answers instantly depending on the method, downlaod2/ turns a
     // finished task into the link
@@ -297,11 +249,11 @@ object TmfSources {
             if (!infoRes.isSuccessful) return emptyList()
             val info = try {
                 JSONObject(infoRes.text).optJSONObject("data") ?: return emptyList()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 return emptyList()
             }
             val name = info.optString("name")
-            if (Regex("""(?i)\.(zip|rar|7z)\s*$""").containsMatchIn(name.trim())) return emptyList()
+            if (isArchiveName(name)) return emptyList()
 
             val out = mutableListOf<Stream>()
 
@@ -314,14 +266,13 @@ object TmfSources {
                 }
             }
 
-            // telegram answers with a tgfiles redirect right away
             val telegram = filePressDownload(id, "telegramDownload")
             if (telegram != null && telegram.startsWith("http")) {
                 out.add(Stream("FilePress Telegram", telegram, ExtractorLinkType.VIDEO))
             }
 
-            // the index worker proxies through its own host, the link is
-            // short lived so it is only emitted when the file actually answers
+            // the index worker proxies through its own host with a short
+            // lived link, it is only emitted when the file actually answers
             val indexTask = filePressDownload(id, "indexDownlaod")
             if (indexTask != null && indexTask.matches(Regex("[a-f0-9]{16,40}"))) {
                 val link = filePressFinal(indexTask, "indexDownlaod")
@@ -334,8 +285,7 @@ object TmfSources {
             }
 
             out.distinctBy { it.url }
-        } catch (e: Exception) {
-            Log.d(TAG, "filepress: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -361,7 +311,7 @@ object TmfSources {
             if (!res.isSuccessful) return null
             val parsed = try {
                 JSONObject(res.text)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 return null
             }
             if (!parsed.optBoolean("status")) return null
@@ -369,8 +319,7 @@ object TmfSources {
                 is String -> data.takeIf { it.isNotBlank() }
                 else -> null
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "filepress $method: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -396,7 +345,7 @@ object TmfSources {
             if (!res.isSuccessful) return null
             val parsed = try {
                 JSONObject(res.text)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 return null
             }
             if (!parsed.optBoolean("status")) return null
@@ -408,8 +357,7 @@ object TmfSources {
                     }
                 else -> null
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "filepress final: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -455,18 +403,15 @@ object TmfSources {
             if (!res.isSuccessful) return null
             val parsed = try {
                 JSONObject(res.text)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 return null
             }
             if (!parsed.optBoolean("success")) return null
             parsed.optString("downloadUrl").takeIf { it.startsWith("http") }
-        } catch (e: Exception) {
-            Log.d(TAG, "dotflix: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
-
-    // ------------------------------------------------------------------- hub
 
     // ads and site plumbing that sit next to the real download buttons on
     // the hub pages, none of them carry a file
@@ -488,14 +433,14 @@ object TmfSources {
         if (link.contains("download", true)) return link
         val id = link.substringBefore("?").substringBefore("#").substringAfterLast("/")
         if (id.isBlank()) return null
-        return "${originOf(link)}/api/file/$id"
+        return "${TmfNet.originOf(link)}/api/file/$id"
     }
 
     private fun isArchiveName(name: String): Boolean =
         Regex("""(?i)\.(zip|rar|7z)\s*$""").containsMatchIn(name.trim())
 
-    // the old hub layout: a generate button first, then the full server
-    // list, still used by the vcloud target pages
+    // the old hub layout with a generate button first and the full server
+    // list behind it, still used by the vcloud target pages
     private suspend fun hubStreams(
         doc: org.jsoup.nodes.Document,
         base: String,
@@ -518,9 +463,7 @@ object TmfSources {
                 ).document
                 val nested = hubStreams(genDoc, base, pageUrl, depth + 1)
                 if (nested.isNotEmpty()) return nested
-            } catch (e: Exception) {
-                Log.d(TAG, "generate: ${e.message}")
-            }
+            } catch (_: Exception) {}
         }
 
         if (pageUrl.contains("/video/") && depth < 3) {
@@ -534,84 +477,83 @@ object TmfSources {
                     ).document
                     val nested = hubStreams(innerDoc, base, inner, depth + 1)
                     if (nested.isNotEmpty()) return nested
-                } catch (e: Exception) {
-                    Log.d(TAG, "video page: ${e.message}")
-                }
+                } catch (_: Exception) {}
             }
         }
 
         val pageHtml = doc.toString()
         for (btn in doc.select("a.btn, a[download]")) {
-            val text = btn.text().trim().lowercase()
-            val link = btn.attr("href").trim()
-            if (link.isBlank() || hubJunk.containsMatchIn(link)) continue
-            val abs = absolute(link, base)
+            out.addAll(hubButton(btn, base, pageHtml))
+        }
+        return out.distinctBy { it.url }
+    }
+
+    private suspend fun hubButton(
+        btn: org.jsoup.nodes.Element,
+        base: String,
+        pageHtml: String
+    ): List<Stream> {
+        val text = btn.text().trim().lowercase()
+        val link = btn.attr("href").trim()
+        if (link.isBlank() || hubJunk.containsMatchIn(link)) return emptyList()
+        val abs = absolute(link, base)
+        return try {
             when {
-                text.contains("fslv2") -> out.add(Stream("FSLv2", abs, ExtractorLinkType.VIDEO))
-                text.contains("fsl") -> out.add(Stream("FSL Server", abs, ExtractorLinkType.VIDEO))
+                text.contains("fslv2") -> listOf(Stream("FSLv2", abs, ExtractorLinkType.VIDEO))
+                text.contains("fsl") -> listOf(Stream("FSL Server", abs, ExtractorLinkType.VIDEO))
                 text.contains("buzzserver") -> {
-                    try {
-                        val dlink = app.get(
-                            "$abs/download",
-                            referer = abs,
-                            allowRedirects = false,
-                            timeout = 15L
-                        ).headers["hx-redirect"] ?: ""
-                        if (dlink.isNotBlank()) {
-                            out.add(Stream("BuzzServer", absolute(dlink, base), ExtractorLinkType.VIDEO))
-                        }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "buzzserver: ${e.message}")
-                    }
+                    val dlink = app.get(
+                        "$abs/download",
+                        referer = abs,
+                        allowRedirects = false,
+                        timeout = 15L
+                    ).headers["hx-redirect"] ?: ""
+                    if (dlink.isNotBlank()) {
+                        listOf(Stream("BuzzServer", absolute(dlink, base), ExtractorLinkType.VIDEO))
+                    } else emptyList()
                 }
                 text.contains("10gbps") -> {
                     val target = redirectOf(abs, base)
                     if (target != null) {
                         val direct = if (target.contains("link=")) target.substringAfter("link=") else target
                         if (direct.startsWith("http")) {
-                            out.add(Stream("10Gbps", direct, ExtractorLinkType.VIDEO))
-                        }
-                    }
+                            listOf(Stream("10Gbps", direct, ExtractorLinkType.VIDEO))
+                        } else emptyList()
+                    } else emptyList()
                 }
                 text.contains("instant download") || text.contains("instant dl") -> {
-                    try {
-                        val loc = app.get(
-                            abs,
-                            headers = TmfNet.browserHeaders(base),
-                            allowRedirects = false,
-                            timeout = 15L
-                        ).headers["location"]?.trim()
-                        val direct = when {
-                            loc == null -> null
-                            loc.contains("url=") -> loc.substringAfter("url=")
-                            loc.contains("link=") -> loc.substringAfter("link=")
-                            else -> loc
-                        }?.takeIf { it.startsWith("http") }
-                        if (direct != null) {
-                            out.add(Stream("Instant Download", direct, ExtractorLinkType.VIDEO))
-                        }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "instant: ${e.message}")
-                    }
+                    val loc = app.get(
+                        abs,
+                        headers = TmfNet.browserHeaders(base),
+                        allowRedirects = false,
+                        timeout = 15L
+                    ).headers["location"]?.trim()
+                    val direct = when {
+                        loc == null -> null
+                        loc.contains("url=") -> loc.substringAfter("url=")
+                        loc.contains("link=") -> loc.substringAfter("link=")
+                        else -> loc
+                    }?.takeIf { it.startsWith("http") }
+                    if (direct != null) {
+                        listOf(Stream("Instant Download", direct, ExtractorLinkType.VIDEO))
+                    } else emptyList()
                 }
                 text.contains("pixeldra") || text.contains("pixelserver") || text.contains("pixel server") ||
                     link.contains("pixeldra") -> {
-                    val final = pixelFileUrl(pageHtml, link) ?: continue
-                    out.add(Stream("Pixeldrain", final, ExtractorLinkType.VIDEO))
+                    val final = pixelFileUrl(pageHtml, link) ?: return emptyList()
+                    listOf(Stream("Pixeldrain", final, ExtractorLinkType.VIDEO))
                 }
                 text.contains("s3 server") || text.contains("mega server") || text.contains("pdl") ->
-                    out.add(Stream(btn.text().trim(), abs, ExtractorLinkType.VIDEO))
+                    listOf(Stream(btn.text().trim(), abs, ExtractorLinkType.VIDEO))
                 text.contains("download file") || text.contains("download now") ->
-                    out.add(Stream("Download File", abs, ExtractorLinkType.VIDEO))
-                link.contains("fastdl.") || link.contains("hubcdn.") -> {
-                    out.addAll(resolveFastDl(abs))
-                }
+                    listOf(Stream("Download File", abs, ExtractorLinkType.VIDEO))
+                link.contains("fastdl.") || link.contains("hubcdn.") -> resolveFastDl(abs)
+                else -> emptyList()
             }
+        } catch (_: Exception) {
+            emptyList()
         }
-        return out.distinctBy { it.url }
     }
-
-    // --------------------------------------------------------------- router
 
     fun resolves(href: String): Boolean =
         href.contains("fastdl.") || href.contains("vcloud.") ||
@@ -643,8 +585,7 @@ object TmfSources {
                     if (resolves(href)) {
                         val streams = try {
                             resolveOne(href)
-                        } catch (e: Exception) {
-                            Log.d(TAG, "source failed: ${e.message}")
+                        } catch (_: Exception) {
                             emptyList()
                         }
                         for (s in streams) {
@@ -668,9 +609,7 @@ object TmfSources {
                                 callback.invoke(link)
                                 emitted.set(true)
                             }
-                        } catch (e: Exception) {
-                            Log.d(TAG, "fallback failed: ${e.message}")
-                        }
+                        } catch (_: Exception) {}
                     }
                 }
             }.awaitAll()

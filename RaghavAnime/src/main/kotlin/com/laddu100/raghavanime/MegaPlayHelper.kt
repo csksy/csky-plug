@@ -3,7 +3,6 @@ package com.laddu100.raghavanime
 import android.util.Base64
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
@@ -14,8 +13,6 @@ import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-// megaplay encrypts the enc field of getSources responses, seeds live in
-// lib/newclient.min.js with pinned fallbacks
 object MegaPlayCipher {
     private const val FALLBACK_KEY_SEED = "i?LMTAx0Q6,:}50U"
     private const val FALLBACK_IV_SEED = "W0;27ToaUpl_P%'c"
@@ -31,12 +28,11 @@ object MegaPlayCipher {
     private suspend fun keySeedCandidates(baseUrl: String): List<Pair<String, String>> {
         cachedSeeds?.let { return listOf(it, fallback()) }
         val dynamic = try {
-            val js = app.get("$baseUrl/lib/newclient.min.js", timeout = 10_000L).text
+            val js = app.get("$baseUrl/lib/newclient.min.js", timeout = 10L).text
             keyPairRegex.find(js)?.groupValues?.let { g ->
                 Pair(g[1], g[2]).also { cachedSeeds = it }
             }
         } catch (e: Exception) {
-            Log.d("MegaPlay", "seed fetch failed: ${e.message}")
             null
         }
         return listOfNotNull(dynamic, fallback())
@@ -60,7 +56,6 @@ object MegaPlayCipher {
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
         } catch (e: Exception) {
-            Log.d("MegaPlay", "token decrypt failed: ${e.message}")
             null
         }
     }
@@ -74,11 +69,7 @@ object MegaPlayCipher {
     }
 }
 
-// megaplay-style players expose the playlist through getSourcesNew, the
-// legacy endpoint only carries an encrypted payload on a dead cdn
 object MegaPlayHelper {
-
-    private const val TAG = "RaghavAnime"
     private val mapper = ObjectMapper()
 
     private const val USER_AGENT =
@@ -103,7 +94,6 @@ object MegaPlayHelper {
         val pageHtml = try {
             app.get(embedUrl, headers = pageHeaders).text
         } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] embed page failed for $host: ${e.message}")
             return null
         }
 
@@ -156,7 +146,6 @@ object MegaPlayHelper {
         return migrateLegacyUrl(resolved)
     }
 
-    // legacy imgnex paths carry an /anime prefix the megap mirrors dropped
     private fun migrateLegacyUrl(url: String): String {
         if (!url.contains("https://cdn.imgnex.top/anime")) return url
         return url.replace("https://cdn.imgnex.top/anime", "https://megap.norami.top")
@@ -182,14 +171,12 @@ object MegaPlayHelper {
 
     private suspend fun fetchJson(url: String, headers: Map<String, String>): JsonNode? {
         return try {
-            mapper.readTree(app.get(url, headers = headers, timeout = 15_000L).text)
+            mapper.readTree(app.get(url, headers = headers, timeout = 15L).text)
         } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] sources request failed: ${e.message}")
             null
         }
     }
 
-    // the cdn 403s master.m3u8 without a token but only rejects expired ones
     private const val TOKEN_KEY = "MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s"
     private const val TOKEN_LIFETIME_SECONDS = 7L * 24L * 60L * 60L
     private val hexIdsRegex = Regex("""/([a-f0-9]{32})/([a-f0-9]{32})/""", RegexOption.IGNORE_CASE)
@@ -211,8 +198,6 @@ object MegaPlayHelper {
 
     private data class VariantEntry(val url: String, val quality: Int?)
 
-    // i-frame entries are inline attributes so they never match the line
-    // after #EXT-X-STREAM-INF
     private fun parseVariants(masterUrl: String, masterText: String): List<VariantEntry> {
         val base = masterUrl.substringBefore('?').let { it.substringBeforeLast('/') + "/" }
         val out = mutableListOf<VariantEntry>()
@@ -239,7 +224,6 @@ object MegaPlayHelper {
         return out
     }
 
-    // one signed link per quality variant, the signed master as fallback
     suspend fun emitLinks(
         source: String,
         label: String,
@@ -257,9 +241,8 @@ object MegaPlayHelper {
 
         val signedMaster = signUrl(m3u8)
         val masterText = try {
-            app.get(signedMaster, headers = playHeaders, timeout = 15_000L).text
+            app.get(signedMaster, headers = playHeaders, timeout = 15L).text
         } catch (e: Exception) {
-            Log.d(TAG, "[MegaPlay] master playlist fetch failed: ${e.message}")
             null
         }
 
@@ -282,7 +265,7 @@ object MegaPlayHelper {
                 )
                 found = true
             }
-        } else {
+        } else if (masterText != null && masterText.contains("#EXTM3U")) {
             callback.invoke(
                 newExtractorLink(source, label, signedMaster, type = ExtractorLinkType.M3U8) {
                     this.referer = referer

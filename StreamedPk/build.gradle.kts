@@ -1,5 +1,4 @@
-// use an integer for version numbers
-version = 10
+version = 12
 
 android {
     buildFeatures {
@@ -7,18 +6,15 @@ android {
     }
 }
 
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+}
+
 cloudstream {
     language = "en"
     description = "ALL LIVE SPORTS WITH MULTIPLE SERVER"
     authors = listOf("RAGHAV")
 
-    /**
-     * Status int as the following:
-     * 0: Down
-     * 1: Ok
-     * 2: Slow
-     * 3: Beta only
-     * */
     status = 1
     tvTypes = listOf(
         "Live",

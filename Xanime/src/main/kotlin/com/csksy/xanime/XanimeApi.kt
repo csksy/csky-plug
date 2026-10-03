@@ -21,11 +21,10 @@ import javax.crypto.spec.SecretKeySpec
 internal object XanimeApi {
 
     private const val TAG = "Xanime"
-    private const val ENDPOINT = "https://xanime.me/z2/"
-    private const val HOST = "https://xanime.me"
+    private const val DEFAULT_HOST = "https://xanime.me"
+    private const val API_PATH = "/z2/"
 
-    // the site ships this string inside its own bundle and derives the AES key
-    // from it, swap it here if they ever rotate it
+    // the site bundles this string and derives the AES key from it, swap it if they rotate
     private const val OBFUSCATION_SECRET = "xanime-ph25-obfuscation-secret-key-2026"
 
     const val USER_AGENT =
@@ -33,6 +32,17 @@ internal object XanimeApi {
 
     private const val PAGE_SIZE = 24
     private const val EP_PAGE_SIZE = 60
+
+    @Volatile
+    private var host = DEFAULT_HOST
+
+    suspend fun refreshDomain() {
+        FirebaseDomainHelper.getDomain("xanime")?.let { host = it }
+    }
+
+    fun host(): String = host
+
+    private fun endpoint(): String = host + API_PATH
 
     private val aesKey by lazy {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -71,14 +81,14 @@ internal object XanimeApi {
         "User-Agent" to USER_AGENT,
         "Accept" to "application/json",
         "Content-Type" to "application/json",
-        "Origin" to HOST,
-        "Referer" to "$HOST/"
+        "Origin" to host,
+        "Referer" to "$host/"
     )
 
     private val killerMap = ConcurrentHashMap<String, CloudflareKiller>()
 
     private fun killerFor(url: String): CloudflareKiller =
-        killerMap.getOrPut(java.net.URI(url).host ?: HOST) { CloudflareKiller() }
+        killerMap.getOrPut(java.net.URI(url).host ?: host) { CloudflareKiller() }
 
     private fun parseBody(text: String): JSONObject? {
         val obj = try {
@@ -91,7 +101,7 @@ internal object XanimeApi {
 
     private suspend fun post(payload: Map<String, Any>): JSONObject? {
         val resp = try {
-            app.post(ENDPOINT, json = payload, headers = baseHeaders())
+            app.post(endpoint(), json = payload, headers = baseHeaders())
         } catch (e: Exception) {
             null
         } ?: return null
@@ -99,13 +109,13 @@ internal object XanimeApi {
         return parseBody(resp.text)
     }
 
-    // WebView fallback for the rare case Cloudflare decides to challenge the app
+    // cloudflare sometimes challenges the app client, fall back to a real webview
     private suspend fun postViaKiller(payload: Map<String, Any>): JSONObject? =
         withContext(Dispatchers.Main) {
             try {
-                val killer = killerFor(ENDPOINT)
+                val killer = killerFor(endpoint())
                 val resp = app.post(
-                    ENDPOINT, json = payload, headers = baseHeaders(),
+                    endpoint(), json = payload, headers = baseHeaders(),
                     interceptor = killer
                 )
                 if (resp.code !in 200..399) null else parseBody(resp.text)
@@ -115,9 +125,7 @@ internal object XanimeApi {
             }
         }
 
-    // the backend binds graphql variables by exact name, a $SELECT declaration
-    // paired with a "select" key silently drops the whole select and serves a
-    // default browse list instead, so the names below must stay lowercase
+    // graphql variables are matched by exact name, keep the select key lowercase
     private suspend fun query(query: String, variables: JSONObject): JSONObject? {
         val payload = seal(JSONObject().put("query", query).put("variables", variables))
         var result = post(payload) ?: post(payload)
@@ -282,8 +290,7 @@ internal object XanimeApi {
         return select
     }
 
-    // field_popularity, field_year and field_title currently echo the default
-    // update order on the backend, only the three sorts below actually reorder
+    // only these sorts actually reorder on the backend, the rest echo the default
     suspend fun browse(
         sortby: String? = null,
         genre: String? = null,
@@ -349,8 +356,7 @@ internal object XanimeApi {
         )
     }
 
-    // paging.pages is accurate, the first response tells how many more pages to
-    // pull so long shows do not need a page by page walk
+    // the first response reports the total page count so long shows need no page walk
     suspend fun episodes(aniId: String): List<EpisodeEntry> {
         val first = episodePage(aniId, 1) ?: return emptyList()
         if (first.pages <= 1) return first.episodes
@@ -459,8 +465,7 @@ internal object XanimeApi {
         }
     }
 
-    // some dub entries carry a subtitle list the cdn never actually hosts, one
-    // probe on the first track keeps those dead files away from the player
+    // dub entries often list subs the cdn never hosted, one probe filters those out
     fun tracksAreReal(source: Source): Boolean {
         val first = source.tracks.firstOrNull() ?: return true
         return fetchText(first.url)?.contains("WEBVTT") == true

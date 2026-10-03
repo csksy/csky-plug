@@ -47,6 +47,9 @@ object DonationManager {
 
     private suspend fun waitForActivityAndShow(context: Context) {
         repeat(6) {
+            // another plugin can have shown the dialog while this one was
+            // still waiting for the activity, the shared cooldown catches that
+            if (isCooldownActive(context)) return
             val activity = CommonActivity.activity as? AppCompatActivity
             if (activity != null && !activity.isFinishing && !activity.isDestroyed) {
                 val fm = activity.supportFragmentManager

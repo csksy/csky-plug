@@ -1,9 +1,6 @@
 package com.laddu100
 
-/**
- * Dean Edwards js packer (eval(function(p,a,c,k,e,d))) used by the
- * streamhg/earnvids style embed pages.
- */
+// Dean Edwards js packer - eval(function(p,a,c,k,e,d))
 object JsPacker {
     private const val CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 

@@ -2,13 +2,13 @@ package com.anikoto
 
 import android.util.Base64
 import com.google.gson.JsonParser
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
+import com.raghav.donation.DonationManager
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikototv.to"
@@ -38,6 +38,7 @@ class AnikotoProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("anikoto") ?: mainUrl
         val doc = app.get("${request.data}?page=$page", headers = browserHeaders).document
         val items = doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
@@ -55,15 +56,13 @@ class AnikotoProvider : MainAPI() {
         mainUrl = FirebaseDomainHelper.getDomain("anikoto") ?: mainUrl
         val response = try {
             app.get(url, headers = browserHeaders)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return null
         }
         val doc = response.document
         val title = doc.selectFirst("#w-info h1.title, h1[itemprop=name], .title[itemprop=name]")?.text()?.trim()
             ?: doc.selectFirst("h1.title")?.text()?.trim()
-            ?: run {
-                return null
-            }
+            ?: return null
         val poster = doc.selectFirst("#w-info .poster img, img[itemprop=image], .poster img")?.let {
             it.attr("data-src").ifBlank { it.attr("src") }
         }
@@ -72,7 +71,7 @@ class AnikotoProvider : MainAPI() {
         val isMovie = doc.selectFirst("#w-info a[href*='/type/movie']") != null ||
             doc.selectFirst(".bmeta")?.text()?.contains("Movie", ignoreCase = true) == true
 
-        // Try multiple selectors for the anime ID — the page may render differently.
+        // the page may render differently depending on the skin, try a few
         val animeId = doc.selectFirst("#watch-main")?.attr("data-id")
             ?: doc.selectFirst("[data-id]")?.attr("data-id")
             ?: Regex("""data-id=["'](\d+)["']""").find(doc.html())?.groupValues?.get(1)
@@ -87,8 +86,6 @@ class AnikotoProvider : MainAPI() {
                     referer = url, headers = ajaxHeaders(url)
                 ).text
                 val html = jsonResultString(json)
-                if (html.isBlank()) {
-                }
                 Jsoup.parse(html).select("a[data-ids]").forEach { el ->
                     val serverIds = el.attr("data-ids")
                     val episodeNumber = el.attr("data-num").toIntOrNull()
@@ -96,11 +93,6 @@ class AnikotoProvider : MainAPI() {
                     val hasDub = el.attr("data-dub") == "1"
                     if (serverIds.isBlank()) return@forEach
 
-                    // Episode title — try multiple sources, most specific first:
-                    // 1. <span class="d-title"> text content (the real English episode title)
-                    // 2. <li title="..."> attribute (parent <li> carries the same title)
-                    // 3. <span class="d-title" data-jp="..."> attribute (Japanese/placeholder, e.g. "Episode 1")
-                    // 4. Fallback: "Episode N"
                     val dTitleSpan = el.selectFirst(".d-title")
                     val episodeName = dTitleSpan?.text()?.trim()?.ifBlank { null }
                         ?: el.parent()?.attr("title")?.trim()?.ifBlank { null }
@@ -120,10 +112,10 @@ class AnikotoProvider : MainAPI() {
                         })
                     }
                 }
-            } catch (e: Exception) {
-            }
+            } catch (_: Exception) {}
         }
 
+        // last resort when the ajax list never answered: walk the episode links
         if (subEpisodes.isEmpty() && dubEpisodes.isEmpty()) {
             doc.select("a[href*='/ep-']").mapIndexed { i, el ->
                 subEpisodes.add(newEpisode(fixUrl(el.attr("href"))) {
@@ -149,8 +141,8 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // CloudStream may prepend mainUrl to the data string if it doesn't start
-        // with http. Strip it so the anikoto| prefix is detected correctly.
+        // CloudStream can prefix the data with mainUrl when it does not start
+        // with http; strip it so the anikoto| marker is found
         val cleanData = when {
             data.startsWith("$mainUrl/anikoto|") -> data.removePrefix("$mainUrl/")
             data.startsWith("/anikoto|") -> data.removePrefix("/")
@@ -167,12 +159,10 @@ class AnikotoProvider : MainAPI() {
             return resolveServers(serverIds, referer, audioType, subtitleCallback, callback)
         }
 
-        // Direct URL fallback — episode page was stored directly (AJAX failed during load).
-        // The episode page has the same #watch-main data-id as the anime page, so we can
-        // retry the AJAX here, find the matching episode by number, and resolve servers.
+        // the episode page carries the same data-id as the anime page, so the
+        // ajax list can be retried here when it failed during load
         return try {
             val doc = app.get(cleanData, headers = browserHeaders).document
-            // Try multiple selectors — same as load()
             val animeId = doc.selectFirst("#watch-main")?.attr("data-id")
                 ?: doc.selectFirst("[data-id]")?.attr("data-id")
                 ?: Regex("""data-id=["'](\d+)["']""").find(doc.html())?.groupValues?.get(1)
@@ -182,7 +172,6 @@ class AnikotoProvider : MainAPI() {
                 return false
             }
 
-            // Retry the AJAX episode list
             val json = app.get(
                 "$mainUrl/ajax/episode/list/$animeId",
                 referer = data, headers = ajaxHeaders(data)
@@ -192,28 +181,20 @@ class AnikotoProvider : MainAPI() {
                 return false
             }
 
-            // Find the matching episode by data-num
             val epEl = Jsoup.parse(html).select("a[data-ids]").find {
                 it.attr("data-num").toIntOrNull() == epNum
-            } ?: Jsoup.parse(html).selectFirst("a[data-ids]") ?: run {
-                return false
-            }
+            } ?: Jsoup.parse(html).selectFirst("a[data-ids]") ?: return false
 
             val serverIds = epEl.attr("data-ids")
             val audioType = if (epEl.attr("data-dub") == "1") "dub" else "sub"
             if (serverIds.isBlank()) return false
 
             resolveServers(serverIds, data, audioType, subtitleCallback, callback)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
 
-    /**
-     * Shared server resolution — used by both the anikoto| data branch and the
-     * direct URL fallback. Fetches the server list, picks servers by audio type,
-     * and resolves each embed URL.
-     */
     private suspend fun resolveServers(
         serverIds: String,
         referer: String,
@@ -221,14 +202,13 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // serverIds is a base64 blob containing '+', '=', '/' which MUST be
-        // URL-encoded. Without encoding, '+' becomes a space server-side and the
-        // API returns 500 "Bad request" → empty server list → "no link found".
+        // serverIds is a base64 blob with '+', '=' and '/'; without encoding
+        // '+' turns into a space server-side and the api answers 500
         val encodedIds = URLEncoder.encode(serverIds, "UTF-8")
         val serverListJson = try {
             app.get("$mainUrl/ajax/server/list?servers=$encodedIds",
                 referer = referer, headers = ajaxHeaders(referer)).text
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return false
         }
 
@@ -277,17 +257,11 @@ class AnikotoProvider : MainAPI() {
                 if (resolveEmbedInline(embedUrl, referer, audioType, serverName, subtitleCallback, callback)) {
                     found = true
                 }
-            } catch (e: Exception) {
-                Log.e("AniKoto", "resolveServers: linkId failed: ${e.message}")
-            }
+            } catch (_: Exception) {}
         }
         return found
     }
 
-    /**
-     * Inline embed resolution — no dependency on companion object.
-     * Handles megaplay.buzz, vidtube.site, vidwish.live.
-     */
     private suspend fun resolveEmbedInline(
         url: String,
         referer: String,
@@ -302,7 +276,6 @@ class AnikotoProvider : MainAPI() {
             else -> url
         }
 
-        // Check for hash-encoded m3u8
         getHashM3u8(normalizedUrl)?.let { m3u8 ->
             callback.invoke(
                 newExtractorLink("AniKoto", "AniKoto $serverName", m3u8, type = ExtractorLinkType.M3U8) {
@@ -323,16 +296,12 @@ class AnikotoProvider : MainAPI() {
         } else {
             try {
                 loadExtractor(normalizedUrl, referer, subtitleCallback, callback)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 false
             }
         }
     }
 
-    /**
-     * Inline MegaPlay/VidTube/VidWish resolution via MegaPlayResolver
-     * (getSourcesNew + AES "enc" decrypt — verified live).
-     */
     private suspend fun resolveMegaPlayInline(
         url: String,
         referer: String,
@@ -346,9 +315,7 @@ class AnikotoProvider : MainAPI() {
         val label = "AniKoto $serverName $displayType"
 
         val stream = MegaPlayResolver.resolveStream(url, referer)
-        if (stream == null) {
-            return false
-        }
+            ?: return false
         return MegaPlayResolver.emitLinks(
             "AniKoto", label, stream.m3u8, "https://$domain/",
             stream.subtitles, subtitleCallback, callback
@@ -360,7 +327,7 @@ class AnikotoProvider : MainAPI() {
             val obj = JsonParser.parseString(json).asJsonObject
             if (obj.get("status")?.asInt != 200) ""
             else obj.get("result")?.asString.orEmpty()
-        } catch (e: Exception) { "" }
+        } catch (_: Exception) { "" }
     }
 
     private fun jsonResultUrl(json: String): String? {
@@ -368,15 +335,17 @@ class AnikotoProvider : MainAPI() {
             val obj = JsonParser.parseString(json).asJsonObject
             if (obj.get("status")?.asInt != 200) null
             else obj.get("result")?.asJsonObject?.get("url")?.asString
-        } catch (e: Exception) { null }
+        } catch (_: Exception) { null }
     }
 
     private fun getHashM3u8(url: String): String? {
         val encoded = url.substringAfter("#", "").substringBefore("#").takeIf { it.isNotBlank() } ?: return null
-        val decoded = try { String(Base64.decode(encoded, Base64.DEFAULT)) } catch (e: Exception) { null } ?: return null
+        val decoded = try { String(Base64.decode(encoded, Base64.DEFAULT)) } catch (_: Exception) { null } ?: return null
         return proxyPlayerHost(decoded).takeIf { it.startsWith("http") && it.contains(".m3u8") }
     }
 
+    // the player hands out urls on hosts that 403 cross-origin requests;
+    // these mirrors serve the same files with permissive headers
     private fun proxyPlayerHost(url: String): String {
         return url
             .replace("vibeplayer.site", "nanobyte.bigdreamsmalldih.site")

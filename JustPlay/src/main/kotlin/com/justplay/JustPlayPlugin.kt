@@ -10,19 +10,22 @@ class JustPlayPlugin : Plugin() {
         registerMainAPI(JustPlay())
         registerExtractorAPI(PlayHubCloud())
         registerExtractorAPI(PlayVCloud())
+        registerExtractorAPI(PlayVegaDrive())
+        registerExtractorAPI(PlayFilePress())
         registerExtractorAPI(PlayFastDl())
         registerExtractorAPI(PlayHubCdn())
         registerExtractorAPI(PlayHblinks())
         registerExtractorAPI(PlayHubdrive())
         registerExtractorAPI(PlayHdStream4u())
         registerExtractorAPI(PlayGofile())
+        registerExtractorAPI(PlayGDFlix())
+        registerExtractorAPI(PlayGDLink())
         openSettings = { ctx ->
             val activity = ctx as? androidx.appcompat.app.AppCompatActivity
             if (activity != null) {
                 try {
                     JustPlaySettingsFragment().show(activity.supportFragmentManager, "JustPlaySettings")
-                } catch (e: Exception) {
-                }
+                } catch (_: Exception) {}
             }
         }
     }

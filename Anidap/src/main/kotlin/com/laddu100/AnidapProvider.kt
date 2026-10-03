@@ -1,6 +1,5 @@
 package com.laddu100
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -11,6 +10,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.ConcurrentHashMap
+import com.raghav.donation.DonationManager
 
 class AnidapProvider : MainAPI() {
     override var mainUrl = "https://anidap.lol"
@@ -26,7 +26,6 @@ class AnidapProvider : MainAPI() {
     private val chadHost = "https://chad.anidap.lol"
     private val chadUrl = "$chadHost/rest/api"
     private val graphqlHost = "https://graphql.anidap.lol"
-    private val TAG = "Anidap"
 
     // cdnx.aniwatchtv.site 403s requests without browser-style cors headers
     private fun proxyHeaders(): Map<String, String> = mapOf(
@@ -92,14 +91,14 @@ class AnidapProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("anidap") ?: mainUrl
         return try {
             when (request.name) {
                 "Recently Added" -> recentsPage(page)
                 else -> trendingPage()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "getMainPage failed: ${e.message}")
+        } catch (_: Exception) {
             newHomePageResponse(emptyList<HomePageList>(), hasNext = false)
         }
     }
@@ -187,8 +186,7 @@ class AnidapProvider : MainAPI() {
             val results = root.path("results")
             if (!results.isArray) emptyList()
             else results.mapNotNull { buildTrendingItem(it) }
-        } catch (e: Exception) {
-            Log.e(TAG, "search failed: ${e.message}")
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -265,8 +263,7 @@ class AnidapProvider : MainAPI() {
                         )
                     } else null
                 } else null
-            } catch (e: Exception) {
-                Log.e(TAG, "episodes fetch failed: ${e.message}")
+            } catch (_: Exception) {
                 null
             }
 
@@ -284,9 +281,7 @@ class AnidapProvider : MainAPI() {
                         ep1HasSub = sRoot.path("subProviders").size() > 0
                         ep1HasDub = sRoot.path("dubProviders").size() > 0
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "servers probe failed: ${e.message}")
-                }
+                } catch (_: Exception) {}
             }
 
             val totalEps = episodes?.maxOfOrNull { it.number }
@@ -354,8 +349,7 @@ class AnidapProvider : MainAPI() {
                 if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
                 if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "load failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -392,9 +386,7 @@ class AnidapProvider : MainAPI() {
                         }
                     }
                 }
-                // chad never lists the site's own adp server, the web client
-                // puts it first in every list - do the same or those streams
-                // never get requested
+                // chad never lists the site's own adp server, the web client puts it first so mirror that
                 fun withAdp(list: List<ServerProvider>): List<ServerProvider> =
                     if (list.any { it.id == "adp" }) list
                     else listOf(ServerProvider("adp", null)) + list
@@ -403,8 +395,7 @@ class AnidapProvider : MainAPI() {
                     "dub" to withAdp(parseList("dubProviders")),
                 )
             } else emptyMap()
-        } catch (e: Exception) {
-            Log.e(TAG, "servers fetch failed: ${e.message}")
+        } catch (_: Exception) {
             emptyMap()
         }
         serversCache[key] = System.currentTimeMillis() to out
@@ -466,8 +457,7 @@ class AnidapProvider : MainAPI() {
             }
 
             SourcesPayload(sources, trackList, headers)
-        } catch (e: Exception) {
-            Log.e(TAG, "sources $providerId failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -519,9 +509,7 @@ class AnidapProvider : MainAPI() {
                 subtitleCallback.invoke(newSubtitleFile(label, url) {
                     this.headers = subHeaders
                 })
-            } catch (e: Exception) {
-                Log.e(TAG, "subtitle emit failed: ${e.message}")
-            }
+            } catch (_: Exception) {}
         }
     }
 
@@ -536,7 +524,6 @@ class AnidapProvider : MainAPI() {
         val rawParts = data.trim().split("|")
         val parts = if (rawParts.firstOrNull()?.startsWith("http") == true) rawParts.drop(1) else rawParts
         if (parts.size < 3) {
-            Log.e(TAG, "loadLinks: invalid data")
             return false
         }
         val slug = parts[0]
@@ -545,7 +532,6 @@ class AnidapProvider : MainAPI() {
 
         val providers = serversForEpisode(slug, epNum)[type] ?: emptyList()
         if (providers.isEmpty()) {
-            Log.e(TAG, "loadLinks: no providers for $slug ep$epNum $type")
             return false
         }
 
@@ -645,7 +631,7 @@ class AnidapProvider : MainAPI() {
                                         ?: payload.headers["referer"] ?: "$mainUrl/"
                                     val loaded = try {
                                         loadExtractor(srcUrl, refererForExtractor, subtitleCallback, callback)
-                                    } catch (e: Exception) {
+                                    } catch (_: Exception) {
                                         false
                                     }
                                     if (loaded) {
@@ -665,9 +651,7 @@ class AnidapProvider : MainAPI() {
                                 }
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "loadLinks ${provider.id} failed: ${e.message}")
-                    }
+                    } catch (_: Exception) {}
                 }
             }.forEach { it.await() }
         }

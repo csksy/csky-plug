@@ -11,14 +11,14 @@ dependencies {
 }
 
 cloudstream {
+    language = "en"
     description = "stream movies & TV series HINDI,ENGLISH - TheMoviesFlix Provider"
-    authors = listOf("csksy")
+    authors = listOf("raghav")
 
     status = 1
     tvTypes = listOf(
         "Movie",
         "TvSeries"
     )
-    language = "en"
     iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSj_C9WX4AwepepLyw_cF-EIJeRpqgI4wDiquYSoP9xDFFAKFtTVM-P_zo&s=10"
 }

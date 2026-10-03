@@ -1,30 +1,16 @@
 package com.laddu100
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
-import java.net.URLDecoder
+import java.net.URI
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * CryptoJS-compatible AES "passphrase" codec used by nxsha.space.
- *
- * CryptoJS.AES.encrypt(text, passphrase) with a string key uses the OpenSSL
- * EVP_BytesToKey key derivation (MD5, 1 iteration, 8 byte random salt):
- *   output = "Salted__" || salt || AES-256-CBC(PKCS7(text))
- * rendered as base64. The site additionally strips padding chars and swaps
- * +/ for -_ (base64url) on the query string, and the response `_hash` field
- * uses the same base64url form.
- */
+// CryptoJS.AES "passphrase" mode - OpenSSL EVP_BytesToKey (MD5, 8 byte salt) + AES-256-CBC, base64url on the wire
 object MMCrypto {
 
     fun evpBytesToKey(password: ByteArray, salt: ByteArray, keyLen: Int = 32, ivLen: Int = 16): Pair<ByteArray, ByteArray> {
@@ -50,15 +36,14 @@ object MMCrypto {
     }
 
     fun aesEncrypt(plain: String, passphrase: String): String? = try {
-        val salt = ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
+        val salt = ByteArray(8).also { SecureRandom().nextBytes(it) }
         val (key, iv) = evpBytesToKey(passphrase.toByteArray(Charsets.UTF_8), salt)
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         val ct = cipher.doFinal(pkcs7Pad(plain.toByteArray(Charsets.UTF_8)))
         val out = "Salted__".toByteArray(Charsets.UTF_8) + salt + ct
         Base64.getEncoder().encodeToString(out)
-    } catch (e: Exception) {
-        Log.e("MMCrypto", "encrypt: ${e.message}")
+    } catch (_: Exception) {
         null
     }
 
@@ -74,12 +59,11 @@ object MMCrypto {
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         String(cipher.doFinal(raw.copyOfRange(16, raw.size)), Charsets.UTF_8)
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 }
 
-/** Shared HTTP + parsing helpers for the multimovies source resolvers. */
 object MMNet {
     const val UA =
         "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
@@ -90,7 +74,6 @@ object MMNet {
     )
 
     fun urlEncode(s: String): String = URLEncoder.encode(s, "UTF-8")
-    fun urlDecode(s: String): String = URLDecoder.decode(s, "UTF-8")
 
     fun abs(base: String, url: String): String {
         val u = url.trim()
@@ -103,15 +86,15 @@ object MMNet {
         s.replace("\\/", "/").replace("\\\"", "\"").replace("&amp;", "&")
 
     fun hostOf(url: String): String = try {
-        java.net.URI(url).host?.lowercase() ?: ""
-    } catch (e: Exception) {
+        URI(url).host?.lowercase() ?: ""
+    } catch (_: Exception) {
         ""
     }
 
     fun originOf(url: String): String = try {
-        val u = java.net.URI(url)
+        val u = URI(url)
         "${u.scheme}://${u.host}"
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         ""
     }
 
@@ -124,16 +107,7 @@ object MMNet {
         if (referer != null) h["Referer"] = referer
         val resp = app.get(url, headers = h, timeout = 30_000L)
         if (resp.isSuccessful) resp.text else null
-    } catch (e: Exception) {
-        null
-    }
-
-    /** One lightweight line of the Jackson mapper for JSON payloads. */
-    inline fun <reified T> parseJson(text: String): T? = try {
-        com.fasterxml.jackson.databind.ObjectMapper()
-            .registerModule(com.fasterxml.jackson.module.kotlin.KotlinModule.Builder().build())
-            .readValue(text, T::class.java)
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 }

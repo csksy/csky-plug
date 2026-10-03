@@ -101,6 +101,5 @@ data class FlixResponse(
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class FlixServer(
     @JsonProperty("serverName") val serverName: String? = null,
-    @JsonProperty("dataLink") val dataLink: String? = null,
-    @JsonProperty("dataType") val dataType: String? = null
+    @JsonProperty("dataLink") val dataLink: String? = null
 )

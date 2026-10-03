@@ -1,7 +1,6 @@
 package com.laddu100.animeinweb
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
@@ -27,6 +26,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.raghav.donation.DonationManager
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -56,9 +56,7 @@ class AnimeInWebProvider : MainAPI() {
         "Accept" to "application/json",
         "User-Agent" to USER_AGENT
     )
-    // the image host whitelists app-style user agents while browser agents
-    // need a referer that some app builds never forward for images; sending
-    // both covers every header-forwarding behaviour
+    // the image host whitelists app-style agents while browser agents need a referer, send both
     private val posterHeaders get() = mapOf(
         "User-Agent" to IMG_USER_AGENT,
         "Referer" to "$mainUrl/"
@@ -67,10 +65,8 @@ class AnimeInWebProvider : MainAPI() {
     private val posterCache = ConcurrentHashMap<String, String>()
     private val posterSemaphore = Semaphore(POSTER_CONCURRENCY)
 
-    // most app builds load images through their own image loader without the
-    // plugin's poster headers and the site's image hosts reject those
-    // requests outright, so posters are sourced from kitsu whose cdn serves
-    // every client regardless of headers; the site's own url stays as the
+    // app image loaders skip the plugin's poster headers and the site's hosts reject those,
+    // so posters come from kitsu whose cdn serves every client; the site url stays the
     // fallback for titles kitsu does not know
     private suspend fun posterFor(title: String?, siteUrl: String?): String? {
         val fallback = fixPosterUrl(siteUrl) ?: return null
@@ -84,8 +80,7 @@ class AnimeInWebProvider : MainAPI() {
             if (found != null && !found.contains("X-Amz-")) posterCache[key] = found
             else if (found == null) posterCache[key] = ""
             found ?: fallback
-        } catch (e: Exception) {
-            Log.e(TAG, "[poster] $key: ${e.message}")
+        } catch (_: Exception) {
             fallback
         }
     }
@@ -155,7 +150,6 @@ class AnimeInWebProvider : MainAPI() {
                 return parseJson<T>(text)
             } catch (e: Exception) {
                 lastError = e
-                Log.e(TAG, "[fetch] ${url.substringAfter("/api/proxy")} attempt ${attempt + 1} failed: ${e.message}")
                 delay(800L * (attempt + 1))
             }
         }
@@ -226,6 +220,8 @@ class AnimeInWebProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: com.lagradost.cloudstream3.MainPageRequest): com.lagradost.cloudstream3.HomePageResponse {
+        DonationManager.checkAndShow()
+        mainUrl = FirebaseDomainHelper.getDomain("animeinweb") ?: mainUrl
         return when {
             request.data == "views" -> explorePage(page, request)
             request.data == "schedule" -> {
@@ -235,7 +231,6 @@ class AnimeInWebProvider : MainAPI() {
                 val day = todayIndonesianDay()
                 val items = fetchJson<ScheduleEnvelope>("${apiUrl("/schedule/data")}?day=$day")
                     .data.movie.map { it.toSearchResponse() }
-                Log.d(TAG, "[main] schedule $day: ${items.size} titles")
                 newHomePageResponse(request, items, false)
             }
             request.data.startsWith("home:") -> {
@@ -249,7 +244,6 @@ class AnimeInWebProvider : MainAPI() {
                     "random" -> data.random
                     else -> emptyList()
                 }
-                Log.d(TAG, "[main] home:$key -> ${list.size} titles")
                 newHomePageResponse(request, list.map { it.toSearchResponse() }, false)
             }
             else -> explorePage(page, request)
@@ -268,15 +262,16 @@ class AnimeInWebProvider : MainAPI() {
 
     override suspend fun search(query: String, page: Int): com.lagradost.cloudstream3.SearchResponseList? {
         if (query.isBlank()) return newSearchResponseList(emptyList(), false)
+        mainUrl = FirebaseDomainHelper.getDomain("animeinweb") ?: mainUrl
         val encoded = URLEncoder.encode(query, "UTF-8")
         // cloudstream search pages start at 1, the API at 0
         val res = fetchJson<ExploreEnvelope>("${apiUrl("/explore/movie")}?page=${page - 1}&sort=&keyword=$encoded")
         val items = res.data.movie.map { it.toSearchResponse() }
-        Log.d(TAG, "[search] '$query' page $page: ${items.size} results")
         return newSearchResponseList(items, items.size >= EXPLORE_PAGE_SIZE)
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("animeinweb") ?: mainUrl
         val id = url.substringAfterLast("/").takeIf { it.isNotBlank() } ?: return null
         val detail = fetchJson<DetailEnvelope>("${apiUrl("/movie/detail")}/$id").data
         val movie = detail.movie
@@ -293,8 +288,6 @@ class AnimeInWebProvider : MainAPI() {
                     this.date = parseAirDate(ep.key_time)
                 }
             }
-
-        Log.d(TAG, "[load] $title type=${movie.type} eps=${episodes.size}")
 
         return if (tvType == TvType.TvSeries) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -383,22 +376,16 @@ class AnimeInWebProvider : MainAPI() {
                     if (host == "www.blogger.com" || host == "gdplayer.to") {
                         try {
                             if (loadExtractor(link, "$mainUrl/", subtitleCallback, callback)) found = true
-                        } catch (e: Exception) {
-                            Log.e(TAG, "[loadLinks] extractor failed for $host: ${e.message}")
-                        }
-                    } else {
-                        Log.d(TAG, "[loadLinks] skip dead host $host")
+                        } catch (_: Exception) {}
                     }
                 }
             }
         }
 
-        Log.d(TAG, "[loadLinks] ep=$epId found=$found")
         return found
     }
 
     companion object {
-        private const val TAG = "AnimeInWeb"
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         private const val IMG_USER_AGENT = "okhttp/4.12.0"

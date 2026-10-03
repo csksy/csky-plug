@@ -1,14 +1,12 @@
 version = 1
 
-android {
-    buildFeatures {
-        buildConfig = true
-    }
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
 }
 
 cloudstream {
-    description = "Anime with Sub, Dub and Raw - direct HD streams, 30-language subtitles, movies with sub/dub tabs"
-    authors = listOf("csksy")
+    description = "anime with sub and dub"
+    authors = listOf("KSHITIJ8473")
 
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")

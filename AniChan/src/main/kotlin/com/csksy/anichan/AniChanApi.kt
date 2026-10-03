@@ -7,8 +7,17 @@ import com.lagradost.cloudstream3.app
 
 object AniChanApi {
 
-    const val MAIN_URL = "https://anichan.to"
     private const val TAG = "AniChan"
+    private const val DEFAULT_URL = "https://anichan.to"
+
+    @Volatile
+    private var host = DEFAULT_URL
+
+    suspend fun refreshDomain() {
+        FirebaseDomainHelper.getDomain("anichan")?.let { host = it }
+    }
+
+    fun url(): String = host
 
     private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
@@ -32,32 +41,32 @@ object AniChanApi {
         val resp = app.get(url, headers = BASE_HEADERS)
         if (resp.isSuccessful) resp.text else null
     } catch (e: Exception) {
-        Log.e(TAG, "GET $url failed: ${e.message}")
+        Log.e(TAG, "GET failed: ${e.message}")
         null
     }
 
     suspend fun suggest(query: String): List<CatalogItem> {
-        val body = getJson("$MAIN_URL/api/suggest?q=${urlEncode(query)}") ?: return emptyList()
+        val body = getJson("$host/api/suggest?q=${urlEncode(query)}") ?: return emptyList()
         return parse<CatalogEnvelope>(body)?.results ?: emptyList()
     }
 
     suspend fun trending(page: Int): List<CatalogItem> {
-        val body = getJson("$MAIN_URL/api/catalog/trending?page=$page") ?: return emptyList()
+        val body = getJson("$host/api/catalog/trending?page=$page") ?: return emptyList()
         return parse<CatalogEnvelope>(body)?.results ?: emptyList()
     }
 
     suspend fun airing(page: Int): List<CatalogItem> {
-        val body = getJson("$MAIN_URL/api/catalog/airing?page=$page") ?: return emptyList()
+        val body = getJson("$host/api/catalog/airing?page=$page") ?: return emptyList()
         return parse<CatalogEnvelope>(body)?.results ?: emptyList()
     }
 
     suspend fun animeDetail(id: Int): CatalogItem? {
-        val body = getJson("$MAIN_URL/api/catalog/anime/$id") ?: return null
+        val body = getJson("$host/api/catalog/anime/$id") ?: return null
         return parse<CatalogItem>(body)
     }
 
     suspend fun watchInfo(id: Int): WatchInfo? {
-        val body = getJson("$MAIN_URL/api/watch/episodes?anilistId=$id") ?: return null
+        val body = getJson("$host/api/watch/episodes?anilistId=$id") ?: return null
         return parse<WatchInfo>(body)
     }
 

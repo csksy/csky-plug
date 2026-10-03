@@ -1,7 +1,6 @@
 package com.laddu100.raghavanime
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
@@ -15,7 +14,6 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addDubStatus
 import com.lagradost.cloudstream3.addEpisodes
-import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newAnimeLoadResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
@@ -36,10 +34,6 @@ class RaghavSenshi : MainAPI() {
     override var name = "Senshi"
     override var lang = "en"
 
-    private val TAG = "Senshi"
-
-    private val vidcloudApi = "https://s.vidcloud.se/_v1/sources?id="
-
     private val ua =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -57,9 +51,7 @@ class RaghavSenshi : MainAPI() {
         "Referer" to "$mainUrl/browse"
     )
 
-    // mirrors the header set the site player sends on cross-origin XHRs to the
-    // stream api and cdn, the waf there rejects plain requests without them
-    // (the sources endpoint started requiring Origin, same pattern as the cdn)
+    // the waf rejects cross-origin player requests without the full browser header set
     private val cdnHeaders = mapOf(
         "User-Agent" to ua,
         "Accept" to "*/*",
@@ -85,8 +77,7 @@ class RaghavSenshi : MainAPI() {
         return try {
             val res = cfGet(url, headers = apiHeaders, timeout = timeout)
             if (res.code == 200) res.text else null
-        } catch (e: Exception) {
-            Log.d(TAG, "GET $url failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -95,45 +86,42 @@ class RaghavSenshi : MainAPI() {
         return try {
             val res = cfPost("$mainUrl/anime/filter", body = body.toJson(), headers = postHeaders, timeout = timeout)
             if (res.code == 200 || res.code == 201) parseJson<SenshiFilterResponse>(res.text) else null
-        } catch (e: Exception) {
-            Log.d(TAG, "filter request failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        mainUrl = FirebaseDomainHelper.getDomain("senshi") ?: mainUrl
+        RaghavSenshiVhost.refreshDomain()
         if (query.isBlank()) return emptyList()
         val resp = postFilter(SenshiFilterBody(searchTerm = query, page = 1, limit = 30)) ?: return emptyList()
         return resp.data.mapNotNull { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        mainUrl = FirebaseDomainHelper.getDomain("senshi") ?: mainUrl
         val publicId = url.substringBefore("?").substringAfterLast("/")
         if (publicId.isBlank()) {
-            Log.e(TAG, "load: no id in $url")
             return null
         }
 
         val animeText = getJson("$mainUrl/anime/$publicId") ?: run {
-            Log.e(TAG, "load: anime request failed for $publicId")
             return null
         }
         val anime = try {
             parseJson<SenshiAnime>(animeText)
-        } catch (e: Exception) {
-            Log.e(TAG, "load: anime parse failed: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
         val malId = anime.id ?: return null
 
         val episodesText = getJson("$mainUrl/episodes/$malId") ?: run {
-            Log.e(TAG, "load: episodes request failed for malId=$malId")
             return null
         }
         val episodes = try {
             parseJson<List<SenshiEpisode>>(episodesText).filter { it.ep_id != null }
-        } catch (e: Exception) {
-            Log.e(TAG, "load: episodes parse failed: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
         val sorted = episodes.sortedBy { it.ep_id }
@@ -141,8 +129,7 @@ class RaghavSenshi : MainAPI() {
         var hasSub = (anime.sub_count ?: 0) > 0
         var hasDub = (anime.dub_count ?: 0) > 0
         if (!hasSub && !hasDub && sorted.isNotEmpty()) {
-            // counts can be stale on freshly uploaded entries, fall back to the
-            // first episode's embed list
+            // counts can be stale on fresh uploads, probe the first episode
             hasSub = true
             probeEmbeds(malId, sorted.first().ep_id!!)?.let { statuses ->
                 hasSub = statuses.any { it.isSub() }
@@ -171,9 +158,7 @@ class RaghavSenshi : MainAPI() {
         }
     }
 
-    // dub episodes normally run from episode 1 up to dub_count, but on ongoing
-    // shows the count can lag behind the episode list, so the last few trailing
-    // episodes are checked for dub embeds before cutting the list short
+    // dub_count can lag behind the episode list on ongoing shows, trailing episodes get probed
     private suspend fun buildDubEpisodes(
         malId: Int,
         episodes: List<SenshiEpisode>,
@@ -196,8 +181,7 @@ class RaghavSenshi : MainAPI() {
         val text = getJson("$mainUrl/episode-embeds/$malId/$epId") ?: return null
         return try {
             parseJson<List<SenshiEmbed>>(text)
-        } catch (e: Exception) {
-            Log.d(TAG, "probeEmbeds($malId, $epId) parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -210,73 +194,80 @@ class RaghavSenshi : MainAPI() {
     ): Boolean {
         val epData = try {
             parseJson<SenshiEpData>(data)
-        } catch (e: Exception) {
-            Log.e(TAG, "loadLinks: bad episode data: ${e.message}")
+        } catch (_: Exception) {
             return false
         }
+        mainUrl = FirebaseDomainHelper.getDomain("senshi") ?: mainUrl
+        RaghavSenshiVhost.refreshDomain()
         val wantDub = epData.type == "dub"
         val modeLabel = if (wantDub) "Dub" else "Sub"
 
         val embeds = probeEmbeds(epData.malId, epData.ep) ?: run {
-            Log.e(TAG, "loadLinks: no embeds for malId=${epData.malId} ep=${epData.ep}")
             return false
         }
         if (embeds.isEmpty()) {
-            Log.e(TAG, "loadLinks: empty embed list for malId=${epData.malId} ep=${epData.ep}")
             return false
         }
 
         val matching = embeds.filter { if (wantDub) it.isDub() else it.isSub() }
             .ifEmpty { embeds }
 
-        // sub and dub entries usually point at the same multi-audio stream, so
-        // the source api is only hit once per unique id
+        // sub and dub entries usually share one multi-audio stream, hit each id once
         val sourceIds = matching.mapNotNull { it.remote_source_id }.distinct()
         if (sourceIds.isEmpty()) {
-            Log.e(TAG, "loadLinks: embeds carry no source ids")
             return false
         }
 
         var found = false
         for (sourceId in sourceIds) {
-            val source = fetchVidcloud(sourceId) ?: continue
-            val file = source.source ?: continue
-            val master = file.src ?: continue
-            val apiQuality = file.quality?.takeIf { it.isNotBlank() && it != "Unknown" }
+            val sources = fetchVidcloud(sourceId) ?: continue
+            for (source in sources) {
+                val files = source.filesFor(wantDub)
+                if (files.isEmpty()) {
+                    continue
+                }
 
-            for (track in source.subtitlesFor(wantDub)) {
-                val url = track.vtt_url?.takeIf { it.isNotBlank() } ?: track.url ?: continue
-                if (url.isBlank()) continue
-                subtitleCallback.invoke(
-                    newSubtitleFile(track.label ?: "English", url) {
-                        this.headers = streamHeaders
+                for (track in source.subtitlesFor(wantDub)) {
+                    val url = track.vtt_url?.takeIf { it.isNotBlank() } ?: track.url ?: continue
+                    if (url.isBlank()) continue
+                    subtitleCallback.invoke(
+                        newSubtitleFile(track.label ?: "English", url) {
+                            this.headers = streamHeaders
+                        }
+                    )
+                }
+
+                for (file in files) {
+                    val master = file.src ?: continue
+                    if (emitStreamLinks(master, modeLabel, wantDub, callback)) {
+                        found = true
                     }
-                )
-            }
-
-            if (emitStreamLinks(master, modeLabel, wantDub, apiQuality, callback)) {
-                found = true
+                }
             }
         }
         return found
     }
 
-    // the cdn hands out aes-gcm encrypted playlists prefixed with EM3U8v1:, they
-    // are decrypted locally and served through a rewriting proxy so every link
-    // can pin one resolution and one audio track
+    // masters arrive as plain hls, the proxy pins one resolution and audio track per link
     private suspend fun emitStreamLinks(
         master: String,
         modeLabel: String,
         wantDub: Boolean,
-        apiQuality: String?,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val masterText: String? = try {
-            val res = cfGet(master, headers = cdnHeaders, timeout = 20_000L)
-            if (res.code == 200) res.text else null
-        } catch (e: Exception) {
-            Log.e(TAG, "master fetch failed: ${e.message}")
-            null
+        // cdn edges answer 403 on burst fetches, retry quietly a couple of times
+        var masterText: String? = null
+        for (attempt in 0..2) {
+            if (attempt > 0) {
+                delay(1200L)
+            }
+            masterText = try {
+                val res = cfGet(master, headers = cdnHeaders, timeout = 20_000L)
+                if (res.code == 200) res.text else null
+            } catch (_: Exception) {
+                null
+            }
+            if (masterText != null) break
         }
 
         var playlist = masterText
@@ -290,11 +281,8 @@ class RaghavSenshi : MainAPI() {
                 val mode = if (wantDub) "dub" else "sub"
                 val variants = parseVariantQualities(playlist)
                 if (variants.isEmpty()) {
-                    val label = "Senshi $modeLabel${apiQuality?.let { " $it" } ?: ""}"
                     callback.invoke(
-                        newExtractorLink(source = name, name = label, url = "$proxyBase/m/$mode/0/master.m3u8", type = ExtractorLinkType.M3U8) {
-                            this.quality = getQualityFromName(apiQuality)
-                        }
+                        newExtractorLink(source = name, name = "Senshi $modeLabel", url = "$proxyBase/m/$mode/0/master.m3u8", type = ExtractorLinkType.M3U8)
                     )
                 } else {
                     variants.forEach { q ->
@@ -308,17 +296,12 @@ class RaghavSenshi : MainAPI() {
                 }
                 return true
             }
-            Log.e(TAG, "proxy register failed, falling back to raw url")
-        } else if (masterText != null) {
-            Log.e(TAG, "master is not a usable playlist")
         }
 
-        val label = "Senshi $modeLabel${apiQuality?.let { " $it" } ?: ""}"
         callback.invoke(
-            newExtractorLink(source = name, name = label, url = master, type = ExtractorLinkType.M3U8) {
+            newExtractorLink(source = name, name = "Senshi $modeLabel", url = master, type = ExtractorLinkType.M3U8) {
                 this.referer = "$mainUrl/"
                 this.headers = streamHeaders
-                this.quality = getQualityFromName(apiQuality)
             }
         )
         return true
@@ -346,32 +329,20 @@ class RaghavSenshi : MainAPI() {
         return qualities.sortedByDescending { it.first.dropLast(1).toIntOrNull() ?: 0 }
     }
 
-    private suspend fun fetchVidcloud(sourceId: Int): VidcloudSource? {
-        var text: String? = null
+    private suspend fun fetchVidcloud(sourceId: Int): List<VidcloudSource>? {
+        var result: List<VidcloudSource>? = null
         for (attempt in 0..2) {
             if (attempt > 0) {
                 delay(2500L * attempt)
             }
-            text = try {
-                val res = app.get("$vidcloudApi$sourceId", headers = cdnHeaders, timeout = 20_000L)
-                if (res.code == 200) res.text else null
-            } catch (e: Exception) {
-                Log.d(TAG, "vidcloud $sourceId request failed: ${e.message}")
+            result = try {
+                RaghavSenshiVhost.fetchSources(sourceId)
+            } catch (_: Exception) {
                 null
             }
-            if (text != null && !text.contains("too_many_requests")) break
-            text = null
+            if (result != null) break
         }
-        if (text == null) {
-            Log.e(TAG, "vidcloud source $sourceId unavailable after retries")
-            return null
-        }
-        return try {
-            parseJson<List<VidcloudSource>>(text).firstOrNull()
-        } catch (e: Exception) {
-            Log.e(TAG, "vidcloud source $sourceId parse failed: ${e.message}")
-            null
-        }
+        return result
     }
 
     private fun SenshiAnime.toSearchResponse(): SearchResponse? {
@@ -403,8 +374,7 @@ class RaghavSenshi : MainAPI() {
         }
     }
 
-    // movie types hide the sub/dub switcher in the app, so dual-audio movies are
-    // typed as regular anime to keep both tracks reachable
+    // dual-audio movies are typed as anime so the sub/dub switcher stays reachable
     private fun SenshiAnime.tvType(dualAudio: Boolean = false): TvType = when (type?.uppercase()) {
         "MOVIE" -> if (dualAudio) TvType.Anime else TvType.AnimeMovie
         "OVA", "ONA", "SPECIAL", "MUSIC" -> TvType.OVA
@@ -437,6 +407,17 @@ class RaghavSenshi : MainAPI() {
         return st == "sub" || st == "hardsub"
     }
 
+    // the runtime labels each stream sub, dub or both, keep the ones that fit the tab
+    private fun VidcloudSource.filesFor(wantDub: Boolean): List<VidcloudFile> {
+        val labeled = source.filter { !it.label.isNullOrBlank() }
+        if (labeled.isEmpty()) return source
+        val wanted = labeled.filter {
+            val tag = it.label!!.lowercase()
+            tag == "both" || tag == if (wantDub) "dub" else "sub"
+        }
+        return wanted
+    }
+
     private fun VidcloudTrack.isDubTrack(): Boolean {
         val label = (label ?: html ?: "").lowercase()
         return label.contains("dub") || (url ?: "").contains("ai_dub")
@@ -447,9 +428,7 @@ class RaghavSenshi : MainAPI() {
         return null
     }
 
-    // dub mode keeps the dub captions (they match the english audio), sub mode
-    // keeps the regular translation tracks; each falls back to the other set
-    // when the stream only carries one kind
+    // dub mode keeps dub captions, sub mode the translation tracks, with fallback to the other set
     private fun VidcloudSource.subtitlesFor(wantDub: Boolean): List<VidcloudTrack> {
         val usable = tracks.filter { it.trackLabel() != null }
         val dub = usable.filter { it.isDubTrack() }
@@ -529,8 +508,7 @@ class RaghavSenshi : MainAPI() {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class VidcloudFile(
         val src: String? = null,
-        val quality: String? = null,
-        val audio: String? = null
+        val label: String? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -544,7 +522,7 @@ class RaghavSenshi : MainAPI() {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class VidcloudSource(
-        val source: VidcloudFile? = null,
+        val source: List<VidcloudFile> = emptyList(),
         val tracks: List<VidcloudTrack> = emptyList()
     )
 }

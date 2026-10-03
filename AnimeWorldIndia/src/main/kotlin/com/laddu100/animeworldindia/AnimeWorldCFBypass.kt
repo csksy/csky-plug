@@ -28,7 +28,6 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity
 import com.lagradost.cloudstream3.CloudStreamApp
 import com.lagradost.cloudstream3.app
@@ -41,7 +40,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
-private const val TAG = "AnimeWorld_CF"
+private const val BROWSER_UA =
+    "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
 private val CF_CHALLENGE_TITLES = listOf(
     "just a moment", "just a moment...", "checking your browser",
@@ -73,9 +73,7 @@ internal object AnimeWorldCFStore {
             cachedUA = CloudStreamApp.getKey<String>(KEY_CF_UA)
             cachedHost = CloudStreamApp.getKey<String>(KEY_CF_HOST)
             cachedTimestamp = CloudStreamApp.getKey<String>(KEY_CF_TIMESTAMP)?.toLongOrNull() ?: 0L
-        } catch (e: Exception) {
-            Log.e(TAG, "init: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
     fun getCookies(): String? {
@@ -101,9 +99,7 @@ internal object AnimeWorldCFStore {
             CloudStreamApp.setKey(KEY_CF_UA, userAgent)
             CloudStreamApp.setKey(KEY_CF_HOST, host)
             CloudStreamApp.setKey(KEY_CF_TIMESTAMP, cachedTimestamp.toString())
-        } catch (e: Exception) {
-            Log.e(TAG, "save: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
     fun clear() {
@@ -116,14 +112,14 @@ internal object AnimeWorldCFStore {
             CloudStreamApp.setKey(KEY_CF_UA, "")
             CloudStreamApp.setKey(KEY_CF_HOST, "")
             CloudStreamApp.setKey(KEY_CF_TIMESTAMP, "")
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 }
 
 internal fun isAnimeWorldCloudflareBlocked(response: NiceResponse): Boolean {
     val code = response.code
     if (code == 503) return true
-    val body = try { response.text.lowercase() } catch (e: Exception) { "" }
+    val body = try { response.text.lowercase() } catch (_: Exception) { "" }
     if (code == 403) {
         if (body.contains("just a moment") && body.contains("challenge-platform")) return true
         if (body.contains("checking your browser") && body.contains("cloudflare")) return true
@@ -163,7 +159,7 @@ private class AnimeWorldCFDialog(
         try {
             val uri = Uri.parse(targetUrl)
             "${uri.scheme}://${uri.host}"
-        } catch (e: Exception) { targetUrl }
+        } catch (_: Exception) { targetUrl }
     }
 
     private fun extractAndFinish() {
@@ -174,9 +170,7 @@ private class AnimeWorldCFDialog(
             if (cookieStr.contains("cf_clearance")) {
                 finishSuccess(cookieStr)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "extract: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
     private fun finishSuccess(cookieStr: String) {
@@ -184,17 +178,21 @@ private class AnimeWorldCFDialog(
         handler.removeCallbacksAndMessages(null)
         val ua = webView?.settings?.userAgentString ?: ""
         AnimeWorldCFStore.save(cookieStr, ua, targetHost)
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { (webView?.getTag() as? Dialog)?.dismiss() } catch (e: Exception) {}
-        try { onFinished?.invoke(true) } catch (e: Exception) {}
+        try {
+            webView?.destroy()
+            (webView?.getTag() as? Dialog)?.dismiss()
+        } catch (_: Exception) {}
+        try { onFinished?.invoke(true) } catch (_: Exception) {}
     }
 
     private fun finishFailure() {
         if (!resolved.compareAndSet(false, true)) return
         handler.removeCallbacksAndMessages(null)
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { dialog?.dismiss() } catch (e: Exception) {}
-        try { onFinished?.invoke(false) } catch (e: Exception) {}
+        try {
+            webView?.destroy()
+            dialog?.dismiss()
+        } catch (_: Exception) {}
+        try { onFinished?.invoke(false) } catch (_: Exception) {}
     }
 
     private val cookiePollRunnable = object : Runnable {
@@ -241,7 +239,7 @@ private class AnimeWorldCFDialog(
         statusText = statusView
         container.addView(statusView)
 
-        val isTv = try { Globals.isLayout(Globals.TV) } catch (e: Throwable) { false }
+        val isTv = try { Globals.isLayout(Globals.TV) } catch (_: Throwable) { false }
         container.addView(TextView(activity).apply {
             text = if (isTv) "Use D-pad to move cursor, OK to click."
             else "Solve the CAPTCHA below, then tap Done."
@@ -328,8 +326,8 @@ private class AnimeWorldCFDialog(
             handler.removeCallbacksAndMessages(null)
             if (!resolved.get()) {
                 resolved.set(true)
-                try { webView?.destroy() } catch (e: Exception) {}
-                try { onFinished?.invoke(false) } catch (e: Exception) {}
+                try { webView?.destroy() } catch (_: Exception) {}
+                try { onFinished?.invoke(false) } catch (_: Exception) {}
             }
         }
         dialog?.show()
@@ -363,8 +361,13 @@ private class AnimeWorldCFDialog(
         val t = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, pos.x, pos.y, 0)
         val up = MotionEvent.obtain(t, t + 120, MotionEvent.ACTION_UP, pos.x, pos.y, 0)
-        try { wv.dispatchTouchEvent(down); wv.dispatchTouchEvent(up) } catch (e: Exception) {}
-        finally { down.recycle(); up.recycle() }
+        try {
+            wv.dispatchTouchEvent(down)
+            wv.dispatchTouchEvent(up)
+        } catch (_: Exception) {} finally {
+            down.recycle()
+            up.recycle()
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -375,7 +378,7 @@ private class AnimeWorldCFDialog(
                 javaScriptEnabled = true; domStorageEnabled = true
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 allowContentAccess = true; allowFileAccess = true; loadsImagesAutomatically = true
-                userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                userAgentString = BROWSER_UA
                 mediaPlaybackRequiresUserGesture = false
             }
             webChromeClient = object : WebChromeClient() {
@@ -402,9 +405,11 @@ private class AnimeWorldCFDialog(
 
     fun dismiss() {
         handler.removeCallbacksAndMessages(null)
-        try { webView?.apply { stopLoading(); destroy() } } catch (e: Exception) {}
+        try {
+            webView?.apply { stopLoading(); destroy() }
+        } catch (_: Exception) {}
         webView = null
-        try { dialog?.dismiss() } catch (e: Exception) {}
+        try { dialog?.dismiss() } catch (_: Exception) {}
         dialog = null
     }
 }
@@ -418,92 +423,42 @@ suspend fun showAnimeWorldCFBypassDialogAndWait(url: String): Boolean = withCont
         val cfDialog = AnimeWorldCFDialog(url) { success ->
             if (cont.isActive) cont.resume(success)
         }
-        try { cfDialog.show(activity) } catch (e: Exception) {
-            Log.e(TAG, "show dialog: ${e.message}")
+        try { cfDialog.show(activity) } catch (_: Exception) {
             if (cont.isActive) cont.resume(false)
         }
         cont.invokeOnCancellation { cfDialog.dismiss() }
     }
 }
 
-suspend fun animeWorldGet(url: String, headers: Map<String, String> = emptyMap(), allowRedirects: Boolean = true): NiceResponse {
+suspend fun animeWorldGet(url: String, headers: Map<String, String> = emptyMap()): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)
         "${uri.scheme}://${uri.host}"
-    } catch (e: Exception) { url }
+    } catch (_: Exception) { url }
 
     fun buildHeaders(): Map<String, String> {
         val h = headers.toMutableMap()
         if (!h.containsKey("Accept")) h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         if (!h.containsKey("User-Agent")) {
-            AnimeWorldCFStore.getUserAgent()?.let { h["User-Agent"] = it }
-                ?: run { h["User-Agent"] = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36" }
+            h["User-Agent"] = AnimeWorldCFStore.getUserAgent() ?: BROWSER_UA
         }
         AnimeWorldCFStore.getCookies()?.let { h["Cookie"] = it }
         return h
     }
 
-    var response = try {
-        app.get(url, headers = buildHeaders(), timeout = 30_000L, allowRedirects = allowRedirects)
-    } catch (e: Exception) {
-        throw e
-    }
-
+    var response = app.get(url, headers = buildHeaders(), timeout = 30_000L)
     if (!isAnimeWorldCloudflareBlocked(response)) return response
 
     cfBypassMutex.withLock {
-        val cachedCookies = AnimeWorldCFStore.getCookies()
-        if (cachedCookies != null) {
-            response = try { app.get(url, headers = buildHeaders(), timeout = 30_000L, allowRedirects = allowRedirects) } catch (e: Exception) { throw e }
+        if (AnimeWorldCFStore.getCookies() != null) {
+            response = app.get(url, headers = buildHeaders(), timeout = 30_000L)
             if (!isAnimeWorldCloudflareBlocked(response)) return response
         }
         AnimeWorldCFStore.clear()
         val bypassSuccess = showAnimeWorldCFBypassDialogAndWait(targetHost)
         if (!bypassSuccess) return@withLock
         for (attempt in 1..2) {
-            response = try { app.get(url, headers = buildHeaders(), timeout = 30_000L, allowRedirects = allowRedirects) } catch (e: Exception) { throw e }
-            if (!isAnimeWorldCloudflareBlocked(response)) return@withLock
-        }
-    }
-    return response
-}
-
-suspend fun animeWorldPost(url: String, body: String, headers: Map<String, String> = emptyMap()): NiceResponse {
-    val targetHost = try {
-        val uri = Uri.parse(url)
-        "${uri.scheme}://${uri.host}"
-    } catch (e: Exception) { url }
-
-    fun buildHeaders(): Map<String, String> {
-        val h = headers.toMutableMap()
-        if (!h.containsKey("Accept")) h["Accept"] = "*/*"
-        if (!h.containsKey("User-Agent")) {
-            AnimeWorldCFStore.getUserAgent()?.let { h["User-Agent"] = it }
-                ?: run { h["User-Agent"] = "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36" }
-        }
-        AnimeWorldCFStore.getCookies()?.let { h["Cookie"] = it }
-        return h
-    }
-
-    var response = try {
-        app.post(url, data = mapOf("" to body), headers = buildHeaders(), timeout = 30_000L)
-    } catch (e: Exception) {
-        throw e
-    }
-
-    if (!isAnimeWorldCloudflareBlocked(response)) return response
-
-    cfBypassMutex.withLock {
-        val cachedCookies = AnimeWorldCFStore.getCookies()
-        if (cachedCookies != null) {
-            response = try { app.post(url, data = mapOf("" to body), headers = buildHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
-            if (!isAnimeWorldCloudflareBlocked(response)) return response
-        }
-        AnimeWorldCFStore.clear()
-        val bypassSuccess = showAnimeWorldCFBypassDialogAndWait(targetHost)
-        if (!bypassSuccess) return@withLock
-        for (attempt in 1..2) {
-            response = try { app.post(url, data = mapOf("" to body), headers = buildHeaders(), timeout = 30_000L) } catch (e: Exception) { throw e }
+            response = app.get(url, headers = buildHeaders(), timeout = 30_000L)
             if (!isAnimeWorldCloudflareBlocked(response)) return@withLock
         }
     }

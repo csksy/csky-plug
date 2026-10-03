@@ -39,8 +39,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
-private const val TAG = "Anidap_CFBypass"
-
 private const val CHAD_HOST = "https://chad.anidap.lol"
 
 private const val CF_TRIGGER_URL = "$CHAD_HOST/rest/api/servers?id=one-piece-p8k27&epNum=1"
@@ -389,7 +387,7 @@ private suspend fun showCFBypassDialogAndWait(url: String = CF_TRIGGER_URL): Boo
 suspend fun cfAppGetAnidap(
     url: String,
     headers: Map<String, String> = emptyMap(),
-    timeout: Long = 30_000L
+    timeout: Long = 30L
 ): NiceResponse {
     val targetHost = try {
         val uri = Uri.parse(url)

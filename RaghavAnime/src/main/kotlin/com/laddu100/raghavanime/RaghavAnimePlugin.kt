@@ -12,14 +12,12 @@ class RaghavAnimePlugin : Plugin() {
 
         Miruro.context = context
 
-        initAniDbCFBypass(context)
-
         initAnidapCFBypass(context)
 
         initSenshiCFBypass(context)
+        RaghavSenshiVhost.init(context)
 
-        EnmaDecryptor.setContext(context)
-        EnmaDecryptor.startInit()
+        RaghavAniChanWeb.init(context)
 
         registerMainAPI(RaghavAnime())
 

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
@@ -46,6 +45,7 @@ class RaghavReAnime : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (anilistId <= 0 || episode <= 0) return false
+        mainUrl = FirebaseDomainHelper.getDomain("reanime") ?: mainUrl
 
         val servers = flixServers(anilistId, episode)
         if (servers.isEmpty()) {
@@ -74,8 +74,6 @@ class RaghavReAnime : MainAPI() {
                         .containsMatchIn(res.masterContent) ||
                         (res.masterContent.contains("TYPE=AUDIO") && !hasEnglishAudio)
 
-                    // the flix master carries every audio track, pick the one
-                    // matching the requested language
                     val lang = when {
                         isDub && hasEnglishAudio -> "dub"
                         !isDub && (hasOtherAudio || !hasEnglishAudio) -> "sub"
@@ -126,13 +124,11 @@ class RaghavReAnime : MainAPI() {
             )
             if (resp.isSuccessful) resp.text else null
         } catch (e: Exception) {
-            Log.d("RaghavAnime", "[ReAnime] flix servers request failed: ${e.message}")
             null
         } ?: return emptyList()
         return try {
             mapper.readValue(body, FlixResponse::class.java).servers ?: emptyList()
         } catch (e: Exception) {
-            Log.d("RaghavAnime", "[ReAnime] flix servers parse failed: ${e.message}")
             emptyList()
         }
     }

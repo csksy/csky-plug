@@ -1,5 +1,9 @@
 version = 17
 
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+}
+
 cloudstream {
     language = "en"
     description = "Anime and movies from 2Dhive with Sub and Dub support"

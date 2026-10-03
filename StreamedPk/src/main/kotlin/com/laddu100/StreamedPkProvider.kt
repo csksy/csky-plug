@@ -4,14 +4,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.nicehttp.NiceResponse
 import com.fasterxml.jackson.annotation.JsonProperty
-import okhttp3.Dns
-import okhttp3.Headers
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.net.InetAddress
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import android.content.Context
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -21,13 +15,15 @@ import android.webkit.WebResourceResponse
 import android.webkit.ConsoleMessage
 import android.os.Handler
 import android.os.Looper
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlin.coroutines.resume
-import android.util.Log
+import com.raghav.donation.DonationManager
 
 class StreamedPkProvider : MainAPI() {
 
@@ -42,245 +38,75 @@ class StreamedPkProvider : MainAPI() {
     override val hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.Live)
 
-    private val apiHeaders: Map<String, String>
-        get() = mapOf(
+    private fun apiHeaders(): Map<String, String> {
+        val headers = mutableMapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             "Accept" to "application/json, text/plain, */*",
             "Referer" to "$mainUrl/",
             "Origin" to mainUrl
         )
+        savedCookies().takeIf { it.isNotBlank() }?.let { headers["Cookie"] = it }
+        return headers
+    }
 
-    // Thread-safe DNS cache to prevent redundant resolutions
-    private val dnsCache = ConcurrentHashMap<String, List<InetAddress>>()
+    // ddos-guard is friendlier to clients that bring their __ddg cookies back, the shared client has no jar
+    private fun cookieStore() =
+        context?.getSharedPreferences("streamedpk_net", Context.MODE_PRIVATE)
 
-    // Hardcoded IP mappings for domains blocked by ISP DNS
-    private val fallbacks = mapOf(
-        "streamed.pk" to listOf("185.178.208.164")
-    )
+    private fun savedCookies(): String =
+        cookieStore()?.getString("cookies", "") ?: ""
 
-    // Custom DNS resolver supporting fallback to Cloudflare DNS-over-HTTPS (1.1.1.1)
-    private val customDns = object : Dns {
-        override fun lookup(hostname: String): List<InetAddress> {
-            if (hostname == "1.1.1.1") {
-                return listOf(InetAddress.getByName("1.1.1.1"))
-            }
-
-            // 1. Check cache first
-            dnsCache[hostname]?.let { return it }
-
-            // 2. Check hardcoded fallbacks
-            fallbacks[hostname]?.let { ips ->
-                val inetAddresses = ips.map { InetAddress.getByName(it) }
-                dnsCache[hostname] = inetAddresses
-                return inetAddresses
-            }
-
-            // 3. Try dynamic DoH resolution first to bypass ISP DNS hijacking
-            val resolved = resolveDnsDoH(hostname)
-            if (resolved.isNotEmpty()) {
-                dnsCache[hostname] = resolved
-                return resolved
-            }
-
-            // 4. Fallback to standard System DNS
-            try {
-                val systemResolved = Dns.SYSTEM.lookup(hostname)
-                if (systemResolved.isNotEmpty()) {
-                    dnsCache[hostname] = systemResolved
-                    return systemResolved
-                }
-            } catch (e: Exception) {
-                // System DNS failed/blocked
-            }
-
-            return Dns.SYSTEM.lookup(hostname)
+    private fun keepCookies(res: NiceResponse) {
+        val store = cookieStore() ?: return
+        val jar = LinkedHashMap<String, String>()
+        for (part in savedCookies().split(";")) {
+            val p = part.trim()
+            val eq = p.indexOf('=')
+            if (eq > 0) jar[p.substring(0, eq)] = p.substring(eq + 1)
         }
-    }
-
-    private val dohClient = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
-        .build()
-
-    private val dnsClient by lazy {
-        app.baseClient.newBuilder()
-            .dns(customDns)
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .build()
-    }
-
-    /**
-     * Resolve the domain in a URL to an IP address via DoH, then rewrite the
-     * URL to use the IP directly. This is needed because ExoPlayer's
-     * CronetDataSource uses the system DNS, which may be blocked by ISPs.
-     */
-    private fun resolveStreamUrlDns(url: String): String {
-        try {
-            val domain = Regex("""https?://([^/]+)""").find(url)?.groupValues?.get(1) ?: return url
-            val ips = dnsCache[domain] ?: resolveDnsDoH(hostname = domain)
-            if (ips.isNotEmpty()) {
-                dnsCache[domain] = ips
-                val ip = ips[0].hostAddress
-                val rewritten = url.replace("//$domain", "//$ip")
-                Log.d("StreamedPk", "DNS bypass — $domain → $ip")
-                return rewritten
-            }
-        } catch (e: Exception) { e.message?.let { Log.d("Plugin", it) } }
-        return url
-    }
-
-    private fun resolveDnsDoH(hostname: String): List<InetAddress> {
-        try {
-            val request = Request.Builder()
-                .url("https://1.1.1.1/dns-query?name=$hostname&type=A")
-                .header("Accept", "application/dns-json")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-                .build()
-
-            dohClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val responseText = response.body?.string() ?: ""
-                    val ipRegex = """\"data\"\s*:\s*\"([0-9.]+)\"""".toRegex()
-                    val ips = ipRegex.findAll(responseText).map { it.groupValues[1] }.toList()
-                    if (ips.isNotEmpty()) {
-                        return ips.map { InetAddress.getByName(it) }
-                    }
-                }
-            }
-        } catch (e: Exception) {
+        var changed = false
+        for (raw in res.headers.values("set-cookie")) {
+            val pair = raw.substringBefore(";").trim()
+            val eq = pair.indexOf('=')
+            if (eq <= 0) continue
+            val value = pair.substring(eq + 1)
+            if (value.isBlank()) continue
+            jar[pair.substring(0, eq)] = value
+            changed = true
         }
-        return emptyList()
-    }
-
-    private val cookieStore = ConcurrentHashMap<String, String>()
-
-    private fun parseAndStoreCookies(headers: Headers) {
-        for (i in 0 until headers.size) {
-            val name = headers.name(i)
-            if (!name.equals("Set-Cookie", ignoreCase = true)) continue
-            val raw = headers.value(i) ?: continue
-            val cookiePart = raw.substringBefore(";").trim()
-            val eqIdx = cookiePart.indexOf('=')
-            if (eqIdx <= 0) continue
-            val cName = cookiePart.substring(0, eqIdx).trim()
-            val cValue = cookiePart.substring(eqIdx + 1).trim()
-            if (cName.isNotEmpty() && cValue.isNotEmpty()) {
-                cookieStore[cName] = cValue
-            }
+        if (changed) {
+            store.edit().putString("cookies", jar.entries.joinToString("; ") { "${it.key}=${it.value}" }).apply()
         }
-    }
-
-    private fun cookieHeader(): String =
-        if (cookieStore.isEmpty()) "" else cookieStore.entries.joinToString("; ") { "${it.key}=${it.value}" }
-
-    /**
-     * Warm up DDoS-Guard cookies by fetching the main HTML page.
-     * The HTML page is served leniently (always 200 with __ddg* cookies) and
-     * seeds the cookie store so the subsequent /api/matches/all call is far
-     * more likely to pass DDoS-Guard without a challenge.
-     */
-    private fun warmUpCookies() {
-        try {
-            val builder = Request.Builder()
-                .url("$mainUrl/")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "en-US,en;q=0.9")
-            val c = cookieHeader()
-            if (c.isNotEmpty()) builder.header("Cookie", c)
-            dnsClient.newCall(builder.build()).execute().use { response ->
-                parseAndStoreCookies(response.headers)
-            }
-        } catch (e: Exception) {
-        }
-    }
-
-    /**
-     * Single-attempt GET with cookie send/store + DDoS-Guard challenge detection.
-     * Throws on HTTP error or when an HTML challenge page is returned instead of data.
-     */
-    private fun customGetRaw(path: String, acceptHtml: Boolean = false): String {
-        val url = if (path.startsWith("http")) path else "$mainUrl$path"
-        val builder = Request.Builder()
-            .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-            .header("Accept", if (acceptHtml) "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" else "application/json, text/plain, */*")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .header("Referer", "$mainUrl/")
-            .header("Origin", mainUrl)
-        val c = cookieHeader()
-        if (c.isNotEmpty()) builder.header("Cookie", c)
-
-        dnsClient.newCall(builder.build()).execute().use { response ->
-            // Always persist any cookies DDoS-Guard hands back, even on error responses.
-            parseAndStoreCookies(response.headers)
-
-            if (!response.isSuccessful) {
-                throw Exception("HTTP ${response.code}")
-            }
-            val body = response.body?.string() ?: ""
-            // Detect a DDoS-Guard challenge: the API must return JSON. If we get
-            // HTML (challenge / interstitial page) instead, surface a retryable error.
-            if (!acceptHtml) {
-                val trimmed = body.trimStart()
-                if (trimmed.startsWith("<") || body.contains("__ddg", ignoreCase = true)) {
-                    throw Exception("DDoS-Guard challenge page (HTML) instead of data")
-                }
-            }
-            return body
-        }
-    }
-
-    /**
-     * Retrying GET with exponential backoff + periodic cookie warm-up.
-     *
-     * streamed.pk's DDoS-Guard intermittently challenges requests; a single
-     * transient failure must NOT surface to the user as "no matches". We retry
-     * up to [maxAttempts] times, priming cookies before the first attempt and
-     * again after a couple of failures so later attempts carry fresh __ddg* cookies.
-     */
-    private suspend fun customGetWithRetry(
-        path: String,
-        maxAttempts: Int = 6,
-        acceptHtml: Boolean = false
-    ): String {
-        var lastError: Exception? = null
-        for (attempt in 1..maxAttempts) {
-            try {
-                if (attempt == 1 || attempt == 3 || attempt == 5) {
-                    warmUpCookies()
-                }
-                return customGetRaw(path, acceptHtml)
-            } catch (e: Exception) {
-                lastError = e
-                if (attempt < maxAttempts) {
-                    val backoff = (attempt * 450L).coerceAtMost(2500L)
-                    try { delay(backoff) } catch (e: Exception) { e.message?.let { Log.d("Plugin", it) } }
-                }
-            }
-        }
-        throw lastError ?: Exception("GET $path failed after $maxAttempts attempts")
     }
 
     private data class CachedMatches(val matches: List<StreamedMatch>, val timestamp: Long)
     @Volatile private var matchesCache: CachedMatches? = null
-    private val CACHE_TTL_MS = 60_000L          // considered fresh within 60s
-    private val CACHE_STALE_LIMIT_MS = 600_000L // serve stale up to 10min on total failure
+    private val CACHE_TTL_MS = 60_000L
+    private val CACHE_STALE_LIMIT_MS = 600_000L
 
     private suspend fun fetchAllMatches(): List<StreamedMatch> {
-        try {
-            val res = app.get("$mainUrl/api/matches/all", headers = apiHeaders, timeout = 30_000L)
-            val matches = parseJson<List<StreamedMatch>>(res.text)
-            matchesCache = CachedMatches(matches, System.currentTimeMillis())
-            return matches
-        } catch (e: Exception) {
-            val cached = matchesCache
-            if (cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_STALE_LIMIT_MS) {
-                return cached.matches
+        var lastError: Exception? = null
+        for (attempt in 0 until 3) {
+            try {
+                val res = app.get("$mainUrl/api/matches/all", headers = apiHeaders(), timeout = 20L)
+                keepCookies(res)
+                if (!res.isSuccessful) throw IOException("streamed.pk answered ${res.code}")
+                val matches = parseJson<List<StreamedMatch>>(res.text)
+                matchesCache = CachedMatches(matches, System.currentTimeMillis())
+                return matches
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                // the edge refuses a request now and then, one short pause and retry settles it
+                if (attempt < 2) delay(1500L)
             }
-            throw e
         }
+        val cached = matchesCache
+        if (cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_STALE_LIMIT_MS) {
+            return cached.matches
+        }
+        throw lastError ?: IOException("streamed.pk could not be reached")
     }
 
     data class StreamedMatch(
@@ -331,22 +157,22 @@ class StreamedPkProvider : MainAPI() {
     private fun getCategoryTitle(cat: String?): String {
         val clean = cat?.lowercase() ?: ""
         return when (clean) {
-            "football" -> "⚽ Football (Upcoming)"
-            "basketball" -> "🏀 Basketball (Upcoming)"
-            "american-football" -> "🏈 American Football (Upcoming)"
-            "hockey" -> "🏒 Hockey (Upcoming)"
-            "baseball" -> "⚾ Baseball (Upcoming)"
-            "motor-sports" -> "🏎️ Motor Sports (Upcoming)"
-            "fight" -> "🥊 Fight (UFC, Boxing) (Upcoming)"
-            "tennis" -> "🎾 Tennis (Upcoming)"
-            "rugby" -> "🏉 Rugby (Upcoming)"
-            "golf" -> "⛳ Golf (Upcoming)"
-            "billiards" -> "🎱 Billiards (Upcoming)"
-            "afl" -> "🏉 AFL (Upcoming)"
-            "darts" -> "🎯 Darts (Upcoming)"
-            "cricket" -> "🏏 Cricket (Upcoming)"
-            "other" -> "🏆 Other Sports (Upcoming)"
-            else -> "🏆 ${clean.replaceFirstChar { it.uppercase() }} (Upcoming)"
+ "football" -> "Football (Upcoming)"
+ "basketball" -> "Basketball (Upcoming)"
+ "american-football" -> "American Football (Upcoming)"
+ "hockey" -> "Hockey (Upcoming)"
+ "baseball" -> "Baseball (Upcoming)"
+ "motor-sports" -> "Motor Sports (Upcoming)"
+ "fight" -> "Fight (UFC, Boxing) (Upcoming)"
+ "tennis" -> "Tennis (Upcoming)"
+ "rugby" -> " Rugby (Upcoming)"
+ "golf" -> " Golf (Upcoming)"
+ "billiards" -> " Billiards (Upcoming)"
+ "afl" -> " AFL (Upcoming)"
+ "darts" -> " Darts (Upcoming)"
+ "cricket" -> " Cricket (Upcoming)"
+ "other" -> " Other Sports (Upcoming)"
+ else -> " ${clean.replaceFirstChar { it.uppercase() }} (Upcoming)"
         }
     }
 
@@ -377,7 +203,7 @@ class StreamedPkProvider : MainAPI() {
             val sdf = java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.US)
             sdf.timeZone = java.util.TimeZone.getDefault()
             sdf.format(date)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             "soon"
         }
     }
@@ -386,6 +212,7 @@ class StreamedPkProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("streamedpk") ?: mainUrl
         val lists = mutableListOf<HomePageList>()
         var fetchFailed = false
@@ -393,7 +220,6 @@ class StreamedPkProvider : MainAPI() {
         try {
             val allMatches = fetchAllMatches()
 
-            // 1. Live Matches (sources list is not empty)
             val liveMatches = allMatches.filter { !it.sources.isNullOrEmpty() }
             if (liveMatches.isNotEmpty()) {
                 val liveItems = liveMatches.map { match ->
@@ -410,10 +236,9 @@ class StreamedPkProvider : MainAPI() {
                         this.posterUrl = posterUrl
                     }
                 }
-                lists.add(HomePageList("🟢 Live Matches", liveItems, isHorizontalImages = true))
+ lists.add(HomePageList(" Live Matches", liveItems, isHorizontalImages = true))
             }
 
-            // 2. Upcoming Matches (sources list is empty)
             val upcomingMatches = allMatches.filter { it.sources.isNullOrEmpty() }
             if (upcomingMatches.isNotEmpty()) {
                 val upcomingItems = upcomingMatches.map { match ->
@@ -431,15 +256,12 @@ class StreamedPkProvider : MainAPI() {
                         this.posterUrl = posterUrl
                     }
                 }
-                lists.add(HomePageList("📅 Upcoming Matches", upcomingItems, isHorizontalImages = true))
+ lists.add(HomePageList(" Upcoming Matches", upcomingItems, isHorizontalImages = true))
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             fetchFailed = true
         }
 
-        // Only show the placeholder when there is genuinely nothing to display.
-        // A transient fetch failure shows a distinct "connection issue" message so
-        // the user knows it is not an empty catalogue and should pull to refresh.
         if (lists.isEmpty()) {
             val dummyLoadData = EventLoadData(
                 title = if (fetchFailed) "Connection issue" else "No matches available",
@@ -491,8 +313,7 @@ class StreamedPkProvider : MainAPI() {
                     }
                 )
             }
-        } catch (e: Exception) {
-        }
+        } catch (_: Exception) {}
         return results
     }
 
@@ -514,7 +335,6 @@ class StreamedPkProvider : MainAPI() {
             }
         }
 
-        // Fetch fresh match details to get active sources dynamically if match was scheduled
         try {
             val allMatches = fetchAllMatches()
             val freshMatch = allMatches.find { it.id == eventData.id }
@@ -523,18 +343,16 @@ class StreamedPkProvider : MainAPI() {
                 dateVal = freshMatch.date
                 posterUrl = getPosterForMatch(freshMatch.category, freshMatch.poster)
             }
-        } catch (e: Exception) {
-        }
+        } catch (_: Exception) {}
 
         val isUpcoming = sources.isNullOrEmpty()
         val dateStr = formatMatchDate(dateVal)
 
-        // Fetch stream details for each source
         if (!sources.isNullOrEmpty()) {
             sources.forEach { src ->
                 try {
                     val streamUrl = "$mainUrl/api/stream/${src.source}/${src.id}"
-                    val streamText = app.get(streamUrl, headers = apiHeaders, timeout = 30_000L).text
+                    val streamText = app.get(streamUrl, headers = apiHeaders(), timeout = 20L).text
                     val variants = parseJson<List<StreamVariant>>(streamText)
 
                     variants.forEach { st ->
@@ -549,12 +367,10 @@ class StreamedPkProvider : MainAPI() {
 
                         streamsList.add(StreamInfo(name = serverName, url = customUrl))
                     }
-                } catch (e: Exception) {
-                }
+                } catch (_: Exception) {}
             }
         }
 
-        // If upcoming or no streams resolved, add placeholder
         if (streamsList.isEmpty()) {
             val serverName = if (isUpcoming) "Upcoming - Live soon (Starts: $dateStr)" else "No stream link active yet"
             streamsList.add(StreamInfo(name = serverName, url = "upcoming://${eventData.id}"))
@@ -574,7 +390,7 @@ class StreamedPkProvider : MainAPI() {
         val embedHost = try {
             val uri = java.net.URI(embedUrl)
             "${uri.scheme}://${uri.host}"
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             "https://embed.st"
         }
         return mapOf(
@@ -596,7 +412,7 @@ class StreamedPkProvider : MainAPI() {
                     if (captured.compareAndSet(false, true)) {
                         try {
                             webView?.destroy()
-                        } catch (e: Exception) {}
+                        } catch (_: Exception) {}
                         continuation.resume(null)
                     }
                 }
@@ -638,7 +454,7 @@ class StreamedPkProvider : MainAPI() {
                                         Handler(Looper.getMainLooper()).post {
                                             try {
                                                 webView?.destroy()
-                                            } catch (e: Exception) {}
+                                            } catch (_: Exception) {}
                                         }
                                         continuation.resume(reqUrl)
                                     }
@@ -657,27 +473,23 @@ class StreamedPkProvider : MainAPI() {
                     val embedHost = try {
                         val uri = java.net.URI(url)
                         "${uri.scheme}://${uri.host}"
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         "https://embed.st"
                     }
                     headers["Origin"] = embedHost
 
-                    Log.d("StreamedPk", "Loading URL in WebView: $url")
                     webView.loadUrl(url, headers)
 
-                    // Timeout after 30 seconds
                     Handler(Looper.getMainLooper()).postDelayed({
                         if (captured.compareAndSet(false, true)) {
-                            Log.d("StreamedPk", "Timeout waiting for stream link")
                             try {
                                 webView.destroy()
-                            } catch (e: Exception) {}
+                            } catch (_: Exception) {}
                             continuation.resume(null)
                         }
                     }, 30000)
 
-                } catch (e: Exception) {
-                    Log.e("StreamedPk", "Error initializing WebView: ${e.message}")
+                } catch (_: Exception) {
                     cleanUp()
                 }
             }
@@ -709,7 +521,6 @@ class StreamedPkProvider : MainAPI() {
                 }
             }
 
-            // 1. Hook HTMLMediaElement.prototype.src
             try {
                 var originalSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
                 if (originalSrcDescriptor && originalSrcDescriptor.set) {
@@ -729,7 +540,6 @@ class StreamedPkProvider : MainAPI() {
                 log("Error hooking MediaElement.src: " + e.message);
             }
 
-            // 2. Hook HTMLSourceElement.prototype.src
             try {
                 var originalSourceSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLSourceElement.prototype, 'src');
                 if (originalSourceSrcDescriptor && originalSourceSrcDescriptor.set) {
@@ -759,7 +569,7 @@ class StreamedPkProvider : MainAPI() {
     ): Boolean {
         val streamData = try {
             parseJson<StreamLoadData>(data)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return false
         }
 
@@ -793,18 +603,14 @@ class StreamedPkProvider : MainAPI() {
                     }
 
                     if (fallbackUrl.isNotEmpty()) {
-                        Log.d("StreamedPk", "Resolving embed URL via WebView: $fallbackUrl")
                         try {
                             val resolvedUrl = resolveStreamUrl(fallbackUrl, "https://streamed.pk/")
                             if (resolvedUrl != null) {
-                                Log.d("StreamedPk", "Successfully resolved URL: $resolvedUrl")
-                                // Keep original URL — do NOT rewrite to IP because
-                                // the stream server's SSL cert won't match an IP,
-                                // causing ERR_SSL_PROTOCOL_ERROR in ExoPlayer.
+
                                 val embedHost = try {
                                     val uri = java.net.URI(fallbackUrl)
                                     "${uri.scheme}://${uri.host}"
-                                } catch (e: Exception) {
+                                } catch (_: Exception) {
                                     "https://embed.st"
                                 }
                                 callback.invoke(
@@ -820,15 +626,11 @@ class StreamedPkProvider : MainAPI() {
                                 )
                                 foundAny = true
                             } else {
-                                Log.w("StreamedPk", "WebView resolver returned null for $fallbackUrl")
                             }
-                        } catch (e: Exception) {
-                            Log.e("StreamedPk", "WebView resolution failed for $fallbackUrl: ${e.message}")
-                        }
+                        } catch (_: Exception) {}
                     }
                 }
-            } catch (e: Exception) {
-            }
+            } catch (_: Exception) {}
         }
 
         return foundAny

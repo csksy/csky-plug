@@ -17,8 +17,9 @@ object GoTakuCrypto {
         167, 208, 189, 122, 150, 242, 60, 1, 70, 177, 253, 150, 158, 124, 253, 47
     ).map { it.toByte() }.toByteArray()
 
+    // rotated by the site, current value lives in the embed player bundle
     private val manifestSeed = byteHex(
-        "b6b9ec379d7d50ec" + "4771208701ed60ae" + "423730683469433f" + "2a30c9a2ce205c46"
+        "458e5403c40a7333" + "2706df406193dd6b" + "040a2ea97a6bb59b" + "52b294a61006e6ef"
     )
 
     private val apiKey = hkdf(apiSeed, ByteArray(0), "api-seal|v1".toByteArray())
@@ -63,8 +64,7 @@ object GoTakuCrypto {
         return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING or android.util.Base64.URL_SAFE)
     }
 
-    // responses from endpoints that carry the k flag arrive sealed, the first
-    // byte is a format version followed by the gcm iv and the payload
+    // sealed body: one version byte, then the gcm iv, then the payload
     private fun isSealed(body: ByteArray): Boolean {
         return body.size > 29 && body[0].toInt() == 1
     }
@@ -88,8 +88,7 @@ object GoTakuCrypto {
         }
     }
 
-    // the nonce rides inside the sealed request, the caller keeps it to derive
-    // the matching response key
+    // the nonce is sealed into the request and keys the response
     fun newNonce(): ByteArray {
         return ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
     }
@@ -126,8 +125,7 @@ object GoTakuCrypto {
         }
     }
 
-    // segments hide their first bytes behind a xor mask keyed by the url path,
-    // the counter is the first half of the path digest padded with zeros
+    // the first segment bytes are masked with a counter from the url path digest
     fun decryptSegment(data: ByteArray, urlPath: String, keySeed: ByteArray, segmentBytes: Int, rangeStart: Int = 0): ByteArray {
         if (rangeStart >= segmentBytes || segmentBytes <= 0) return data
         val urlId = urlPath.split("/").filter { it.isNotEmpty() }

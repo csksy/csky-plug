@@ -1,6 +1,5 @@
 package com.laddu100
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.sync.Mutex
@@ -8,30 +7,13 @@ import kotlinx.coroutines.sync.withLock
 import org.jsoup.nodes.Document
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Networking layer for TheMoviesFlix.
- *
- * The site sits behind cloudflare and only lets a request through when it
- * carries the full header set a real browser sends, a bare user agent alone
- * gets blocked on a lot of networks.
- *
- * Every post button points at a drive page on nexdrive/mobilejsr, that page
- * carries the actual download buttons for the file (fastdl, vcloud,
- * vegadrive, filepress) plus an "alternative sources" box with direct hosts.
- */
 object TmfNet {
-    private const val TAG = "TMF"
-
-    private fun originOf(url: String): String = try {
-        val uri = java.net.URI(url)
-        "${uri.scheme}://${uri.host}"
-    } catch (e: Exception) {
-        url
-    }
 
     const val DESKTOP_UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+    // the site blocks a bare user agent on a lot of networks, only the full
+    // browser header set gets through
     fun browserHeaders(referer: String? = null): Map<String, String> {
         val h = LinkedHashMap<String, String>()
         h["User-Agent"] = DESKTOP_UA
@@ -61,9 +43,7 @@ object TmfNet {
     @Volatile
     private var activeDomain: String? = null
 
-    // the firebase entry regularly points at a mirror that is dead or
-    // cloudflare walled, whichever domain actually answers is the one that
-    // gets used for the rest of the session
+    // the firebase entry regularly points at a dead or cloudflare walled mirror, first answer wins
     suspend fun domain(): String {
         activeDomain?.let { return it }
         return domainMutex.withLock {
@@ -75,7 +55,7 @@ object TmfNet {
             for (candidate in candidates) {
                 val res = try {
                     app.get("$candidate/?s=the", headers = browserHeaders(), timeout = 15L)
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     null
                 }
                 if (res != null && res.isSuccessful) {
@@ -87,22 +67,16 @@ object TmfNet {
         }
     }
 
-    fun invalidateDomain() {
-        activeDomain = null
-    }
-
     suspend fun fetchPage(url: String, referer: String? = null): Document? {
         val res = try {
             app.get(url, headers = browserHeaders(referer), timeout = 25L)
-        } catch (e: Exception) {
-            Log.d(TAG, "page fetch failed: ${e.message}")
+        } catch (_: Exception) {
             return null
         }
         if (!res.isSuccessful) return null
         return try {
             res.document
-        } catch (e: Exception) {
-            Log.d(TAG, "page parse failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
@@ -131,7 +105,7 @@ object TmfNet {
             .filter { it.isNotBlank() && !it.equals("links", true) }
             .joinToString(" · ")
 
-    // links that belong to the drive page itself, never to the file
+    // links that belong to the drive page itself and never carry a file
     private val DRIVE_SELF = listOf(
         "nexdrive", "mobilejsr", "vglist", "w.org", "wordpress", "gmpg",
         "googleapis", "googletagmanager", "font-awesome", "schema", "category/",
@@ -151,8 +125,8 @@ object TmfNet {
             if (href.startsWith("http") && !isDriveJunk(href)) href else null
         }.distinct()
 
-        // episode pages list every episode as an h4 header with the button
-        // set sitting in the next paragraphs
+        // episode pages put each episode under an h4 header with its button
+        // set in the paragraphs right below it
         val episodes = mutableMapOf<Int, MutableList<String>>()
         for (h4 in root.select("h4")) {
             val text = h4.text().trim()
@@ -194,7 +168,7 @@ object TmfNet {
                     allowRedirects = false,
                     timeout = 20L
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 return null
             }
             jar.putAll(res.cookies)
@@ -203,7 +177,7 @@ object TmfNet {
                 if (res.code != 200) return null
                 val body = try {
                     res.text
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     return null
                 }
                 if (body.contains("challenge-platform") || body.contains("Just a moment", true)) {
@@ -226,9 +200,8 @@ object TmfNet {
         else -> url
     }
 
-    // nexdrive and mobilejsr serve the same drive app, when one host has a
-    // bad day the other usually still answers, zip pack pages are skipped
-    // because no player can open an archive
+    // nexdrive and mobilejsr serve the same drive app, when one has a bad day the other answers,
+    // zip pack pages are skipped because no player can open an archive
     suspend fun fetchDrivePage(url: String): DrivePage? {
         val key = url.replace("mobilejsr.rest", "nexdrive.fit")
         driveCache[key]?.let { cached ->
@@ -240,12 +213,11 @@ object TmfNet {
                 if (System.currentTimeMillis() - cached.savedAt < DRIVE_CACHE_MS) return cached.page
                 driveCache.remove(key)
             }
-            val primary = key
-            val res = driveFetchOnce(primary) ?: driveFetchOnce(mirrorUrl(primary))
+            val res = driveFetchOnce(key) ?: driveFetchOnce(mirrorUrl(key))
             val page = res?.let {
                 val doc = try {
                     it.document
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     null
                 }
                 doc?.let { d ->
@@ -258,8 +230,8 @@ object TmfNet {
         }
     }
 
-    // one kilobyte range request, used to drop links whose file is gone
-    // before they ever reach the player
+    // one kilobyte range request, drops links whose file is gone before they
+    // reach the player
     suspend fun probe(url: String, referer: String? = null): Int? {
         return try {
             val res = app.get(
@@ -270,8 +242,15 @@ object TmfNet {
                 timeout = 15L
             )
             res.code
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
+    }
+
+    fun originOf(url: String): String = try {
+        val uri = java.net.URI(url)
+        "${uri.scheme}://${uri.host}"
+    } catch (_: Exception) {
+        url
     }
 }

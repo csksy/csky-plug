@@ -2,7 +2,6 @@ package com.justplay
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils
@@ -131,8 +130,7 @@ internal object NetNaijaSite {
             val xUser = response.headers["x-user"] ?: return
             if (xUser.isBlank()) return
             JSONObject(xUser).optString("token").takeIf { it.isNotBlank() }?.let { token = it }
-        } catch (e: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     private suspend fun ensureToken(site: String): String? {
@@ -143,11 +141,11 @@ internal object NetNaijaSite {
                 val response = app.get(
                     "$BFF/subject/trending?page=1&perPage=1",
                     headers = baseHeaders(site) + mapOf("X-Client-Token" to xClientToken()),
-                    timeout = 15000L
+                    timeout = 15L
                 )
                 readToken(response)
                 token
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             }
         }
@@ -180,7 +178,7 @@ internal object NetNaijaSite {
         return if (dub.type == 1) "$pretty Hardsub" else pretty
     }
 
-    // the api search is fuzzy, priviledged movies show up for a prestige query,
+    // the api search is fuzzy, privileged movies show up for a prestige query,
     // so only exact normalized titles of the right type and year may resolve
     private fun pickSubject(items: List<NaSubject>, res: PlayLinkData): NaSubject? {
         val wantTv = res.season != null
@@ -216,12 +214,12 @@ internal object NetNaijaSite {
                 "$BFF/subject/search",
                 headers = authHeaders(site),
                 json = mapOf("keyword" to title, "page" to 1, "perPage" to 30),
-                timeout = 15000L
+                timeout = 15L
             )
             readToken(searchRes)
             val items = try {
                 AppUtils.parseJson<NaSearchResponse>(searchRes.text).data?.items.orEmpty()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 emptyList()
             }
             val subject = pickSubject(items, res) ?: return
@@ -231,12 +229,12 @@ internal object NetNaijaSite {
                 "$BFF/detail",
                 params = mapOf("detailPath" to detailPath),
                 headers = authHeaders(site),
-                timeout = 15000L
+                timeout = 15L
             )
             readToken(detailRes)
             val detail = try {
                 AppUtils.parseJson<NaDetailResponse>(detailRes.text).data
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             } ?: return
             val subj = detail.subject ?: return
@@ -281,12 +279,12 @@ internal object NetNaijaSite {
                                         "Referer" to "$site/videoPlayPage/$dubDetailPath"
                                     )
                                 ),
-                                timeout = 20000L
+                                timeout = 20L
                             )
                             readToken(playRes)
                             val play = try {
                                 AppUtils.parseJson<NaPlayResponse>(playRes.text).data
-                            } catch (e: Exception) {
+                            } catch (_: Exception) {
                                 null
                             } ?: return@async
 
@@ -392,7 +390,7 @@ internal object NetNaijaSite {
                                             "detailPath" to dubDetailPath
                                         ),
                                         headers = authHeaders(site),
-                                        timeout = 15000L
+                                        timeout = 15L
                                     ).text
                                     AppUtils.parseJson<NaCaptionResponse>(capRes).data?.captions?.forEach { cap ->
                                         if (!cap.url.isNullOrBlank()) {
@@ -404,17 +402,12 @@ internal object NetNaijaSite {
                                             )
                                         }
                                     }
-                                } catch (e: Exception) {
-                                }
+                                } catch (_: Exception) {}
                             }
-                        } catch (e: Exception) {
-                            Log.d(PlayNet.TAG, "netnaija $audioLabel: ${e.message}")
-                        }
+                        } catch (_: Exception) {}
                     }
                 }
             }
-        } catch (e: Exception) {
-            Log.d(PlayNet.TAG, "netnaija: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 }

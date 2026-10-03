@@ -5,9 +5,7 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.jsoup.Jsoup
 
-// the download mirrors anichan hands out are pahe.nekostream pages, the page script
-// builds a workers.dev url that 302s to a kwik file page, and kwik packs its player
-// source in a p,a,c,k,e,d script
+// the download mirrors are pahe.nekostream pages that chain into a kwik file page
 object KiwiDownloadResolver {
 
     private const val TAG = "AniChan"

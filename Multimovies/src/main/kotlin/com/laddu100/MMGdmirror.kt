@@ -1,33 +1,12 @@
 package com.laddu100
 
 import android.util.Base64
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ExtractorLink
 
-/**
- * gdmirror / gd source family (iqsmartgames platform).
- *
- *  streams.iqsmartgames.com/embed/{movie|tv}/{id}/{s}/{e}?key=...  (gdmirror)
- *  filesforever.link/embed/{slug} -> 302 -> pro.iqsmartgames.com/svid/{slug} (gd)
- *
- * Two entry shapes:
- *  1) streams embeds declare FinalID/idType/myKey/api_url (+season/epname for
- *     series) and list file slugs via {api_url}/mymovieapi|myseriesapi
- *  2) filesforever embeds redirect to a svid page carrying only the gdmrfid;
- *     the helper is called with that id directly
- *
- * POST {player_base}/embedhelper2.php (sid) returns JSON whose `mresult`
- * field is base64 of {"smwh":code,"flls":code,...} plus a per-platform
- * `sources` map with direct siteUrl embeds. Each platform resolves either via
- * its own packer embed page (streamhg/earnvids style) or via the modiplay
- * proxy.php endpoint.
- */
 object MMGdmirror {
 
-    private const val TAG = "MM_Gdmirror"
-
-    /** platform key -> (modiplay proxy platform, friendly name) */
     val PLATFORMS = mapOf(
         "smwh" to ("streamhg" to "StreamHG"),
         "flls" to ("earnvids" to "EarnVids"),
@@ -45,10 +24,9 @@ object MMGdmirror {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         try {
-            // follow redirects explicitly so filesforever embeds reveal their
-            // final iqsmartgames svid page (used as the helper player base)
+            // follow redirects so filesforever lands on the iqsmartgames svid page used as player base
             val resp = try {
-                com.lagradost.cloudstream3.app.get(
+                app.get(
                     embedUrl,
                     headers = mapOf(
                         "User-Agent" to MMNet.UA,
@@ -56,7 +34,7 @@ object MMGdmirror {
                     ),
                     timeout = 30_000L,
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             } ?: return false
             if (!resp.isSuccessful) return false
@@ -73,7 +51,7 @@ object MMGdmirror {
                 if (apiBase.isNotBlank() && myKey.isNotBlank()) {
                     listFileSlugs(html, finalId, apiBase, myKey) ?: return false
                 } else {
-                    // svid page: no filename metadata available
+                    // svid page - no filename metadata
                     listOf(finalId to "")
                 }
 
@@ -90,7 +68,7 @@ object MMGdmirror {
                         ?: continue
                     val decoded = try {
                         String(Base64.decode(mresult, Base64.DEFAULT))
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         continue
                     }
                     val shortName = shortenName(namePart)
@@ -98,7 +76,7 @@ object MMGdmirror {
                     for (m in Regex("\"([a-z0-9]+)\"\\s*:\\s*\"([a-z0-9]+)\"").findAll(decoded)) {
                         val platform = PLATFORMS[m.groupValues[1]] ?: continue
                         val code = m.groupValues[2]
-                        // direct packer embeds first (fresh tokens), proxy fallback after
+                        // direct packer embeds carry fresh tokens - try them before the proxy
                         val embedSite = directEmbedSite(helper, m.groupValues[1], code)
                         var handled = false
                         if (embedSite != null) {
@@ -110,24 +88,19 @@ object MMGdmirror {
                         if (!handled && modiplayBase != null) {
                             handled = MMModiplay.resolveProxyFile(
                                 modiplayBase, platform.first, code,
-                                "$label • ${platform.second}$suffix",
-                                subtitleCallback, callback,
+                                "$label • ${platform.second}$suffix", callback,
                             )
                         }
                         any = any || handled
                     }
-                } catch (e: Exception) {
-                    Log.d(TAG, "slug $slug failed: ${e.message?.take(60)}")
-                }
+                } catch (_: Exception) {}
             }
             return any
-        } catch (e: Exception) {
-            Log.d(TAG, "resolve failed: ${e.message?.take(80)}")
+        } catch (_: Exception) {
             return false
         }
     }
 
-    /** mymovieapi / myseriesapi -> list of (fileslug, filename) */
     private suspend fun listFileSlugs(
         html: String,
         finalId: String,
@@ -153,23 +126,19 @@ object MMGdmirror {
         return slugs.mapIndexed { i, s -> s to (names.getOrNull(i) ?: s) }
     }
 
-    /**
-     * The embedhelper response also carries a per-platform `siteUrl` map; when
-     * present we can build the platform embed url directly (siteUrl + code).
-     */
     private fun directEmbedSite(helperJson: String, platformKey: String, code: String): String? {
         return try {
             val block = Regex("\"$platformKey\"\\s*:\\s*\\{[^}]*\\}").find(helperJson)?.value ?: return null
             val site = Regex("\"siteUrl\"\\s*:\\s*\"([^\"]+)\"").find(block)?.groupValues?.get(1) ?: return null
             val suffix = Regex("\"embed_suffix\"\\s*:\\s*\"([^\"]*)\"").find(block)?.groupValues?.get(1) ?: ""
             MMNet.deEsc(site) + code + MMNet.deEsc(suffix)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
 
     private suspend fun postEmbedHelper(playerBase: String, slug: String): String? = try {
-        val resp = com.lagradost.cloudstream3.app.post(
+        val resp = app.post(
             "$playerBase/embedhelper2.php",
             data = mapOf("sid" to slug, "UserFavSite" to "", "currentDomain" to "[]"),
             headers = mapOf(
@@ -180,7 +149,7 @@ object MMGdmirror {
             timeout = 30_000L,
         )
         if (resp.isSuccessful) resp.text else null
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 

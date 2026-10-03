@@ -1,7 +1,6 @@
 package com.laddu100.raghavanime
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
@@ -23,6 +22,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
 
 class RaghavAniKage : MainAPI() {
     override var mainUrl = "https://anikage.cc"
@@ -41,8 +41,6 @@ class RaghavAniKage : MainAPI() {
     private fun apiUrl(): String = "$mainUrl/api/media/anime"
 
     companion object {
-        // the stream proxy is a separate deployment the site swaps from time to
-        // time; every served page carries the current one in PUBLIC_PROXY_URL
         @Volatile
         private var cachedProxy: String? = null
 
@@ -58,7 +56,7 @@ class RaghavAniKage : MainAPI() {
                 return cachedProxy ?: fallbackProxy()
             }
             val parsed = try {
-                val html = app.get(siteUrl, timeout = 10_000L).text
+                val html = app.get(siteUrl, timeout = 10L).text
                 Regex(""""PUBLIC_PROXY_URL"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
             } catch (e: Exception) {
                 null
@@ -405,7 +403,6 @@ class RaghavAniKage : MainAPI() {
             val serverId = server.id
             if (serverId.isBlank()) continue
 
-            // the API enforces subTypes server-side anyway; skipping early saves a request
             if (server.subTypes.isNotEmpty() && !server.subTypes.contains(lang)) continue
 
             val providerId = server.providerId?.takeIf { it.isNotBlank() } ?: serverId
@@ -416,13 +413,12 @@ class RaghavAniKage : MainAPI() {
                 var parsed = parseSourcesResponse(responseText)
                 if (parsed == null) continue
 
-                // megg/dib can serve stale cached tokens that 401 on the proxy;
-                // a cache-busted re-request rotates them
                 if (parsed.stale == true) {
                     try {
                         val freshText = app.get("$sourcesUrl&_=${System.currentTimeMillis()}", headers = apiHeaders).text
                         parseSourcesResponse(freshText)?.let { parsed = it }
                     } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                     }
                 }
 
@@ -456,6 +452,7 @@ class RaghavAniKage : MainAPI() {
                             val embedLabel = "AniKage ${src.server ?: serverId} ${subType}"
                             if (RaghavEmbeds.resolveEmbed(embedUrl, "$mainUrl/", embedLabel, "AniKage", lang, subtitleCallback, callback)) found = true
                         } catch (e: Exception) {
+                            if (e is CancellationException) throw e
                         }
                     }
 
@@ -495,11 +492,12 @@ class RaghavAniKage : MainAPI() {
                             val embedLabel = "AniKage ${embed.server ?: serverId} ${subType}"
                             if (RaghavEmbeds.resolveEmbed(embedUrl, "$mainUrl/", embedLabel, "AniKage", lang, subtitleCallback, callback)) found = true
                         } catch (e: Exception) {
+                            if (e is CancellationException) throw e
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.e("RaghavAnimeKitsu", "[AniKage] server $serverId failed: ${e.message}")
+                if (e is CancellationException) throw e
             }
         }
 

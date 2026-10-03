@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
@@ -16,13 +17,14 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import com.raghav.donation.DonationManager
 
 class MultimoviesProvider : MainAPI() {
     override var mainUrl = "https://multimovies.casa"
@@ -49,27 +51,19 @@ class MultimoviesProvider : MainAPI() {
 
     private var validatedDomain: String? = null
 
-    /**
-     * The Firebase helper can lag behind domain rotations, so a fresh remote
-     * domain is liveness-checked once per session before it replaces the
-     * hardcoded default (multimovies.casa is the current canonical domain).
-     */
+    // probe remote domains before switching - the firebase list can lag behind rotations
     private suspend fun refreshDomain() {
         try {
             val remote = FirebaseDomainHelper.getDomain("multimovies") ?: return
             if (remote == mainUrl || remote == validatedDomain) return
             validatedDomain = remote
             val ok = try {
-                val resp = com.lagradost.cloudstream3.app.get(
-                    "$remote/", headers = headers, timeout = 10_000L,
-                )
-                resp.isSuccessful
-            } catch (e: Exception) {
+                app.get("$remote/", headers = headers, timeout = 10_000L).isSuccessful
+            } catch (_: Exception) {
                 false
             }
             if (ok) mainUrl = remote
-        } catch (e: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     private fun firstImg(el: Element): String {
@@ -78,6 +72,7 @@ class MultimoviesProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         refreshDomain()
         val base = request.data.trimEnd('/')
         val url = if (page <= 1) "$mainUrl$base/" else "$mainUrl$base/page/$page/"
@@ -87,7 +82,7 @@ class MultimoviesProvider : MainAPI() {
                 .distinctBy { it.url }
             val hasNext = doc.selectFirst("a[href*='/page/${page + 1}/'], a.next.page-numbers") != null
             newHomePageResponse(request.name, items, hasNext = hasNext && items.isNotEmpty())
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
     }
@@ -99,7 +94,7 @@ class MultimoviesProvider : MainAPI() {
             val doc = mmGet("$mainUrl/?s=${query.trim().replace(" ", "+")}", headers = headers).document
             doc.select(".result-item article").mapNotNull { it.toSearchResult() }
                 .distinctBy { it.url }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
@@ -170,7 +165,7 @@ class MultimoviesProvider : MainAPI() {
                     this.duration = duration
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -227,7 +222,6 @@ class MultimoviesProvider : MainAPI() {
                 if (postId.isBlank() || nume.isBlank()) null else Opt(postId, type, nume, label)
             }
 
-            // fetch every embed url in parallel
             val embeds = coroutineScope {
                 opts.map { opt ->
                     async(Dispatchers.IO) {
@@ -246,7 +240,7 @@ class MultimoviesProvider : MainAPI() {
                             val embed = Regex("\"embed_url\"\\s*:\\s*\"([^\"]+)\"").find(body)
                                 ?.groupValues?.get(1)?.let { MMNet.deEsc(it) } ?: ""
                             embed to opt.label
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             "" to opt.label
                         }
                     }
@@ -256,8 +250,7 @@ class MultimoviesProvider : MainAPI() {
             // modiplay first: its origin is needed by the gdmirror proxy fallback
             val sorted = embeds.sortedByDescending { MMNet.hostOf(it.first).contains("modiplay") }
 
-            // several sources share the same underlying cdn files - dedupe both
-            // links and subtitles by url so the user gets one entry per stream
+            // several sources share the same cdn files - dedupe links and subs by url
             val seenLinks = java.util.Collections.newSetFromMap(
                 java.util.concurrent.ConcurrentHashMap<String, Boolean>()
             )
@@ -290,7 +283,7 @@ class MultimoviesProvider : MainAPI() {
                         host.contains("vidout") ->
                             MMVidout.resolve(embed, label, subCb, linkCb)
                         else -> {
-                            // screenscape and any future embed: best-effort m3u8 grep
+                            // screenscape and any future embed - best-effort m3u8 grep
                             val html = MMNet.getText(embed, referer = "$mainUrl/")
                             if (html != null) {
                                 extractM3u8Links(html, MMNet.originOf(embed).ifBlank { embed }, label, linkCb)
@@ -298,11 +291,11 @@ class MultimoviesProvider : MainAPI() {
                         }
                     }
                     any = any || handled
-                } catch (e: Exception) {
-                    // keep going - one broken source must not kill the rest
+                } catch (_: Exception) {
+                    // one broken source must not kill the rest
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return any
         }
         return any
@@ -321,7 +314,7 @@ class MultimoviesProvider : MainAPI() {
         val all = (m3u8 + relM3u8.map { MMNet.abs(base, it) }).distinct()
         for (u in all) {
             callback(
-                newExtractorLink(linkLabel, linkLabel, u, type = com.lagradost.cloudstream3.utils.ExtractorLinkType.M3U8) {
+                newExtractorLink(linkLabel, linkLabel, u, type = ExtractorLinkType.M3U8) {
                     this.headers = mapOf("Referer" to base)
                 }
             )

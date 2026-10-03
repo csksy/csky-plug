@@ -1,6 +1,5 @@
 package com.laddu100
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageResponse
@@ -29,9 +28,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.ConcurrentHashMap
+import com.raghav.donation.DonationManager
 
 class AniPMProvider : MainAPI() {
-    override var mainUrl = AniPMApi.MAIN_URL
+    override var mainUrl = AniPMApi.url()
     override var name = "AniPM"
     override var lang = "en"
     override val hasMainPage = true
@@ -39,7 +39,6 @@ class AniPMProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
     private companion object {
-        const val TAG = "AniPM"
         const val SETTLAR_REFERER = "https://embed.settlar.io/"
         const val MEGAPLAY_REFERER = "https://megaplay.buzz/"
 
@@ -55,6 +54,9 @@ class AniPMProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
+        AniPMApi.refreshDomain()
+        mainUrl = AniPMApi.url()
         return when (request.data) {
             "latest" -> latestPage(page, request.name)
             "movies" -> browsePage("popular", page, "Movie", request.name)
@@ -101,6 +103,8 @@ class AniPMProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        AniPMApi.refreshDomain()
+        mainUrl = AniPMApi.url()
         return AniPMApi.search(query).mapNotNull { titleResponse(it) }
     }
 
@@ -125,6 +129,8 @@ class AniPMProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        AniPMApi.refreshDomain()
+        mainUrl = AniPMApi.url()
         val id = url.substringAfterLast("|").trim().toIntOrNull() ?: return null
         val series = AniPMApi.series(id) ?: return null
         val title = series.title?.takeIf { it.isNotBlank() } ?: return null
@@ -181,8 +187,6 @@ class AniPMProvider : MainAPI() {
             statusLower.startsWith("finished") || statusLower.startsWith("completed") -> ShowStatus.Completed
             else -> null
         }
-
-        Log.d(TAG, "load $title: ${subEpisodes.size} sub / ${dubEpisodes.size} dub episodes")
 
         return newAnimeLoadResponse(title, url, tvType) {
             posterUrl = AniPMApi.absolute(series.poster)
@@ -270,9 +274,7 @@ class AniPMProvider : MainAPI() {
             subtitleCallback.invoke(newSubtitleFile(label, url) {
                 this.headers = headers
             })
-        } catch (e: Exception) {
-            Log.d(TAG, "subtitle emit failed: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
     private suspend fun emitSettlar(
@@ -287,7 +289,6 @@ class AniPMProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (selection == null) {
-            Log.d(TAG, "no settlar selection for ep$episode $channel")
             return false
         }
 
@@ -358,7 +359,6 @@ class AniPMProvider : MainAPI() {
             )
             return true
         }
-        Log.d(TAG, "megaplay resolve failed for ep$episode $channel")
         return false
     }
 }

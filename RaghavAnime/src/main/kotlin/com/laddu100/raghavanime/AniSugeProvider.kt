@@ -2,7 +2,6 @@ package com.laddu100.raghavanime
 
 import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -12,6 +11,8 @@ import java.net.URLEncoder
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
+import com.raghav.donation.DonationManager
 
 class AniSugeProvider : MainAPI() {
     override var mainUrl = "https://anisuge.tv"
@@ -99,7 +100,6 @@ class AniSugeProvider : MainAPI() {
         return result.toString()
     }
 
-    // vrf token the ajax endpoints expect, matching the site's client js
     private fun generateVrf(input: String): String {
         val encoded = URLEncoder.encode(input, "UTF-8").replace("+", "%20")
         val key = "ysJhV6U27FVIjjuk".toByteArray(Charsets.UTF_8)
@@ -122,6 +122,7 @@ class AniSugeProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         mainUrl = FirebaseDomainHelper.getDomain("anisuge") ?: mainUrl
         if (page > 1) return newHomePageResponse(request.name, emptyList())
         val html = quickGet("$mainUrl/home")
@@ -234,7 +235,6 @@ class AniSugeProvider : MainAPI() {
                 ?: 1
             val epTitle = epLink.attr("data-num")?.takeIf { it.isNotBlank() } ?: "Episode $epNum"
             val dataIds = epLink.attr("data-ids") ?: return@forEach
-            // episodes without mapper coords fall back to the legacy server path
             val malId = epLink.attr("data-mal").trim()
             val slug = epLink.attr("data-slug").takeIf { it.isNotBlank() } ?: epNum.toString()
             val timestamp = epLink.attr("data-timestamp").trim()
@@ -266,8 +266,6 @@ class AniSugeProvider : MainAPI() {
         }
     }
 
-    // episode data: baseUrl|animeId|epNum|dataIds|malId|slug|timestamp|sub|dub
-    // dataIds feeds the legacy server flow, mal/slug/timestamp the mapper api
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -287,14 +285,12 @@ class AniSugeProvider : MainAPI() {
 
         var anyLoaded = false
 
-        // legacy native servers, currently empty on the site but kept so
-        // sources reappear instantly if it restores them
         try {
             if (loadLegacyServers(baseUrl, dataIds, selectedType, subtitleCallback, callback)) {
                 anyLoaded = true
             }
         } catch (e: Exception) {
-            Log.d("AniSuge", "legacy server path failed: ${e.message}")
+            if (e is CancellationException) throw e
         }
 
         if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
@@ -303,7 +299,7 @@ class AniSugeProvider : MainAPI() {
                     anyLoaded = true
                 }
             } catch (e: Exception) {
-                Log.d("AniSuge", "mapper path failed: ${e.message}")
+                if (e is CancellationException) throw e
             }
         }
 
@@ -317,7 +313,6 @@ class AniSugeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        // '+' in the base64 blob must be url-encoded or the api mangles it
         val encodedIds = URLEncoder.encode(dataIds, "UTF-8")
         val serverListResponseText = app.get(
             url = "$baseUrl/ajax/server/list?servers=$encodedIds",
@@ -379,7 +374,7 @@ class AniSugeProvider : MainAPI() {
                         loadedSingle = true
                     }
                 } catch (e: Exception) {
-                    Log.e("AniSuge", "server $serverName failed: ${e.message}")
+                    if (e is CancellationException) throw e
                 }
                 loadedSingle
             }
@@ -419,9 +414,7 @@ class AniSugeProvider : MainAPI() {
                     ).text
                     val serverInfoJson = parseJson<ServerInfoResponse>(serverInfoText)
                     embedUrl = serverInfoJson.result?.url
-                } catch (_: Exception) {
-                    // the site may not wrap this one, use the mapper url directly
-                }
+                } catch (_: Exception) {}
                 if (embedUrl.isNullOrBlank()) embedUrl = streamUrl
 
                 try {
@@ -429,7 +422,7 @@ class AniSugeProvider : MainAPI() {
                         anyLoaded = true
                     }
                 } catch (e: Exception) {
-                    Log.d("AniSuge", "embed $displayName failed: ${e.message}")
+                    if (e is CancellationException) throw e
                 }
             }
 
@@ -453,7 +446,7 @@ class AniSugeProvider : MainAPI() {
                     )
                     anyLoaded = true
                 } catch (e: Exception) {
-                    Log.d("AniSuge", "download $displayName $qualityLabel failed: ${e.message}")
+                    if (e is CancellationException) throw e
                 }
             }
         }
@@ -504,7 +497,6 @@ class AniSugeProvider : MainAPI() {
                     stream.subtitles, subtitleCallback, callback
                 )
             }
-            Log.e("AniSuge", "megaplay resolution failed for $serverName")
             return false
         }
 
@@ -552,7 +544,7 @@ class AniSugeProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e("AniSuge", "webview fallback failed for $serverName: ${e.message}")
+                if (e is CancellationException) throw e
             }
         }
         return loaded

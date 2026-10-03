@@ -14,7 +14,7 @@ buildscript {
     }
     dependencies {
         classpath("com.android.tools.build:gradle:9.1.1")
-        classpath("com.github.recloudstream.gradle:gradle:32895aedb636")
+        classpath("com.github.recloudstream.gradle:gradle:32895aedb6")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.0")
     }
 }
@@ -44,8 +44,8 @@ subprojects {
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     cloudstream {
-        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "https://github.com/csksy/csky-plug")
-        authors = listOf("csksy")
+        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "https://github.com/KSHITIJ8473/raghav")
+        authors = listOf("KSHITIJ8473")
     }
 
     android {
@@ -93,3 +93,6 @@ subprojects {
     }
 }
 
+tasks.register<Delete>("clean") {
+    delete(rootProject.layout.buildDirectory)
+}

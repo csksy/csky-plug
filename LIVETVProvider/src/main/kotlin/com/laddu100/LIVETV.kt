@@ -19,6 +19,7 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.raghav.donation.DonationManager
 
 class LIVETV(
     private val customName: String = "IPTV Player",
@@ -222,6 +223,7 @@ class LIVETV(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        DonationManager.checkAndShow()
         val rawContent = getWithCustomHeaders(mainUrl)
         val decryptedContent = decryptContent(rawContent)
         val data = IptvPlaylistParser().parseM3U(decryptedContent)

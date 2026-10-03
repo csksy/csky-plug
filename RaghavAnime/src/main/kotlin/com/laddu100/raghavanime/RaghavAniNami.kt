@@ -1,5 +1,4 @@
 package com.laddu100.raghavanime
-import com.lagradost.api.Log
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -9,6 +8,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.CancellationException
 
 class RaghavAniNami : MainAPI() {
     override var mainUrl = "https://www.aninami.site"
@@ -79,16 +79,13 @@ class RaghavAniNami : MainAPI() {
         val epsText = try {
             app.get("$mainUrl/api/episodes/$anilistId", headers = apiHeaders).textLarge
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniNami] load: episodes fetch failed for anilistId=$anilistId: ${e.message}")
             return null
         }
         val providers = try {
             parseJson<EpisodesResponse>(epsText).results?.providers ?: emptyMap()
         } catch (e: Exception) {
-            Log.e("RaghavAnime", "[AniNami] load: episodes parse failed (len=${epsText.length}): ${e.message}")
             return null
         }
-
 
         val subIdsByNumber = sortedMapOf<Int, MutableList<String>>()
         val dubIdsByNumber = sortedMapOf<Int, MutableList<String>>()
@@ -105,9 +102,8 @@ class RaghavAniNami : MainAPI() {
                     val id = ep.id ?: return@forEach
                     dubIdsByNumber.getOrPut(num) { mutableListOf() }.add(id)
                 }
-            } catch (e: Throwable) { Log.e("RaghavAnime", "AniNami: ${e.message}") }
+            } catch (e: Throwable) { if (e is CancellationException) throw e }
         }
-
 
         val subEpisodes = subIdsByNumber.map { (num, ids) ->
             newEpisode("sub|${ids.joinToString(";;")}") {
@@ -136,16 +132,13 @@ class RaghavAniNami : MainAPI() {
     ): Boolean {
         val pipeIdx = data.indexOf("|")
         if (pipeIdx < 0) {
-            Log.w("RaghavAnime", "[AniNami] loadLinks: no '|' separator in data")
             return false
         }
         val requestedAudio = data.substring(0, pipeIdx).substringAfterLast("/")
         val epIds = data.substring(pipeIdx + 1).split(";;").filter { it.isNotEmpty() }
         if (epIds.isEmpty()) {
-            Log.w("RaghavAnime", "[AniNami] loadLinks: empty epIds list")
             return false
         }
-
 
         var found = false
         val seenUrls = mutableSetOf<String>()
@@ -153,7 +146,6 @@ class RaghavAniNami : MainAPI() {
         for (epId in epIds) {
             val parts = epId.split("/")
             if (parts.size < 5 || parts[0] != "watch") {
-                Log.w("RaghavAnime", "[AniNami] skipping malformed epId: ${epId.take(120)}")
                 continue
             }
             val provider = parts[1]
@@ -166,16 +158,13 @@ class RaghavAniNami : MainAPI() {
             val streamsText = try {
                 app.get(watchUrl, headers = apiHeaders).text
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniNami] provider=$provider: watch fetch failed: ${e.message}")
                 continue
             }
             val streams = try {
                 parseJson<StreamResponse>(streamsText).results?.streams
             } catch (e: Exception) {
-                Log.e("RaghavAnime", "[AniNami] provider=$provider: streams parse failed (len=${streamsText.length}): ${e.message}")
                 continue
             } ?: continue
-
 
             for (stream in streams) {
                 val streamUrl = stream.url ?: continue
@@ -187,8 +176,6 @@ class RaghavAniNami : MainAPI() {
                 when (stream.type?.lowercase()) {
                     "hls" -> {
                         val label = listOfNotNull("AniNami", serverTag, qualityLabel).joinToString(" ")
-                        // vivibebe/bibiemb storage 403s segments when it dies,
-                        // probe those before offering them
                         val host = try {
                             java.net.URL(streamUrl).host
                         } catch (e: Exception) {
@@ -224,7 +211,7 @@ class RaghavAniNami : MainAPI() {
                                 found = true
                             }
                         } catch (e: Exception) {
-                            Log.e("RaghavAnime", "[AniNami] embed resolve failed: ${e.message}")
+                            if (e is CancellationException) throw e
                         }
                     }
                 }

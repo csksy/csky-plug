@@ -7,8 +7,8 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class MiruroPlugin : Plugin() {
     override fun load(context: Context) {
-        MiruroApi.context = context
-        registerMainAPI(MiruroProvider())
+        Miruro.context = context
+        registerMainAPI(Miruro())
         registerExtractorAPI(MiruroMegaPlay())
         registerExtractorAPI(MiruroVidWish())
     }

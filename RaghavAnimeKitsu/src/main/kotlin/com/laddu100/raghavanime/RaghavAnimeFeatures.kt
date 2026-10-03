@@ -84,7 +84,7 @@ object RaghavAnimeFeatures {
     private suspend fun fetchRecommendationsForAnime(kitsuId: Int): List<RecommendationEntry> {
         return try {
             val url = "$KITSU_API/anime/$kitsuId/media-relationships?include=destination&page[limit]=20"
-            val responseText = app.get(url, headers = KITSU_HEADERS, timeout = 15_000L).text
+            val responseText = app.get(url, headers = KITSU_HEADERS, timeout = 15L).text
             val response = parseJson<KitsuResponse>(responseText)
             val included = response.included ?: emptyList()
             included.mapNotNull { media ->

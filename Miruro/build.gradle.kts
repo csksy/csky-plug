@@ -1,9 +1,13 @@
-version = 14
+version = 7
+
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+}
 
 cloudstream {
     language = "en"
     description = "ANIME(SUB,DUB)-MULTI SOURCE"
-    authors = listOf("csksy")
+    authors = listOf("raghav")
 
     status = 1
     tvTypes = listOf(

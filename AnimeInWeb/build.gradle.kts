@@ -1,14 +1,13 @@
 version = 4
 
-android {
-    buildFeatures {
-        buildConfig = true
-    }
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
 }
 
 cloudstream {
-    description = "AnimeInWeb - animeinweb.com sub indo"
-    authors = listOf("csksy")
+    language = "id"
+    description = "Anime sub indo from AnimeInWeb with multiple qualities"
+    authors = listOf("raghav")
 
     status = 1
     tvTypes = listOf(
@@ -17,6 +16,5 @@ cloudstream {
         "OVA",
         "TvSeries"
     )
-    language = "id"
     iconUrl = "https://animeinweb.com/favicon.ico"
 }
