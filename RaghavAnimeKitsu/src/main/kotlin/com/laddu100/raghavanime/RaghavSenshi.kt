@@ -34,17 +34,15 @@ class RaghavSenshi : MainAPI() {
     override var name = "Senshi"
     override var lang = "en"
 
-    private val ua =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
-    private val apiHeaders = mapOf(
-        "User-Agent" to ua,
+    // the site rotates user-agent rules, the webview's live agent never goes stale
+    private val apiHeaders get() = mapOf(
+        "User-Agent" to RaghavSenshiVhost.browserUa(),
         "Accept" to "application/json, text/plain, */*",
         "Referer" to "$mainUrl/"
     )
 
-    private val postHeaders = mapOf(
-        "User-Agent" to ua,
+    private val postHeaders get() = mapOf(
+        "User-Agent" to RaghavSenshiVhost.browserUa(),
         "Accept" to "application/json, text/plain, */*",
         "Content-Type" to "application/json",
         "Origin" to mainUrl,
@@ -52,22 +50,19 @@ class RaghavSenshi : MainAPI() {
     )
 
     // the waf rejects cross-origin player requests without the full browser header set
-    private val cdnHeaders = mapOf(
-        "User-Agent" to ua,
+    private val cdnHeaders get() = mapOf(
+        "User-Agent" to RaghavSenshiVhost.browserUa(),
         "Accept" to "*/*",
         "Accept-Language" to "en-US,en;q=0.9",
         "Origin" to mainUrl,
         "Referer" to "$mainUrl/",
-        "sec-ch-ua" to "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
-        "sec-ch-ua-mobile" to "?0",
-        "sec-ch-ua-platform" to "\"Windows\"",
         "sec-fetch-dest" to "empty",
         "sec-fetch-mode" to "cors",
         "sec-fetch-site" to "cross-site"
     )
 
-    private val streamHeaders = mapOf(
-        "User-Agent" to ua,
+    private val streamHeaders get() = mapOf(
+        "User-Agent" to RaghavSenshiVhost.browserUa(),
         "Accept" to "*/*",
         "Origin" to mainUrl,
         "Referer" to "$mainUrl/"
@@ -329,20 +324,21 @@ class RaghavSenshi : MainAPI() {
         return qualities.sortedByDescending { it.first.dropLast(1).toIntOrNull() ?: 0 }
     }
 
+    // the vhost already walks its native and relay modes internally, one cheap
+    // retry covers a dropped page right after a rotation
     private suspend fun fetchVidcloud(sourceId: Int): List<VidcloudSource>? {
-        var result: List<VidcloudSource>? = null
-        for (attempt in 0..2) {
+        for (attempt in 0..1) {
             if (attempt > 0) {
-                delay(2500L * attempt)
+                delay(1500L)
             }
-            result = try {
+            val result = try {
                 RaghavSenshiVhost.fetchSources(sourceId)
             } catch (_: Exception) {
                 null
             }
-            if (result != null) break
+            if (result != null) return result
         }
-        return result
+        return null
     }
 
     private fun SenshiAnime.toSearchResponse(): SearchResponse? {
