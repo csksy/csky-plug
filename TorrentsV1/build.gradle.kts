@@ -1,4 +1,4 @@
-version = 20
+version = 21
 
 android {
     namespace = "com.torrentsv1"

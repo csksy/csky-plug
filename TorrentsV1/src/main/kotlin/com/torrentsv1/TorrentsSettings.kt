@@ -301,6 +301,48 @@ object TorrentsSettings {
         return row to sw
     }
 
+    private fun orderSelector(ctx: Context, tmdbOnTop: Boolean, onChange: (Boolean) -> Unit): LinearLayout {
+        val wrap = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(ctx, 8) }
+        }
+        var tmdbFirst = tmdbOnTop
+        val anilistChip = TextView(ctx)
+        val tmdbChip = TextView(ctx)
+
+        fun render() {
+            listOf(false to anilistChip, true to tmdbChip).forEach { (isTmdb, chip) ->
+                val active = isTmdb == tmdbFirst
+                chip.text = if (isTmdb) "TMDB ON TOP" else "ANILIST ON TOP"
+                chip.gravity = Gravity.CENTER
+                chip.textSize = 11f
+                chip.letterSpacing = 0.12f
+                chip.setTypeface(chip.typeface, Typeface.BOLD)
+                chip.setTextColor(if (active) android.graphics.Color.WHITE else SUBTEXT)
+                chip.background = if (active) shape(RED_DEEP, 12, ctx, 1, RED_BRIGHT)
+                else shape(SURFACE_2, 12, ctx, 1, BORDER)
+                chip.setPadding(dp(ctx, 10), dp(ctx, 13), dp(ctx, 10), dp(ctx, 13))
+            }
+        }
+
+        anilistChip.setOnClickListener {
+            tmdbFirst = false; render(); onChange(false)
+            anilistChip.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        }
+        tmdbChip.setOnClickListener {
+            tmdbFirst = true; render(); onChange(true)
+            tmdbChip.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        }
+        render()
+        wrap.addView(anilistChip, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        wrap.addView(tmdbChip, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            leftMargin = dp(ctx, 8)
+        })
+        return wrap
+    }
+
     private fun subWindow(
         ctx: Context,
         title: String,
@@ -546,8 +588,13 @@ object TorrentsSettings {
                 body.addView(row)
             }
 
+            body.addView(labelBlock(ctx, "Home page order", "Which catalog loads at the top"))
+            var tmdbOnTop = getSetting(KEY_TMDB_ON_TOP, false)
+            body.addView(orderSelector(ctx, tmdbOnTop) { tmdbOnTop = it })
+
             body.addView(saveAndRestartButton(ctx) {
                 switches.forEach { (key, sw) -> setSetting(key, sw.isChecked) }
+                setSetting(KEY_TMDB_ON_TOP, tmdbOnTop)
                 confirmRestart(ctx, "Catalogs saved. Restart CloudStream now to apply them?")
             })
 
