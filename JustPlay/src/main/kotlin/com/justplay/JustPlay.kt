@@ -7,12 +7,18 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.raghav.donation.DonationManager
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class PlayLinkData(
@@ -27,8 +33,7 @@ data class PlayLinkData(
     val showYear: Int? = null,
     val isMovie: Boolean = false
 ) {
-    // posts list the year the show started, an episode only knows the season air
-    // year, so series matching always runs against the show year
+
     val matchYear: Int?
         get() = if (season != null) (showYear ?: year) else year
 }
@@ -55,6 +60,20 @@ class JustPlay : MainAPI() {
 
         private const val KEY_DL_ONLY = "JUSTPLAY_DL_ONLY"
         private const val KEY_STREAM_ONLY = "JUSTPLAY_STREAM_ONLY"
+        private const val KEY_CONCURRENCY = "JUSTPLAY_CONCURRENCY"
+        private const val LINKS_PER_SOURCE = 12
+
+        // the app cancels loadLinks after 120s, every site gets cut off before that
+        private const val SITE_BUDGET_MS = 90_000L
+
+        private fun widenClient() {
+            try {
+                val dispatcher = app.baseClient.dispatcher
+                if (dispatcher.maxRequestsPerHost < 12) dispatcher.maxRequestsPerHost = 12
+                if (dispatcher.maxRequests < 96) dispatcher.maxRequests = 96
+            } catch (_: Exception) {
+            }
+        }
 
         fun tmdbImageUrl(path: String?): String? {
             if (path.isNullOrBlank()) return null
@@ -92,6 +111,18 @@ class JustPlay : MainAPI() {
             CloudStreamApp.getKey<Boolean>(KEY_STREAM_ONLY) ?: true
         } catch (_: Exception) {
             true
+        }
+
+        fun siteConcurrency(): Int = try {
+            (CloudStreamApp.getKey<Int>(KEY_CONCURRENCY) ?: 6).coerceIn(2, 12)
+        } catch (_: Exception) {
+            6
+        }
+
+        fun setConcurrency(value: Int) {
+            try {
+                CloudStreamApp.setKey(KEY_CONCURRENCY, value.coerceIn(2, 12))
+            } catch (_: Exception) {}
         }
 
         fun setDownloadOnly(on: Boolean) {
@@ -152,8 +183,12 @@ class JustPlay : MainAPI() {
         }
     }
 
+    private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         DonationManager.checkAndShow()
+        // netmirror needs a ~1 min cookie solve on cold start, get it going before the user opens anything
+        prefetchScope.launch { NetMirrorSite.prefetch() }
         val parts = request.data.split("&", limit = 2)
         val path = parts[0]
         val extra = parts.getOrNull(1)?.split("&")?.mapNotNull {
@@ -177,6 +212,7 @@ class JustPlay : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse>? {
         if (query.isBlank()) return null
+        prefetchScope.launch { NetMirrorSite.prefetch() }
         val json = tmdbGet(
             "/search/multi",
             mapOf("query" to query, "include_adult" to "false", "page" to "1", "language" to "en-US")
@@ -191,6 +227,7 @@ class JustPlay : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        prefetchScope.launch { NetMirrorSite.prefetch() }
         val data = try {
             parseJson<PlayTmdbData>(url)
         } catch (_: Exception) {
@@ -294,7 +331,7 @@ class JustPlay : MainAPI() {
 
         coroutineScope {
             val semaphore = Semaphore(8)
-            val deferred = seasons.map { (seasonNum, airDate) ->
+            val deferred = seasons.map { (seasonNum, _) ->
                 async(Dispatchers.IO) {
                     semaphore.withPermit {
                         try {
@@ -305,28 +342,35 @@ class JustPlay : MainAPI() {
                             val epsArr = seasonJson.optJSONArray("episodes") ?: return@withPermit emptyList()
                             (0 until epsArr.length()).mapNotNull { i ->
                                 val ep = epsArr.optJSONObject(i) ?: return@mapNotNull null
-                                val epNum = ep.optInt("episode_number", 0)
-                                if (epNum <= 0) return@mapNotNull null
-                                val linkData = PlayLinkData(
-                                    id = id,
-                                    imdbId = imdbId,
-                                    type = type,
-                                    season = seasonNum,
-                                    episode = epNum,
-                                    title = title,
-                                    orgTitle = orgTitle.ifBlank { null },
-                                    year = airDate.take(4).toIntOrNull() ?: year,
-                                    showYear = year,
-                                    isMovie = false
-                                )
-                                newEpisode(linkData.toJson()) {
-                                    this.name = ep.optString("name").ifBlank { "Episode $epNum" }
-                                    this.season = seasonNum
-                                    this.episode = epNum
-                                    this.posterUrl = tmdbImageUrl(ep.optString("still_path"))
-                                    this.description = ep.optString("overview")
-                                    score = Score.from10(ep.optDouble("vote_average", 0.0))
-                                    ep.optString("air_date").takeIf { it.isNotBlank() }?.let { addDate(it) }
+                                try {
+                                    val epNum = ep.optInt("episode_number", 0)
+                                    if (epNum <= 0) return@mapNotNull null
+                                    val airDate = ep.optString("air_date")
+                                    val linkData = PlayLinkData(
+                                        id = id,
+                                        imdbId = imdbId,
+                                        type = type,
+                                        season = seasonNum,
+                                        episode = epNum,
+                                        title = title,
+                                        orgTitle = orgTitle.ifBlank { null },
+                                        year = airDate.take(4).toIntOrNull() ?: year,
+                                        showYear = year,
+                                        isMovie = false
+                                    )
+                                    newEpisode(linkData.toJson()) {
+                                        this.name = ep.optString("name").ifBlank { "Episode $epNum" }
+                                        this.season = seasonNum
+                                        this.episode = epNum
+                                        this.posterUrl = tmdbImageUrl(ep.optString("still_path"))
+                                        this.description = ep.optString("overview")
+                                        score = Score.from10(ep.optDouble("vote_average", 0.0))
+                                        if (airDate.length >= 8 && airDate[0].isDigit()) {
+                                            runCatching { addDate(airDate) }
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                    null
                                 }
                             }
                         } catch (_: Exception) {
@@ -388,24 +432,36 @@ class JustPlay : MainAPI() {
         val active = allSites.filter { siteEnabled(it.id) }
         if (active.isEmpty()) return false
 
-        // both modes may be on at once, but one of them always has to stay
-        // active even if the stored keys ever end up inconsistent
         val dlOnly = downloadOnlyEnabled()
         val streamOnly = streamOnlyEnabled() || !dlOnly
 
-        val guardedCallback: (ExtractorLink) -> Unit = { link ->
+        widenClient()
+
+        val seenUrls = ConcurrentHashMap.newKeySet<String>()
+        val sourceCounts = ConcurrentHashMap<String, AtomicInteger>()
+
+        val guardedCallback: (ExtractorLink) -> Unit = label@{ link ->
             val isDownload = PlaySourceFilter.isDownloadOnlyName(link.name)
             val allowed = if (isDownload) dlOnly else streamOnly
-            if (allowed) {
-                callback(if (isDownload) PlaySourceFilter.taggedDownloadOnly(link) else link)
-            }
+            if (!allowed) return@label
+            if (!seenUrls.add(link.url)) return@label
+            val emitted = sourceCounts.computeIfAbsent(link.source) { AtomicInteger() }
+            if (emitted.incrementAndGet() > LINKS_PER_SOURCE) return@label
+            callback(if (isDownload) PlaySourceFilter.taggedDownloadOnly(link) else link)
         }
 
         coroutineScope {
+            val gate = Semaphore(siteConcurrency())
             active.forEach { site ->
                 async(Dispatchers.IO) {
+                    // the budget covers the wait for a gate permit too, so a queued site
+                    // never pushes loadLinks past the app's own cancel
                     try {
-                        site.invoke(res, subtitleCallback, guardedCallback)
+                        withTimeoutOrNull(SITE_BUDGET_MS) {
+                            gate.withPermit {
+                                site.invoke(res, subtitleCallback, guardedCallback)
+                            }
+                        }
                     } catch (_: Exception) {}
                 }
             }

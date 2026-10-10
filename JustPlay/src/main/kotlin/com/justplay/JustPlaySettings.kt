@@ -181,7 +181,6 @@ object JustPlaySettings {
             ).apply { bottomMargin = dp(ctx, 12) }
         }
 
-        // the bar rests at half height and stretches while pressed
         val bar = View(ctx).apply {
             background = shape(RED, 2, ctx)
             scaleY = 0.55f
@@ -207,7 +206,6 @@ object JustPlaySettings {
         })
         row.addView(col)
 
-        // the chevron nudges right while pressed
         val chev = FrameLayout(ctx).apply {
             background = shape(SURFACE_2, 17, ctx, 1, BORDER_HI)
         }
@@ -300,7 +298,7 @@ object JustPlaySettings {
     }
 
     private fun bounceBackOn(ctx: Context, row: LinearLayout, sw: SwitchCompat) {
-        sw.isChecked = true // SwitchCompat animates the thumb sliding back
+        sw.isChecked = true
         ObjectAnimator.ofFloat(row, View.TRANSLATION_X, 0f, -16f, 13f, -8f, 4f, 0f).apply {
             duration = 460
             interpolator = DecelerateInterpolator()
@@ -406,7 +404,7 @@ object JustPlaySettings {
     }
 
     fun show(context: Context) {
-        // unwrap in case a ContextWrapper is handed over
+
         var ctx = context
         var p = context
         while (p is android.content.ContextWrapper) {
@@ -483,6 +481,9 @@ object JustPlaySettings {
         val manageRow = homeRow(ctx, "Manage Sources", "Link modes") { openManageSources(ctx) }
         root.addView(manageRow)
 
+        val perfRow = homeRow(ctx, "Performance", "Loading concurrency") { openPerformance(ctx) }
+        root.addView(perfRow)
+
         root.addView(View(ctx), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
@@ -503,12 +504,12 @@ object JustPlaySettings {
         }
         root.addView(close)
 
-        // hidden until shown so the first frame never flashes
         hero.alpha = 0f; hero.translationY = 28f
         hero.scaleX = 0.94f; hero.scaleY = 0.94f
         section.alpha = 0f; section.translationX = 70f
         sitesRow.alpha = 0f; sitesRow.translationX = 70f
         manageRow.alpha = 0f; manageRow.translationX = 70f
+        perfRow.alpha = 0f; perfRow.translationX = 70f
         close.alpha = 0f
 
         dlg.setContentView(root)
@@ -523,6 +524,7 @@ object JustPlaySettings {
             slideIn(section, 0)
             slideIn(sitesRow, 1)
             slideIn(manageRow, 2)
+            slideIn(perfRow, 3)
             close.animate().alpha(1f).setStartDelay(320).setDuration(350)
                 .setInterpolator(DecelerateInterpolator()).start()
         }
@@ -572,16 +574,15 @@ object JustPlaySettings {
         subWindow(ctx, "MANAGE SOURCES") { body ->
             body.addView(labelBlock(ctx, "Link modes", null))
 
-            // the handlers reach their sibling switch through these refs
             var dlSwitch: SwitchCompat? = null
             var streamSwitch: SwitchCompat? = null
             var downloadRow: LinearLayout? = null
             var streamRow: LinearLayout? = null
-            var guard = false // suppress re-entrant listener events
+            var guard = false
 
             fun dlChanged(checked: Boolean) {
                 if (guard) return
-                // the last mode standing can never be switched off
+
                 if (!checked && streamSwitch?.isChecked != true) {
                     val row = downloadRow ?: return
                     val sw = dlSwitch ?: return
@@ -618,13 +619,109 @@ object JustPlaySettings {
             streamRow = rowSt
             body.addView(rowSt)
 
-            // persists the pair the user sees, no partial writes
             val dlRef = dlSwitch
             val streamRef = streamSwitch
             body.addView(saveAndRestartButton(ctx) {
                 JustPlay.setDownloadOnly(dlRef?.isChecked == true)
                 JustPlay.setStreamOnly(streamRef?.isChecked == true)
                 confirmRestart(ctx, "Link modes saved. Restart CloudStream now to apply them?")
+            })
+        }
+    }
+
+    private fun openPerformance(ctx: Context) {
+        subWindow(ctx, "PERFORMANCE") { body ->
+            body.addView(labelBlock(ctx, "Scraping concurrency",
+                "How many sites fetch links at the same time"))
+
+            var value = JustPlay.siteConcurrency()
+
+            val stepRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = shape(SURFACE, 12, ctx, 1, BORDER)
+                setPadding(dp(ctx, 16), dp(ctx, 14), dp(ctx, 16), dp(ctx, 14))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(ctx, 8); topMargin = dp(ctx, 4) }
+            }
+            val stepCol = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            stepCol.addView(TextView(ctx).apply {
+                text = "Parallel sites"; setTextColor(TEXT); textSize = 14f
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            stepCol.addView(TextView(ctx).apply {
+                text = "Higher is faster but heavy on weak devices"
+                setTextColor(SUBTEXT); textSize = 11f
+                setPadding(0, dp(ctx, 3), 0, 0)
+            })
+            stepRow.addView(stepCol)
+
+            val valueText = TextView(ctx).apply {
+                text = value.toString()
+                setTextColor(RED_BRIGHT); textSize = 16f
+                setTypeface(typeface, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                minWidth = dp(ctx, 30)
+            }
+
+            fun stepButton(label: String, onClick: () -> Unit): Button =
+                Button(ctx).apply {
+                    text = label; textSize = 15f
+                    setTextColor(TEXT)
+                    background = shape(SURFACE_2, 16, ctx, 1, BORDER_HI)
+                    isAllCaps = false; setTypeface(typeface, Typeface.BOLD)
+                    setPadding(dp(ctx, 14), dp(ctx, 8), dp(ctx, 14), dp(ctx, 8))
+                    minHeight = 0; minWidth = 0
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { leftMargin = dp(ctx, 8) }
+                    setOnClickListener { onClick() }
+                }
+
+            stepRow.addView(stepButton("-") {
+                if (value > 2) {
+                    value--
+                    valueText.text = value.toString()
+                }
+            })
+            stepRow.addView(valueText)
+            stepRow.addView(stepButton("+") {
+                if (value < 12) {
+                    value++
+                    valueText.text = value.toString()
+                }
+            })
+            body.addView(stepRow)
+
+            body.addView(Button(ctx).apply {
+                text = "SAVE"; textSize = 15f
+                setTextColor(Color.WHITE); setTypeface(typeface, Typeface.BOLD)
+                letterSpacing = 0.03f
+                stateListAnimator = null
+                isAllCaps = false
+                background = GradientDrawable().apply {
+                    orientation = GradientDrawable.Orientation.LEFT_RIGHT
+                    colors = intArrayOf(RED_BRIGHT, RED_DEEP)
+                    cornerRadius = dp(ctx, 16).toFloat()
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(ctx, 12) }
+                setPadding(0, dp(ctx, 15), 0, dp(ctx, 15))
+                setOnClickListener {
+                    JustPlay.setConcurrency(value)
+                    Toast.makeText(ctx, "Concurrency saved", Toast.LENGTH_SHORT).show()
+                }
+            })
+
+            body.addView(TextView(ctx).apply {
+                text = "Applies the next time links are loaded, no restart needed"
+                textSize = 11f; setTextColor(SUBTEXT); gravity = Gravity.CENTER
+                setPadding(0, dp(ctx, 10), 0, 0)
             })
         }
     }
