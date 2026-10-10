@@ -475,13 +475,18 @@ internal object NetMirrorSite {
     }
 
     private suspend fun playableFile(file: String, headers: Map<String, String>): String? {
-        val url = BASE + file
-        if (PlayNet.m3u8Alive(url, headers)) return url
-        if (file.contains("hp=yes")) {
-            val stripped = file.replace("&hp=yes", "").replace("hp=yes&", "").replace("?hp=yes", "")
-            val bare = BASE + stripped
+        // the hp variant serves an html interstitial on later requests, so the
+        // plain url is preferred whenever it validates and hp is only a fallback
+        val strippedFile = file
+            .replace("&hp=yes", "")
+            .replace("hp=yes&", "")
+            .replace("?hp=yes", "")
+        if (strippedFile != file) {
+            val bare = BASE + strippedFile
             if (PlayNet.m3u8Alive(bare, headers)) return bare
         }
+        val url = BASE + file
+        if (PlayNet.m3u8Alive(url, headers)) return url
         return null
     }
 

@@ -447,6 +447,12 @@ class JustPlay : MainAPI() {
             if (!seenUrls.add(link.url)) return@label
             val emitted = sourceCounts.computeIfAbsent(link.source) { AtomicInteger() }
             if (emitted.incrementAndGet() > LINKS_PER_SOURCE) return@label
+            if (!isDownload) {
+                // links this device cannot decode get a bottom sort rank, a codec
+                // failure at the top of the list poisons the player surface and
+                // every source after it errors until the player is reopened
+                link.quality = PlayCodec.rankQuality(link.name, link.quality)
+            }
             callback(if (isDownload) PlaySourceFilter.taggedDownloadOnly(link) else link)
         }
 
