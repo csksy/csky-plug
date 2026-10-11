@@ -66,6 +66,26 @@ class VegaDriveExtractor : ExtractorApi() {
     }
 }
 
+class MDriveExtractor : ExtractorApi() {
+    override val name = "M-Drive"
+    override val mainUrl = "https://m-drive.lol"
+    override val requiresReferer = false
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        for (s in TmfSources.resolveMDrive(url)) {
+            callback.invoke(
+                ExtractorLink(source = name, name = s.name, url = s.url, referer = mainUrl,
+                    quality = Qualities.Unknown.value, type = ExtractorLinkType.VIDEO, headers = s.headers)
+            )
+        }
+    }
+}
+
 class FilePressExtractor : ExtractorApi() {
     override val name = "FilePress"
     override val mainUrl = "https://filebee.xyz"

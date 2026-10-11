@@ -10,6 +10,7 @@ class TheMoviesFlixPlugin : Plugin() {
         registerExtractorAPI(FastDlExtractor())
         registerExtractorAPI(VCloudExtractor())
         registerExtractorAPI(VegaDriveExtractor())
+        registerExtractorAPI(MDriveExtractor())
         registerExtractorAPI(FilePressExtractor())
     }
 }

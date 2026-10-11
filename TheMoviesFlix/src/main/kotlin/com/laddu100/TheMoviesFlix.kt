@@ -171,42 +171,46 @@ class TheMoviesFlix : MainAPI() {
             Regex("""\bS\d{1,2}\b""", RegexOption.IGNORE_CASE).containsMatchIn(allText)
 
         if (isSeries) {
-            val episodes = mutableListOf<Episode>()
             val seasonGroups = mutableMapOf<Int, MutableList<DownloadGroup>>()
             for (group in downloadGroups) {
                 val seasonNum = extractSeasonNumber(group.label) ?: 1
                 seasonGroups.getOrPut(seasonNum) { mutableListOf() }.add(group)
             }
 
-            for ((seasonNum, groups) in seasonGroups) {
-                if (groups.isEmpty()) continue
-                val allDriveUrls = groups.joinToString("|") { it.redirectUrl }
+            // every quality group lists the same episodes, the union of
+            // all drive pages is the safest episode count, the pages are
+            // fetched together so one slow host cannot stall the rest
+            val episodes = coroutineScope {
+                seasonGroups.map { (seasonNum, groups) ->
+                    async(Dispatchers.IO) {
+                        if (groups.isEmpty()) return@async emptyList()
+                        val allDriveUrls = groups.joinToString("|") { it.redirectUrl }
 
-                // every quality group lists the same episodes, the union of
-                // all drive pages is the safest episode count
-                val episodeNums = coroutineScope {
-                    groups.map { group ->
-                        async(Dispatchers.IO) {
-                            TmfNet.fetchDrivePage(group.redirectUrl)?.episodes?.keys ?: emptySet()
+                        val episodeNums = groups.map { group ->
+                            async(Dispatchers.IO) {
+                                TmfNet.fetchDrivePage(group.redirectUrl)?.episodes?.keys ?: emptySet()
+                            }
+                        }.awaitAll().flatten().toSortedSet()
+
+                        if (episodeNums.isEmpty()) {
+                            listOf(
+                                newEpisode("$allDriveUrls|$seasonNum|1") {
+                                    this.name = groups.first().label
+                                    this.episode = 1
+                                    this.season = seasonNum
+                                }
+                            )
+                        } else {
+                            episodeNums.map { epNum ->
+                                newEpisode("$allDriveUrls|$seasonNum|$epNum") {
+                                    this.name = "Episode $epNum"
+                                    this.episode = epNum
+                                    this.season = seasonNum
+                                }
+                            }
                         }
-                    }.awaitAll()
-                }.flatten().toSortedSet()
-
-                if (episodeNums.isEmpty()) {
-                    episodes.add(newEpisode("$allDriveUrls|$seasonNum|1") {
-                        this.name = groups.first().label
-                        this.episode = 1
-                        this.season = seasonNum
-                    })
-                } else {
-                    for (epNum in episodeNums) {
-                        episodes.add(newEpisode("$allDriveUrls|$seasonNum|$epNum") {
-                            this.name = "Episode $epNum"
-                            this.episode = epNum
-                            this.season = seasonNum
-                        })
                     }
-                }
+                }.awaitAll().flatten()
             }
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -273,7 +277,7 @@ class TheMoviesFlix : MainAPI() {
                         if (hrefs.isEmpty()) return@async false
                         TmfSources.emitAll(
                             hrefs, page.quality, page.info,
-                            "https://nexdrive.fit/", subtitleCallback, callback
+                            TmfNet.domain(), subtitleCallback, callback
                         )
                     } catch (_: Exception) {
                         false
