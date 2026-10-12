@@ -5,15 +5,12 @@ import androidx.appcompat.app.AppCompatActivity
 import com.lagradost.cloudstream3.CommonActivity.activity
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 
 @CloudstreamPlugin
 class LIVETVPlugin : Plugin() {
 
-    private var sharedPref = activity?.getSharedPreferences("LIVETV", Context.MODE_PRIVATE)
+    private val sharedPref = activity?.getSharedPreferences("LIVETV", Context.MODE_PRIVATE)
 
     private var iptvProviders: List<Map<String, Any>> = emptyList()
 
@@ -21,60 +18,41 @@ class LIVETVPlugin : Plugin() {
         LIVETV.context = context
         LIVETVLiveEventsProvider.context = context
 
-        if (sharedPref == null) {
-            sharedPref = activity?.getSharedPreferences("LIVETV", Context.MODE_PRIVATE)
-        }
-
         registerMainAPI(LIVETVLiveEventsProvider())
 
-        val enabled = runBlocking {
-            iptvProviders = LIVETVProviderManager.fetchProviders()
-
-            val providerSettings = iptvProviders.mapNotNull { p ->
-                val title = p["title"] as? String ?: return@mapNotNull null
-                title to (sharedPref?.getBoolean(title, false) ?: false)
-            }.toMap()
-
-            iptvProviders
-                .filter { p ->
-                    val title = p["title"] as? String
-                    title != null && providerSettings[title] == true
-                }
-                .map { p ->
-                    val catLink = p["catLink"] as? String ?: ""
-                    val looksLikePlaylist = async(Dispatchers.IO) {
-                        LIVETVProviderManager.isPlaylistLink(catLink)
-                    }
-                    Triple(p, catLink, looksLikePlaylist)
-                }
-                .map { (p, catLink, probe) ->
-                    Triple(p, catLink, probe.await())
-                }
+        iptvProviders = runBlocking {
+            LIVETVProviderManager.fetchProviders()
         }
 
-        enabled.forEach { (p, catLink, isPlaylist) ->
-            val title = p["title"] as String
-            val type = p["type"] as? String
-            val displayTitle = title
-            if (type == "m3u" || isPlaylist) {
-                registerMainAPI(LIVETV(displayTitle, catLink))
-            } else {
+        val providerSettings = iptvProviders.mapNotNull { provider ->
+            val title = provider["title"] as? String ?: return@mapNotNull null
+            title to (sharedPref?.getBoolean(title, false) ?: false)
+        }.toMap()
+
+        val selectedProviders = iptvProviders.filter {
+            val title = it["title"] as? String
+            title != null && providerSettings[title] == true
+        }
+
+        selectedProviders.forEach { provider ->
+            val title = provider["title"] as String
+            val catLink = provider["catLink"] as String
+            var type = provider["type"] as? String
+            if (type == null) {
+                type = "m3u"
+            }
+            val displayTitle = "📺 $title"
+            if (type == "custom") {
                 registerMainAPI(LIVETVLiveEventsProvider(displayTitle, catLink))
+            } else {
+                registerMainAPI(LIVETV(displayTitle, catLink))
             }
         }
 
-        val act = context as AppCompatActivity
-        openSettings = { _ ->
-            val currentProviders = if (iptvProviders.isEmpty()) {
-                runBlocking { LIVETVProviderManager.fetchProviders() }.also { iptvProviders = it }
-            } else {
-                iptvProviders
-            }
-            LIVETVSettings(
-                this,
-                sharedPref,
-                currentProviders.mapNotNull { it["title"] as? String }
-            ).show(act.supportFragmentManager, "LIVETVSettings")
+        val activity = context as AppCompatActivity
+        openSettings = {
+            val frag = LIVETVSettings(this, sharedPref, iptvProviders.mapNotNull { it["title"] as? String })
+            frag.show(activity.supportFragmentManager, "LIVETVSettings")
         }
     }
 }

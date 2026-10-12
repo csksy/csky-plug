@@ -13,12 +13,15 @@ import java.util.concurrent.TimeUnit
 object LIVETVFirebaseFetcher {
 
     private const val PACKAGE_NAME = "com.cricfy.tv"
-    private val API_KEY get() = BuildConfig.FB_API_KEY
-    private val APP_ID get() = BuildConfig.FB_APP_ID
-    private val PROJECT_NUMBER get() = BuildConfig.FB_PROJECT_NUMBER
-    private const val APP_VERSION = "5.0"
-    private const val APP_BUILD = "50"
-    private const val SDK_VERSION = "22.1.0"
+
+    private val API_KEY: String
+        get() = "AIzaSyAh9jkEU0E_UYxH0m_BKAt-uUSTiTPqhb8"
+
+    private val APP_ID: String
+        get() = "1:963020218535:android:47ec53252c64fb3c9c7b82"
+
+    private val PROJECT_NUMBER: String
+        get() = "963020218535"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -27,56 +30,79 @@ object LIVETVFirebaseFetcher {
 
     data class RemoteConfigResponse(
         val entries: Map<String, String>? = null,
-        val state: String? = null
+        val appName: String? = null,
+        val state: String? = null,
+        val templateVersion: String? = null,
     )
 
-    suspend fun fetchRemoteConfig(): Map<String, String>? = withContext(Dispatchers.IO) {
-        try {
-            val url = "https://firebaseremoteconfig.googleapis.com/v1/projects/$PROJECT_NUMBER/namespaces/firebase:fetch"
-            val appInstanceId = UUID.randomUUID().toString().replace("-", "")
+    // Fetches Firebase Remote Config and returns the entries map
+    // @return Map of config entries or null if fetch fails
+    suspend fun fetchRemoteConfig(): Map<String, String>? {
+        if (API_KEY.isBlank() || APP_ID.isBlank() || PROJECT_NUMBER.isBlank()) {
+            return null
+        }
 
-            val payload = """
-                {
-                    "appInstanceId": "$appInstanceId",
-                    "appInstanceIdToken": "",
-                    "appId": "$APP_ID",
-                    "countryCode": "US",
-                    "languageCode": "en-US",
-                    "platformVersion": "30",
-                    "timeZone": "UTC",
-                    "appVersion": "$APP_VERSION",
-                    "appBuild": "$APP_BUILD",
-                    "packageName": "$PACKAGE_NAME",
-                    "sdkVersion": "$SDK_VERSION",
-                    "analyticsUserProperties": {}
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = "https://firebaseremoteconfig.googleapis.com/v1/projects/$PROJECT_NUMBER/namespaces/firebase:fetch"
+
+                val appInstanceId = UUID.randomUUID().toString().replace("-", "")
+
+                val payload = """
+                    {
+                        "appInstanceId": "$appInstanceId",
+                        "appInstanceIdToken": "",
+                        "appId": "$APP_ID",
+                        "countryCode": "US",
+                        "languageCode": "en-US",
+                        "platformVersion": "30",
+                        "timeZone": "UTC",
+                        "appVersion": "5.0",
+                        "appBuild": "50",
+                        "packageName": "$PACKAGE_NAME",
+                        "sdkVersion": "22.1.0",
+                        "analyticsUserProperties": {}
+                    }
+                """.trimIndent()
+
+                val request = Request.Builder()
+                    .url(url)
+                    .post(payload.toRequestBody("application/json".toMediaType()))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("X-Android-Package", PACKAGE_NAME)
+                    .header("X-Goog-Api-Key", API_KEY)
+                    .header("X-Google-GFE-Can-Retry", "yes")
+                    .build()
+
+                val response = client.newCall(request).execute()
+
+                if (response.isSuccessful) {
+                    val responseBody = response.body.string()
+                    if (!responseBody.isNullOrBlank()) {
+                        val configResponse = parseJson<RemoteConfigResponse>(responseBody)
+                        return@withContext configResponse.entries
+                    }
                 }
-            """.trimIndent()
 
-            val request = Request.Builder()
-                .url(url)
-                .post(payload.toRequestBody("application/json".toMediaType()))
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .header("X-Android-Package", PACKAGE_NAME)
-                .header("X-Goog-Api-Key", API_KEY)
-                .header("X-Google-GFE-Can-Retry", "yes")
-                .build()
-
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                val body = response.body.string()
-                if (body.isNotBlank()) {
-                    return@withContext parseJson<RemoteConfigResponse>(body).entries
-                }
+                null
+            } catch (_: Exception) {
+                null
             }
-            null
-        } catch (_: Exception) {
-            null
         }
     }
 
+    // Gets the provider API URL from Firebase Remote Config
+    // Uses cric_api2 (secondary endpoint) with cric_api1 fallback
     suspend fun getProviderApiUrl(): String? {
+        val entries = fetchRemoteConfig()
+        return entries?.get("cric_api2") ?: entries?.get("cric_api1")
+    }
+
+    // Gets all available API URLs from Firebase Remote Config
+    // @return Pair of (primary, secondary) URLs or null if fetch fails
+    suspend fun getApiUrls(): Pair<String?, String?>? {
         val entries = fetchRemoteConfig() ?: return null
-        return entries["cric_api2"] ?: entries["cric_api1"]
+        return Pair(entries["cric_api1"], entries["cric_api2"])
     }
 }
