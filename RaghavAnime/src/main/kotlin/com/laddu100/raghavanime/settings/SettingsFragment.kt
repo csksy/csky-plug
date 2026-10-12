@@ -2,14 +2,18 @@ package com.laddu100.raghavanime.settings
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.InputType
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.DialogFragment
@@ -17,7 +21,15 @@ import androidx.appcompat.widget.SwitchCompat
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
+import com.lagradost.cloudstream3.app
+import com.laddu100.raghavanime.CustomPosters
 import com.laddu100.raghavanime.RaghavAnimeFeatures
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.Request
 
 class SettingsFragment : DialogFragment() {
 
@@ -57,6 +69,7 @@ class SettingsFragment : DialogFragment() {
         scroll.addView(root)
         root.addView(TextView(ctx).apply { text = "RAGHAVANIME"; textSize = 24f; setTextColor(cAccent); gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD); letterSpacing = 0.05f })
         root.addView(TextView(ctx).apply { text = "Tap a section to configure"; textSize = 12f; setTextColor(cTextDim); gravity = Gravity.CENTER; setPadding(0, 2.dp(), 0, 16.dp()) })
+        root.addView(sectionBtn(ctx, "POSTERS", "Custom poster template, hide labels & live preview", d) { showPostersDialog(ctx, d) })
         root.addView(sectionBtn(ctx, "EXPERIMENTAL", "Watch time tracker & anime recommendations", d) { showExperimentalDialog(ctx, d) })
         root.addView(Button(ctx).apply { text = "SAVE & RESTART"; setTextColor(cAccent); textSize = 14f; setBackgroundColor(Color.TRANSPARENT); setTypeface(typeface, Typeface.BOLD); setPadding(0, 16.dp(), 0, 0); setOnClickListener { showRestartDialog(ctx) } })
         return scroll
@@ -75,6 +88,155 @@ class SettingsFragment : DialogFragment() {
             addView(TextView(ctx).apply { text = ">"; textSize = 20f; setTextColor(cAccent) })
             setOnClickListener { onClick() }
         }
+    }
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private fun showPostersDialog(ctx: Context, d: Float) {
+        fun Int.dp() = (this * d).toInt()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+        val scroll = ScrollView(ctx).apply { setBackgroundColor(cBg) }
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp(), 16.dp(), 20.dp(), 8.dp()); setBackgroundColor(cBg) }
+        layout.addView(TextView(ctx).apply { text = "Posters"; textSize = 18f; setTextColor(cAccent); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 4.dp()) })
+        layout.addView(TextView(ctx).apply { text = "Custom poster template, hide labels & live preview"; textSize = 11f; setTextColor(cTextDim); setPadding(0, 0, 0, 12.dp()) })
+
+        val posterField = EditText(ctx).apply {
+            hint = "https://…/{imdb_id}.jpg"
+            setText(CustomPosters.template)
+            textSize = 14f
+            setTextColor(cText)
+            setHintTextColor(cTextDim)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            background = null
+            setPadding(0, 6.dp(), 0, 6.dp())
+        }
+        val posterCard = LinearLayout(ctx).apply {
+            background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 12 * d; setColor(cCard) }
+            setPadding(14.dp(), 4.dp(), 14.dp(), 4.dp())
+        }
+        posterCard.addView(posterField)
+        val posterNote = descText(ctx, "Default poster is used when the custom one is missing. Applies to the home page, search, details and recommendations.", d)
+        val placeholdersNote = descText(ctx, "Placeholders: {imdb_id} {tmdb_id} {anilist_id} {kitsu_id} {type}", d)
+        val chips = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 6.dp(), 0, 2.dp()) }
+
+        class Sample(val label: String, val anilistId: Int, val imdbId: String, val tmdbId: Int, val isMovie: Boolean, val defaultPoster: String)
+        val samples = listOf(
+            Sample("One Piece", 21, "tt0388629", 37854, false, "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-ELSYx3yMPcKM.jpg"),
+            Sample("Your Name", 21519, "tt5311514", 372058, true, "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21519-SUo3ZQuCbYhJ.png"),
+        )
+
+        class Slot(val image: ImageView, val note: TextView)
+        val slots = samples.map {
+            val image = ImageView(ctx).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = GradientDrawable().apply { setColor(cCard); cornerRadius = 12 * d }
+                clipToOutline = true
+                outlineProvider = object : ViewOutlineProvider() {
+                    override fun getOutline(v: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, v.width, v.height, 12 * d)
+                }
+            }
+            Slot(image, TextView(ctx).apply { textSize = 11f; setTextColor(cTextDim); gravity = Gravity.CENTER })
+        }
+        val sampleLabels = samples.map { s ->
+            TextView(ctx).apply { text = s.label; textSize = 13f; setTextColor(cText); setTypeface(typeface, Typeface.BOLD); gravity = Gravity.CENTER }
+        }
+        val previewRow = LinearLayout(ctx).apply {
+            weightSum = samples.size.toFloat()
+            samples.forEachIndexed { i, _ ->
+                addView(LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    addView(slots[i].image, LinearLayout.LayoutParams(110.dp(), 165.dp()))
+                    addView(sampleLabels[i], LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 6.dp() })
+                    addView(slots[i].note, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 2.dp() })
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+
+        var generation = 0
+        fun reloadPreview() {
+            val gen = ++generation
+            val tpl = if (CustomPosters.enabled) posterField.text.toString().trim()
+                .replace("%7B", "{", ignoreCase = true).replace("%7D", "}", ignoreCase = true)
+                .takeIf { it.startsWith("http://") || it.startsWith("https://") } else null
+            sampleLabels.forEach { it.visibility = if (CustomPosters.hideLabels) View.GONE else View.VISIBLE }
+            samples.forEachIndexed { i, s ->
+                slots[i].image.setImageDrawable(null)
+                slots[i].note.text = "Loading…"
+                scope.launch {
+                    val url = tpl?.let { t ->
+                        t.replace("{imdb_id}", s.imdbId)
+                            .replace("{tmdb_id}", s.tmdbId.toString())
+                            .replace("{anilist_id}", s.anilistId.toString())
+                            .replace("{type}", if (s.isMovie) "movie" else "series")
+                    } ?: s.defaultPoster
+                    val bmp = try {
+                        withContext(Dispatchers.IO) { downloadPoster(url) }
+                    } catch (_: Exception) { null }
+                    if (gen != generation) return@launch
+                    if (bmp != null) {
+                        slots[i].image.setImageBitmap(bmp)
+                        slots[i].note.text = if (tpl != null) "Custom poster" else "Default poster"
+                    } else {
+                        slots[i].note.text = if (tpl != null) "Custom poster failed to load" else "Could not load poster"
+                    }
+                }
+            }
+        }
+
+        val posterToggle = toggleRow(ctx, "Custom Poster", CustomPosters.enabled, d) { checked ->
+            CustomPosters.enabled = checked
+            val v = if (checked) View.VISIBLE else View.GONE
+            posterCard.visibility = v; posterNote.visibility = v; placeholdersNote.visibility = v; chips.visibility = v
+            reloadPreview()
+        }
+        CustomPosters.presets.forEach { (label, url) ->
+            chips.addView(TextView(ctx).apply {
+                text = label; textSize = 13f; setTextColor(cAccent)
+                setTypeface(typeface, Typeface.BOLD)
+                background = GradientDrawable().apply { setStroke(1, cBorder); cornerRadius = 16 * d; setColor(cCard) }
+                setPadding(16.dp(), 6.dp(), 16.dp(), 6.dp())
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { rightMargin = 8.dp() }
+                setOnClickListener { posterField.setText(url); reloadPreview() }
+            })
+        }
+
+        layout.addView(sectionLabel(ctx, "CUSTOM POSTER", d))
+        layout.addView(posterToggle)
+        val posterVisibility = if (CustomPosters.enabled) View.VISIBLE else View.GONE
+        posterCard.visibility = posterVisibility
+        posterNote.visibility = posterVisibility
+        placeholdersNote.visibility = posterVisibility
+        chips.visibility = posterVisibility
+        layout.addView(posterCard)
+        layout.addView(posterNote)
+        layout.addView(placeholdersNote)
+        layout.addView(chips)
+
+        layout.addView(sectionLabel(ctx, "LABELS", d))
+        layout.addView(toggleRow(ctx, "Hide Labels", CustomPosters.hideLabels, d) { checked ->
+            CustomPosters.hideLabels = checked
+            reloadPreview()
+        })
+        layout.addView(descText(ctx, "No label below the posters on home rows and recommendations", d))
+
+        layout.addView(sectionLabel(ctx, "PREVIEW", d))
+        layout.addView(previewRow)
+        reloadPreview()
+
+        scroll.addView(layout)
+        AlertDialog.Builder(ctx).setView(scroll)
+            .setPositiveButton("Save") { _, _ -> CustomPosters.template = posterField.text.toString() }
+            .setNegativeButton("Cancel", null)
+            .create().apply { show(); styleButtons() }
+    }
+
+    private fun downloadPoster(url: String): Bitmap? = try {
+        app.baseClient.newCall(Request.Builder().url(url).build()).execute().use { r ->
+            if (!r.isSuccessful) null else r.body?.byteStream()?.let { BitmapFactory.decodeStream(it) }
+        }
+    } catch (_: Exception) {
+        null
     }
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")

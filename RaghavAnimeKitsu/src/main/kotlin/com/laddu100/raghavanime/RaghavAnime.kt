@@ -25,6 +25,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -167,8 +170,10 @@ class RaghavAnime : MainAPI() {
             return try {
                 val list = RaghavAnimeFeatures.getRecommendationsList()
                 val home = list.map { item ->
-                    newAnimeSearchResponse(item.title, item.url, TvType.Anime) {
-                        this.posterUrl = item.posterUrl
+                    val kitsuId = Regex("""/anime/(\d+)""").find(item.url)?.groupValues?.get(1)?.toIntOrNull()
+                    val poster = CustomPosters.poster(null, kitsuId, false, item.posterUrl)
+                    newAnimeSearchResponse(CustomPosters.cardTitle(item.title), item.url, TvType.Anime) {
+                        this.posterUrl = poster
                     }
                 }
                 newHomePageResponse(request.name, home)
@@ -197,31 +202,11 @@ class RaghavAnime : MainAPI() {
                 homePageCache[request.data] = mediaList
             }
 
-            mediaList.mapNotNull { item ->
-                val id = item.id ?: return@mapNotNull null
-                val attrs = item.attributes ?: return@mapNotNull null
-                val title = attrs.canonicalTitle ?: return@mapNotNull null
-                val posterUrl = attrs.posterImage?.large ?: attrs.posterImage?.original
-                val epCount = attrs.episodeCount
-                newAnimeSearchResponse(title, "$mainUrl/anime/$id", TvType.Anime) {
-                    this.posterUrl = posterUrl
-                    addDubStatus(dubExist = true, subExist = true, dubEpisodes = epCount, subEpisodes = epCount)
-                }
-            }
+            buildRowItems(mediaList)
         } catch (e: Exception) {
             val cached = homePageCache[request.data]
             if (cached != null) {
-                cached.mapNotNull { item ->
-                    val id = item.id ?: return@mapNotNull null
-                    val attrs = item.attributes ?: return@mapNotNull null
-                    val title = attrs.canonicalTitle ?: return@mapNotNull null
-                    val posterUrl = attrs.posterImage?.large ?: attrs.posterImage?.original
-                    val epCount = attrs.episodeCount
-                    newAnimeSearchResponse(title, "$mainUrl/anime/$id", TvType.Anime) {
-                        this.posterUrl = posterUrl
-                        addDubStatus(dubExist = true, subExist = true, dubEpisodes = epCount, subEpisodes = epCount)
-                    }
-                }
+                buildRowItems(cached)
             } else {
                 emptyList()
             }
@@ -229,6 +214,26 @@ class RaghavAnime : MainAPI() {
 
         return newHomePageResponse(request.name, home)
     }
+
+    // each poster costs one ani.zip lookup, resolve the row in parallel
+    // and fall back to the kitsu cover when the feature is off or fails
+    private suspend fun buildRowItems(mediaList: List<KitsuMedia>): List<SearchResponse> =
+        coroutineScope {
+            mediaList.map { item ->
+                async {
+                    val id = item.id?.toIntOrNull() ?: return@async null
+                    val attrs = item.attributes ?: return@async null
+                    val title = attrs.canonicalTitle ?: return@async null
+                    val fallback = attrs.posterImage?.large ?: attrs.posterImage?.original
+                    val epCount = attrs.episodeCount
+                    val poster = CustomPosters.poster(null, id, attrs.subtype == "movie", fallback)
+                    newAnimeSearchResponse(CustomPosters.cardTitle(title), "$mainUrl/anime/$id", TvType.Anime) {
+                        this.posterUrl = poster
+                        addDubStatus(dubExist = true, subExist = true, dubEpisodes = epCount, subEpisodes = epCount)
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
 
     override suspend fun search(query: String): List<SearchResponse> {
         isKitsuDown()
@@ -240,13 +245,14 @@ class RaghavAnime : MainAPI() {
             val mediaList = response.data ?: emptyList()
 
             mediaList.mapNotNull { item ->
-                val id = item.id ?: return@mapNotNull null
+                val id = item.id?.toIntOrNull() ?: return@mapNotNull null
                 val attrs = item.attributes ?: return@mapNotNull null
                 val title = attrs.canonicalTitle ?: return@mapNotNull null
-                val posterUrl = attrs.posterImage?.large ?: attrs.posterImage?.original
+                val fallback = attrs.posterImage?.large ?: attrs.posterImage?.original
                 val epCount = attrs.episodeCount
-                newAnimeSearchResponse(title, "$mainUrl/anime/$id", TvType.Anime) {
-                    this.posterUrl = posterUrl
+                val poster = CustomPosters.poster(null, id, attrs.subtype == "movie", fallback)
+                newAnimeSearchResponse(CustomPosters.cardTitle(title), "$mainUrl/anime/$id", TvType.Anime) {
+                    this.posterUrl = poster
                     addDubStatus(dubExist = true, subExist = true, dubEpisodes = epCount, subEpisodes = epCount)
                 }
             }
@@ -309,7 +315,8 @@ class RaghavAnime : MainAPI() {
         }?.firstOrNull()
 
         val syncMetaData = try {
-            app.get("https://api.ani.zip/mappings?anilist_id=$anilistId").text
+            val idParam = if (anilistId != null) "anilist_id=$anilistId" else "kitsu_id=$kitsuId"
+            app.get("https://api.ani.zip/mappings?$idParam").text
         } catch (_: Exception) { null }
         val animeMetaData = syncMetaData?.let { parseAnimeData(it) }
 
@@ -349,8 +356,10 @@ class RaghavAnime : MainAPI() {
 
         prefetchSources(kitsuId, anilistId, title, jpTitle, year)
 
+        val poster = CustomPosters.poster(anilistId, kitsuId, subtype == "movie", posterUrl, animeMetaData?.mappings)
+
         return newAnimeLoadResponse(title, url, tvType) {
-            this.posterUrl = posterUrl
+            this.posterUrl = poster
             this.backgroundPosterUrl = bannerUrl
             this.year = year
             this.plot = plot

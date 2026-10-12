@@ -3,10 +3,11 @@ package com.laddu100.raghavanime
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.databind.ObjectMapper
 
+private val mapper = ObjectMapper()
+
 fun parseAnimeData(jsonString: String): MetaAnimeData? {
     return try {
-        val objectMapper = ObjectMapper()
-        objectMapper.readValue(jsonString, MetaAnimeData::class.java)
+        mapper.readValue(jsonString, MetaAnimeData::class.java)
     } catch (e: Exception) {
         null
     }
@@ -33,8 +34,15 @@ data class MetaEpisode(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
+data class MetaMappings(
+    val themoviedb_id: Int? = null,
+    val imdb_id: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class MetaAnimeData(
     val titles: Map<String, String?>? = null,
     val images: List<ImageData>? = null,
     val episodes: Map<String, MetaEpisode>? = null,
+    val mappings: MetaMappings? = null,
 )
