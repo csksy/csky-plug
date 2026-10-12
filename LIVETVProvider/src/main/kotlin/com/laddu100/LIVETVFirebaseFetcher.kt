@@ -12,12 +12,12 @@ import java.util.concurrent.TimeUnit
 
 object LIVETVFirebaseFetcher {
 
-    private const val PACKAGE_NAME = "com.playz.tv"
+    private const val PACKAGE_NAME = "com.cricfy.tv"
     private val API_KEY get() = BuildConfig.FB_API_KEY
     private val APP_ID get() = BuildConfig.FB_APP_ID
     private val PROJECT_NUMBER get() = BuildConfig.FB_PROJECT_NUMBER
-    private const val APP_VERSION = "2.1"
-    private const val APP_BUILD = "4"
+    private const val APP_VERSION = "5.0"
+    private const val APP_BUILD = "50"
     private const val SDK_VERSION = "22.1.0"
 
     private val client = OkHttpClient.Builder()
@@ -60,7 +60,6 @@ object LIVETVFirebaseFetcher {
                 .header("X-Android-Package", PACKAGE_NAME)
                 .header("X-Goog-Api-Key", API_KEY)
                 .header("X-Google-GFE-Can-Retry", "yes")
-                .header("User-Agent", "okhttp/4.12.0")
                 .build()
 
             val response = client.newCall(request).execute()
@@ -76,7 +75,8 @@ object LIVETVFirebaseFetcher {
         }
     }
 
-    suspend fun getBaseApiUrl(): String? {
-        return fetchRemoteConfig()?.get("api_url")?.trimEnd('/')
+    suspend fun getProviderApiUrl(): String? {
+        val entries = fetchRemoteConfig() ?: return null
+        return entries["cric_api2"] ?: entries["cric_api1"]
     }
 }

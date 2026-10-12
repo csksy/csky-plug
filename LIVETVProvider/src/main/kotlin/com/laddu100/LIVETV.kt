@@ -223,6 +223,7 @@ class LIVETV(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        LIVETVProviderManager.refreshFromFirebase()
         DonationManager.checkAndShow()
         val rawContent = getWithCustomHeaders(mainUrl)
         val decryptedContent = decryptContent(rawContent)

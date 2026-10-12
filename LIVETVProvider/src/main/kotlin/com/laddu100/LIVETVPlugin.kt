@@ -5,6 +5,9 @@ import androidx.appcompat.app.AppCompatActivity
 import com.lagradost.cloudstream3.CommonActivity.activity
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 
 @CloudstreamPlugin
@@ -24,29 +27,41 @@ class LIVETVPlugin : Plugin() {
 
         registerMainAPI(LIVETVLiveEventsProvider())
 
-        iptvProviders = runBlocking { LIVETVProviderManager.fetchProviders() }
+        val enabled = runBlocking {
+            iptvProviders = LIVETVProviderManager.fetchProviders()
 
-        val providerSettings = iptvProviders.mapNotNull { p ->
-            val title = p["title"] as? String ?: return@mapNotNull null
-            title to (sharedPref?.getBoolean(title, false) ?: false)
-        }.toMap()
+            val providerSettings = iptvProviders.mapNotNull { p ->
+                val title = p["title"] as? String ?: return@mapNotNull null
+                title to (sharedPref?.getBoolean(title, false) ?: false)
+            }.toMap()
 
-        iptvProviders
-            .filter { p ->
-                val title = p["title"] as? String
-                title != null && providerSettings[title] == true
-            }
-            .forEach { p ->
-                val title = p["title"] as String
-                val catLink = p["catLink"] as String
-                val type = p["type"] as? String ?: "custom"
-                val displayTitle = title
-                if (type == "custom") {
-                    registerMainAPI(LIVETVLiveEventsProvider(displayTitle, catLink))
-                } else {
-                    registerMainAPI(LIVETV(displayTitle, catLink))
+            iptvProviders
+                .filter { p ->
+                    val title = p["title"] as? String
+                    title != null && providerSettings[title] == true
                 }
+                .map { p ->
+                    val catLink = p["catLink"] as? String ?: ""
+                    val looksLikePlaylist = async(Dispatchers.IO) {
+                        LIVETVProviderManager.isPlaylistLink(catLink)
+                    }
+                    Triple(p, catLink, looksLikePlaylist)
+                }
+                .map { (p, catLink, probe) ->
+                    Triple(p, catLink, probe.await())
+                }
+        }
+
+        enabled.forEach { (p, catLink, isPlaylist) ->
+            val title = p["title"] as String
+            val type = p["type"] as? String
+            val displayTitle = title
+            if (type == "m3u" || isPlaylist) {
+                registerMainAPI(LIVETV(displayTitle, catLink))
+            } else {
+                registerMainAPI(LIVETVLiveEventsProvider(displayTitle, catLink))
             }
+        }
 
         val act = context as AppCompatActivity
         openSettings = { _ ->
