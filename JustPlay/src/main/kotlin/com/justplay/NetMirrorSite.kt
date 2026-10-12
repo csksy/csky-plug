@@ -475,8 +475,7 @@ internal object NetMirrorSite {
     }
 
     private suspend fun playableFile(file: String, headers: Map<String, String>): String? {
-        // the hp variant serves an html interstitial on later requests, so the
-        // plain url is preferred whenever it validates and hp is only a fallback
+        // the hp variant html-blocks later requests, prefer the plain url when it validates
         val strippedFile = file
             .replace("&hp=yes", "")
             .replace("hp=yes&", "")
@@ -582,8 +581,7 @@ internal object NetMirrorSite {
         }
     }
 
-    // solving takes about a minute when there is no stored cookie, main page loading
-    // calls this so the cookie is usually ready before a show is opened
+    // the solve takes about a minute without a stored cookie, warm it up before a show is opened
     suspend fun prefetch() {
         try {
             solvedCookie()
