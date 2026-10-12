@@ -741,7 +741,7 @@ object JustPlaySettings {
 
             val (toggle, _) = toggleRow(
                 ctx, "Enable Live Sports",
-                "Cricket, football and more beside the TMDB rows",
+                null,
                 enabled
             ) { enabled = it }
             body.addView(toggle)
@@ -795,12 +795,6 @@ object JustPlaySettings {
                 JustPlay.setLiveSports(enabled)
                 JustPlay.setLiveSportsTop(onTop)
                 confirmRestart(ctx, "Live sports saved. Restart CloudStream now to apply them?")
-            })
-
-            body.addView(TextView(ctx).apply {
-                text = "Live rows load with the home page and follow the position picked above"
-                textSize = 11f; setTextColor(SUBTEXT); gravity = Gravity.CENTER
-                setPadding(0, dp(ctx, 10), 0, 0)
             })
         }
     }

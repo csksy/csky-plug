@@ -349,9 +349,9 @@ object LiveSports {
         endTimeOf(event)?.let { System.currentTimeMillis() >= it } == true
 
     private fun statusTag(event: LiveEvent): String = when {
-        isEnded(event) -> "✅"
-        isLive(event) -> "🔴"
-        startTimeOf(event) != null -> "🔜"
+        isEnded(event) -> "ENDED"
+        isLive(event) -> "LIVE"
+        startTimeOf(event) != null -> "UPCOMING"
         else -> ""
     }
 
@@ -423,16 +423,6 @@ object LiveSports {
         val lists = events
             .groupBy { it.eventInfo?.eventCat ?: it.cat ?: "Other" }
             .map { (category, categoryEvents) ->
-                val icon = when (category.lowercase()) {
-                    "cricket" -> "🏏"
-                    "football" -> "⚽"
-                    "basketball" -> "🏀"
-                    "ice hockey" -> "🏒"
-                    "boxing" -> "🥊"
-                    "motorsport" -> "🏎️"
-                    "tennis" -> "🎾"
-                    else -> "📺"
-                }
                 val items = categoryEvents
                     .sortedWith(
                         compareBy<LiveEvent> { event ->
@@ -445,7 +435,7 @@ object LiveSports {
                         }.thenBy { startTimeOf(it) ?: Long.MAX_VALUE }
                     )
                     .map { event -> searchResponse(api, event) }
-                HomePageList("$icon $category", items, isHorizontalImages = true)
+                HomePageList(category, items, isHorizontalImages = true)
             }
             .sortedBy { list ->
                 when {
@@ -461,20 +451,20 @@ object LiveSports {
     suspend fun buildLoadResponse(api: MainAPI, data: LiveLoadData, url: String): LoadResponse {
         val plot = buildString {
             data.info?.let { info ->
-                info.eventType?.let { append("📌 $it\n") }
-                info.eventName?.let { append("🏆 $it\n") }
+                info.eventType?.let { append("Event: $it\n") }
+                info.eventName?.let { append("Tournament: $it\n") }
                 info.startTime?.let { start ->
                     try {
                         val parsed = SimpleDateFormat("yyyy/MM/dd HH:mm:ss Z", Locale.US).parse(start)
                         val display = SimpleDateFormat("MMM dd, yyyy HH:mm 'UTC'", Locale.US)
                         display.timeZone = TimeZone.getTimeZone("UTC")
-                        if (parsed != null) append("🕐 ${display.format(parsed)}\n") else append("🕐 $start\n")
+                        if (parsed != null) append("Starts: ${display.format(parsed)}\n") else append("Starts: $start\n")
                     } catch (_: Exception) {
-                        append("🕐 $start\n")
+                        append("Starts: $start\n")
                     }
                 }
             }
-            append("\n📡 Available Servers: ${data.formats.size}")
+            append("\nAvailable servers: ${data.formats.size}")
         }
         return api.newLiveStreamLoadResponse(data.title ?: "", url, url) {
             this.posterUrl = data.poster
