@@ -21,21 +21,7 @@ class EliteStreams : MainAPI() {
     override var lang = "hi"
 
     companion object {
-        private const val KEY_PREFIX_SRC = "ES_SRC_"
         private const val KEY_PREFIX_CH = "ES_CH_"
-
-        fun sourceEnabled(sourceId: String): Boolean = try {
-            CloudStreamApp.getKey<Boolean>(KEY_PREFIX_SRC + sourceId) ?: true
-        } catch (e: Exception) {
-            true
-        }
-
-        fun setSourceEnabled(sourceId: String, on: Boolean) {
-            try {
-                CloudStreamApp.setKey(KEY_PREFIX_SRC + sourceId, on)
-            } catch (e: Exception) {
-            }
-        }
 
         fun channelEnabled(channel: EsFeeds.ChannelData): Boolean = try {
             CloudStreamApp.getKey<Boolean>(channelPrefKey(channel)) ?: true
@@ -61,15 +47,23 @@ class EliteStreams : MainAPI() {
         if (page > 1) {
             return newHomePageResponse(request.name, emptyList<SearchResponse>(), hasNext = false)
         }
-        val channels = EsFeeds.allChannels().filter {
-            sourceEnabled(it.sourceId) && channelEnabled(it)
+        val channels = EsFeeds.allChannels().filter { channelEnabled(it) }
+        val lists = mutableListOf<HomePageList>()
+        EsFeeds.sources.forEach { source ->
+            val items = channels.filter { it.sourceId == source.id }.map { it.toSearchResponse() }
+            if (items.isNotEmpty()) {
+                lists.add(HomePageList(source.label, items, isHorizontalImages = true))
+            }
         }
-        val lists = channels.map { channel ->
-            HomePageList(
-                channel.name,
-                listOf(channel.toSearchResponse()),
-                isHorizontalImages = true
-            )
+        listOf(
+            "Sports" to EsFeeds.CAT_SPORTS,
+            "Movies" to EsFeeds.CAT_MOVIES,
+            "Kids" to EsFeeds.CAT_KIDS
+        ).forEach { (label, category) ->
+            val items = channels.filter { it.category == category }.map { it.toSearchResponse() }
+            if (items.isNotEmpty()) {
+                lists.add(HomePageList(label, items, isHorizontalImages = true))
+            }
         }
         return newHomePageResponse(lists, hasNext = false)
     }

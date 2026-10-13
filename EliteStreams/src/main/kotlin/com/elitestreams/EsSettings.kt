@@ -517,9 +517,6 @@ object EsSettings {
         ).apply { topMargin = dp(ctx, 22); bottomMargin = dp(ctx, 6) })
 
         val rows = mutableListOf<View>()
-        rows.addViewSafe(root, homeRow(ctx, "Sources", "Turn whole sources on or off") {
-            openSources(ctx, channels)
-        })
         EsFeeds.sources.forEach { source ->
             val count = bySource[source.id]?.size ?: 0
             rows.addViewSafe(
@@ -574,43 +571,6 @@ object EsSettings {
     private fun MutableList<View>.addViewSafe(parent: LinearLayout, v: View) {
         add(v)
         parent.addView(v)
-    }
-
-    private fun openSources(ctx: Context, channels: List<EsFeeds.ChannelData>) {
-        subWindow(ctx, "SOURCES") { body ->
-            body.addView(labelBlock(ctx, "Channel sources",
-                "Turning a source off removes all of its rows"))
-
-            val switches = HashMap<String, SwitchCompat>()
-            EsFeeds.sources.forEach { source ->
-                val count = channels.count { it.sourceId == source.id }
-                val (row, sw) = toggleRow(
-                    ctx, source.label, "$count channels",
-                    EliteStreams.sourceEnabled(source.id)
-                ) { }
-                switches[source.id] = sw
-                body.addView(row)
-            }
-
-            body.addView(actionRow(ctx, "Enable all",
-                "Turn every source back on", "ENABLE ALL") {
-                switches.values.forEach { it.isChecked = true }
-                Toast.makeText(ctx, "All sources enabled", Toast.LENGTH_SHORT).show()
-            })
-
-            body.addView(saveAndRestartButton(ctx) {
-                EsFeeds.sources.forEach { source ->
-                    EliteStreams.setSourceEnabled(source.id, switches[source.id]?.isChecked == true)
-                }
-                confirmRestart(ctx, "Sources saved. Restart CloudStream now to apply them?")
-            })
-
-            body.addView(TextView(ctx).apply {
-                text = "Changes apply after the app restarts"
-                textSize = 11f; setTextColor(SUBTEXT); gravity = Gravity.CENTER
-                setPadding(0, dp(ctx, 10), 0, 0)
-            })
-        }
     }
 
     private fun openChannels(

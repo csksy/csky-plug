@@ -30,6 +30,10 @@ object EsFeeds {
 
     private const val JIO_UA = "plaYtv/7.1.5"
 
+    const val CAT_SPORTS = "sports"
+    const val CAT_MOVIES = "movies"
+    const val CAT_KIDS = "kids"
+
     data class StreamData(
         val url: String,
         val headers: Map<String, String> = emptyMap(),
@@ -48,7 +52,8 @@ object EsFeeds {
         val sourceLabel: String,
         val logo: String?,
         val streams: List<StreamData>,
-        val jioId: String? = null
+        val jioId: String? = null,
+        val category: String? = null
     )
 
     internal data class JioStatic(val jioId: String, val name: String, val logo: String)
@@ -314,6 +319,49 @@ object EsFeeds {
         return QUALITY_URL_RE.find(item.url)?.groupValues?.get(1)?.toIntOrNull()
     }
 
+    // feed groups are authoritative when present, name matching covers the
+    // mixed groups that bundle other sources' channels together
+    private val SPORTS_NAMES = listOf(
+        "star sports", "sony sports ten", "sony liv sports", "sony ten",
+        "espn", "unite8 sports", "ipl"
+    )
+    private val MOVIES_NAMES = listOf(
+        "star gold", "star movies", "movies now", "star maa gold", "star maa movies",
+        "maa gold", "maa movies", "vijay super", "anmol cinema", "asianet movies",
+        "jalsha movies", "colors cineplex", "colors bangla cinema", "colors gujarati cinema",
+        "colors kannada cinema", "sony max", "sony wah", "sony pix", "gemini movies",
+        "surya movies", "udaya movies", "ktv", "&pictures", "and pictures", "zee cinema",
+        "zee bollywood", "zee action", "zee anmol cinema", "zee classic", "zee biskope",
+        "zee talkies", "b4u movies", "goldmines", "lionsgate"
+    )
+    private val KIDS_NAMES = listOf(
+        "disney", "nick", "sonic", "hungama", "cartoon network", "sony yay", "animax",
+        "chintu tv", "chutti tv", "kochu", "kushi tv", "doraemon", "jungle book",
+        "motu", "oggy", "shinchan"
+    )
+
+    private fun groupCategory(group: String?): String? {
+        if (group.isNullOrBlank()) return null
+        val g = group.trim().lowercase()
+        return when {
+            g == "sports" || g.endsWith("| sports") -> CAT_SPORTS
+            g == "movies" || g.endsWith("| movies") -> CAT_MOVIES
+            g == "kids" || g.endsWith("| kids") || g == "wow kidz" -> CAT_KIDS
+            g.startsWith("sonyliv") -> CAT_SPORTS
+            g.startsWith("fancode") -> CAT_SPORTS
+            else -> null
+        }
+    }
+
+    private fun nameCategory(name: String?): String? {
+        if (name.isNullOrBlank()) return null
+        val n = name.lowercase()
+        SPORTS_NAMES.forEach { if (n.contains(it)) return CAT_SPORTS }
+        MOVIES_NAMES.forEach { if (n.contains(it)) return CAT_MOVIES }
+        KIDS_NAMES.forEach { if (n.contains(it)) return CAT_KIDS }
+        return null
+    }
+
     private fun toChannel(
         item: M3uItem,
         sourceId: String,
@@ -327,6 +375,7 @@ object EsFeeds {
             sourceId = sourceId,
             sourceLabel = sourceLabel,
             logo = item.logo,
+            category = groupCategory(item.group) ?: nameCategory(item.name),
             streams = listOf(
                 StreamData(
                     url = item.url,
@@ -358,6 +407,7 @@ object EsFeeds {
                 sourceId = sourceId,
                 sourceLabel = label,
                 logo = logos[base],
+                category = groupCategory(variants.firstOrNull()?.group) ?: nameCategory(base),
                 streams = variants.map {
                     StreamData(
                         url = it.url,
@@ -400,7 +450,8 @@ object EsFeeds {
                 sourceId = "sony-liv",
                 sourceLabel = "Sony LIV",
                 logo = e.logo,
-                streams = listOf(StreamData(url = url))
+                streams = listOf(StreamData(url = url)),
+                category = nameCategory(name)
             )
         }
     }
@@ -436,7 +487,8 @@ object EsFeeds {
             sourceLabel = "JioTV+",
             logo = it.logo,
             streams = emptyList(),
-            jioId = it.jioId
+            jioId = it.jioId,
+            category = nameCategory(it.name)
         )
     }
 
@@ -448,7 +500,8 @@ object EsFeeds {
             sourceLabel = "JioTV+ 2",
             logo = it.logo,
             streams = emptyList(),
-            jioId = it.jioId
+            jioId = it.jioId,
+            category = nameCategory(it.name)
         )
     }
 
