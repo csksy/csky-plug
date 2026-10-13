@@ -1,5 +1,7 @@
 package com.toonix
 
+import android.net.Uri
+import android.util.Log
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -19,9 +21,12 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.raghav.donation.DonationManager
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class Toonix : MainAPI() {
     override var mainUrl = ToonixApi.BASE
@@ -40,11 +45,94 @@ class Toonix : MainAPI() {
         "allmovies" to "All Movies"
     )
 
-    // light caches so browsing several rows / repeated searches do not refetch
+    private class HomeData(
+        val sections: Map<String, List<ToonixCard>>,
+        val cards: List<ToonixCard>
+    )
+
+    private class CatalogCache(val path: String, private val ttlMillis: Long) {
+        @Volatile
+        private var entry: Pair<Long, List<ToonixCard>>? = null
+
+        private fun fresh(): List<ToonixCard>? =
+            entry?.takeIf { System.currentTimeMillis() - it.first < ttlMillis }?.second
+
+        suspend fun load(): List<ToonixCard> {
+            fresh()?.let { return it }
+            return fetchLock.withLock {
+                fresh()?.let { return@withLock it }
+                try {
+                    val (_, flight) = ToonixApi.fetchPage(ToonixApi.BASE + path, checkTitle = false)
+                    val cards = ToonixApi.parseCards(flight)
+                    if (cards.isNotEmpty()) {
+                        entry = System.currentTimeMillis() to cards
+                    }
+                    cards
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.d("Toonix", "catalog $path unavailable: ${e.message}")
+                    emptyList()
+                }
+            }
+        }
+    }
+
     @Volatile
-    private var homeCache: Pair<Long, String>? = null
+    private var homeCache: Pair<Long, HomeData>? = null
+
+    private val showsCatalog = CatalogCache("/tv-shows", 15 * 60_000L)
+    private val moviesCatalog = CatalogCache("/movies", 15 * 60_000L)
+
     @Volatile
-    private var searchCache: Pair<Long, List<ToonixCard>>? = null
+    private var catalogCache: Pair<Long, List<ToonixCard>>? = null
+
+    private fun cachedCatalog(): List<ToonixCard>? =
+        catalogCache?.takeIf { System.currentTimeMillis() - it.first < 15 * 60_000L }?.second
+
+    // the full catalog is embedded in the search page flight data no matter the
+    // query, but with one set the server rendered grid is skipped and the page
+    // drops from ~2.4MB to ~0.7MB, which matters a lot on mobile data
+    private suspend fun catalog(query: String): List<ToonixCard> {
+        cachedCatalog()?.let { return it }
+        return fetchLock.withLock {
+            cachedCatalog()?.let { return@withLock it }
+            val (_, flight) = ToonixApi.fetchPage(
+                "${ToonixApi.BASE}/search?q=${Uri.encode(query)}",
+                checkTitle = false
+            )
+            val cards = ToonixApi.parseCards(flight)
+            if (cards.isNotEmpty()) {
+                catalogCache = System.currentTimeMillis() to cards
+            }
+            cards
+        }
+    }
+
+    companion object {
+        private val fetchLock = Mutex()
+    }
+
+    private fun cachedHome(): HomeData? =
+        homeCache?.takeIf { System.currentTimeMillis() - it.first < 10 * 60_000L }?.second
+
+    private suspend fun home(): HomeData {
+        cachedHome()?.let { return it }
+        return fetchLock.withLock {
+            cachedHome()?.let { return@withLock it }
+            val (_, flight) = ToonixApi.fetchPage(ToonixApi.BASE + "/", checkTitle = false)
+            val data = HomeData(
+                sections = mapOf(
+                    "Trending Now" to ToonixApi.sectionCards(flight, "Trending Now"),
+                    "Popular Shows" to ToonixApi.sectionCards(flight, "Popular Shows"),
+                    "Popular Movies" to ToonixApi.sectionCards(flight, "Popular Movies")
+                ),
+                cards = ToonixApi.parseCards(flight)
+            )
+            homeCache = System.currentTimeMillis() to data
+            data
+        }
+    }
 
     private fun tvTypeOf(card: ToonixCard): TvType = when {
         card.type == "MOVIE" -> TvType.Movie
@@ -68,70 +156,37 @@ class Toonix : MainAPI() {
         }
     }
 
-    private suspend fun homeFlight(): String {
-        val cached = homeCache
-        if (cached != null && System.currentTimeMillis() - cached.first < 10 * 60_000L) {
-            return cached.second
-        }
-        val (_, flight) = ToonixApi.fetchPage(ToonixApi.BASE + "/")
-        homeCache = System.currentTimeMillis() to flight
-        return flight
-    }
-
-    private fun rowSegment(flight: String, rowTitle: String, stopTitles: List<String>): String {
-        val start = flight.indexOf("\"title\":\"$rowTitle\"")
-        if (start < 0) return ""
-        val stops = stopTitles.mapNotNull { st ->
-            flight.indexOf("\"title\":\"$st\"", start + 10).takeIf { it > 0 }
-        }
-        val end = stops.minOrNull() ?: flight.length
-        return flight.substring(start, end)
-    }
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // single page per row, the site has no pagination
-        val cards: List<ToonixCard> = when (request.data) {
-            "trending", "shows", "movies" -> {
-                val home = homeFlight()
-                val stops = listOf("Trending Now", "Popular Shows", "Popular Movies")
-                val seg = when (request.data) {
-                    "trending" -> rowSegment(home, "Trending Now", stops)
-                    "shows" -> rowSegment(home, "Popular Shows", stops)
-                    else -> rowSegment(home, "Popular Movies", stops)
-                }
-                ToonixApi.parseCards(seg)
-            }
-            "allshows" -> {
-                val (_, flight) = ToonixApi.fetchPage(ToonixApi.BASE + "/tv-shows")
-                ToonixApi.parseCards(flight)
-            }
-            else -> {
-                val (_, flight) = ToonixApi.fetchPage(ToonixApi.BASE + "/movies")
-                ToonixApi.parseCards(flight)
-            }
+        DonationManager.checkAndShow()
+        val home = try {
+            home()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Could not load the homepage: ${e.message}")
         }
-        val results = cards.mapNotNull { cardToSearch(it) }
-        return newHomePageResponse(request.name, results, hasNext = false)
-    }
-
-    private suspend fun catalog(): List<ToonixCard> {
-        val cached = searchCache
-        if (cached != null && System.currentTimeMillis() - cached.first < 15 * 60_000L) {
-            return cached.second
+        val cards = when (request.data) {
+            "trending" -> home.sections["Trending Now"].orEmpty().ifEmpty { home.cards.take(20) }
+            "shows" -> home.sections["Popular Shows"].orEmpty().ifEmpty { home.cards.filter { it.type == "SHOW" } }
+            "allshows" -> showsCatalog.load().ifEmpty { home.cards.filter { it.type == "SHOW" } }
+            "movies" -> home.sections["Popular Movies"].orEmpty().ifEmpty { home.cards.filter { it.type == "MOVIE" } }
+            else -> moviesCatalog.load().ifEmpty { home.cards.filter { it.type == "MOVIE" } }
         }
-        val (_, flight) = ToonixApi.fetchPage(ToonixApi.BASE + "/search")
-        val cards = ToonixApi.parseCards(flight)
-        searchCache = System.currentTimeMillis() to cards
-        return cards
+        return newHomePageResponse(request.name, cards.mapNotNull { cardToSearch(it) }, hasNext = false)
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
         if (query.isBlank()) return null
-        val cards = catalog()
+        val cards = try {
+            catalog(query)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Could not load the catalog: ${e.message}")
+        }
         val q = query.trim().lowercase()
-        val matches = cards.filter { it.title.lowercase().contains(q) }
-        val chosen = matches.ifEmpty { cards }
-        return chosen.mapNotNull { cardToSearch(it) }
+        return cards.filter { it.title.lowercase().contains(q) }
+            .mapNotNull { cardToSearch(it) }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -167,7 +222,6 @@ class Toonix : MainAPI() {
         return episodes
     }
 
-    /** Fallback: scrape the season list pages when the episode rail is unreachable. */
     private suspend fun showEpisodesFromSeasonPages(
         slug: String,
         seasonHrefs: List<Pair<Int, String>>
@@ -215,7 +269,6 @@ class Toonix : MainAPI() {
         val info = ToonixApi.parseShow(html, flight, slug)
 
         var episodes: List<com.lagradost.cloudstream3.Episode> = emptyList()
-        // primary path: first valid episode ref carries the full seasons rail
         if (info.episodeRefs.isNotEmpty()) {
             val (s0, e0) = info.episodeRefs.first()
             try {
@@ -226,15 +279,13 @@ class Toonix : MainAPI() {
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                // fall through to season pages
+            } catch (e: Exception) {
+                // season pages below still cover this
             }
         }
-        // fallback: scrape every season page
         if (episodes.isEmpty() && info.seasonHrefs.isNotEmpty()) {
             episodes = showEpisodesFromSeasonPages(slug, info.seasonHrefs)
         }
-        // last resort: refs without titles
         if (episodes.isEmpty() && info.episodeRefs.isNotEmpty()) {
             episodes = info.episodeRefs.map { (s, e) ->
                 newEpisode("$url/$s/$e") {
@@ -296,7 +347,8 @@ class Toonix : MainAPI() {
         } catch (e: Exception) {
             throw ErrorLoadingException("Could not open the episode page: ${e.message}")
         }
-        val (fastRaw, legacyRaw) = ToonixApi.parseStreamSrcs(flight)
+        val serverSrcs = ToonixApi.parseServers(flight)
+        val legacyRaw = ToonixApi.parseLegacySrc(flight)
 
         val seen = mutableSetOf<String>()
         var emitted = false
@@ -313,22 +365,20 @@ class Toonix : MainAPI() {
             emitted = true
         }
 
-        // fast path: site proxy, carries multiple qualities on some titles
-        if (fastRaw != null) {
-            val fastUrl = ToonixApi.absolutize(fastRaw, url)
-            val master = ToonixApi.fetchMaster(fastUrl)
+        serverSrcs.forEachIndexed { index, raw ->
+            val srcUrl = ToonixApi.absolutize(raw, url)
+            val name = "Server ${index + 1}"
+            val master = ToonixApi.fetchMaster(srcUrl)
             when {
                 master.isMaster -> master.variants.forEach { v ->
-                    val label = if (v.height != null) "Fast ${v.height}p" else "Fast (auto)"
+                    val label = if (v.height != null) "$name ${v.height}p" else "$name (auto)"
                     emit(label, v.url, ExtractorLinkType.M3U8, v.height)
                 }
-                master.isMedia -> emit("Fast (auto)", fastUrl, ExtractorLinkType.M3U8)
-                master.isBusy -> busyFallback = "Fast (busy, retry later)" to fastUrl
-                // isDead -> skip entirely, backup below carries the file
+                master.isMedia -> emit("$name (auto)", srcUrl, ExtractorLinkType.M3U8)
+                master.isBusy -> busyFallback = "$name (busy, retry later)" to srcUrl
             }
         }
 
-        // backup path: direct workers.dev cdn or archive.org file
         if (legacyRaw != null) {
             if (legacyRaw.contains("archive.org") || legacyRaw.endsWith(".mp4")) {
                 emit("Archive", legacyRaw, ExtractorLinkType.VIDEO)
@@ -340,13 +390,10 @@ class Toonix : MainAPI() {
                         emit(label, v.url, ExtractorLinkType.M3U8, v.height)
                     }
                     master.isMedia -> emit("Backup (auto)", legacyRaw, ExtractorLinkType.M3U8)
-                    // busy/dead backup -> skipped, fast handled above
                 }
             }
         }
 
-        // only when everything else failed: surface the busy fast server so
-        // the user can still retry instead of getting nothing
         if (!emitted && busyFallback != null) {
             emit(busyFallback.first, busyFallback.second, ExtractorLinkType.M3U8)
         }

@@ -75,8 +75,10 @@ object ToonixApi {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     private val flightChunkRegex = Regex("""self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)""")
+    private val sectionRegex = Regex(""""title":"([^"]+)","viewAllHref"""")
     private val slugHrefRegex = Regex(""""slug":"([^"]+)","href":"([^"]+)"""")
-    private val fastSrcRegex = Regex(""""fastSrc":(?:"([^"]+)"|null)""")
+    private val serversRegex = Regex(""""servers":\[(.*?)]""")
+    private val serverSrcRegex = Regex(""""key":"[^"]*","src":"([^"]+)""")
     private val legacySrcRegex = Regex(""""legacySrc":(?:"([^"]+)"|null)""")
     private val yearShowRegex = Regex(""""children":\["\(",(\d{4}),"\)"\]""")
     private val yearMovieRegex = Regex(""""children":(\d{4})\}""")
@@ -99,15 +101,14 @@ object ToonixApi {
             text.contains("challenge-platform", ignoreCase = true) ||
             text.contains("Attention Required", ignoreCase = true)
 
-    /** GET with 2 retries; second attempt goes through the Cloudflare solver. */
     private suspend fun httpGet(url: String, useCf: Boolean = false): NiceResponse {
         var lastError: Exception? = null
-        repeat(2) { attempt ->
+        repeat(3) { attempt ->
             try {
                 val resp = app.get(
                     url,
                     headers = headers(),
-                    interceptor = if (useCf || attempt == 1) cfKiller else null
+                    interceptor = if (useCf || attempt > 0) cfKiller else null
                 )
                 if (resp.code == 200) {
                     if (looksLikeChallenge(resp.text)) {
@@ -126,8 +127,7 @@ object ToonixApi {
         throw lastError ?: ToonixException("request failed for $url")
     }
 
-    /** Fetch a page and return (rawHtml, flightPayload). */
-    suspend fun fetchPage(url: String): Pair<String, String> {
+    suspend fun fetchPage(url: String, checkTitle: Boolean = true): Pair<String, String> {
         val resp = httpGet(url)
         val html = resp.text
         if (html.isBlank()) throw ToonixException("empty page for $url")
@@ -135,13 +135,12 @@ object ToonixApi {
             throw ToonixException("blocked by Cloudflare, retry in a minute")
         }
         val t = titleTagRegex.find(html)?.groupValues?.get(1).orEmpty()
-        if (t.startsWith("Not found") || t == "Toonix") {
+        if (t.startsWith("Not found") || (checkTitle && t == "Toonix")) {
             throw ToonixException("this title is no longer on the site")
         }
         return html to parseFlight(html)
     }
 
-    /** Join all RSC flight chunks of a Next.js page into one payload string. */
     fun parseFlight(html: String): String {
         val sb = StringBuilder()
         for (m in flightChunkRegex.findAll(html)) {
@@ -191,7 +190,6 @@ object ToonixApi {
         return out.toString()
     }
 
-    /** Parse catalog card objects out of a flight payload. */
     fun parseCards(flight: String): List<ToonixCard> {
         val out = mutableListOf<ToonixCard>()
         val seen = mutableSetOf<String>()
@@ -200,7 +198,7 @@ object ToonixApi {
             if (!href.startsWith("/show/") && !href.startsWith("/title/")) continue
             if (!seen.add(href)) continue
             val window = flight.substring(m.range.first, minOf(m.range.first + 700, flight.length))
-            val poster = Regex(""""poster":"([^"]+)"""").find(window)?.groupValues?.get(1) ?: continue
+            val poster = Regex(""""poster":"([^"]+)"""").find(window)?.groupValues?.get(1)
             val title = Regex(""""title":"([^"]+)"""").find(window)?.groupValues?.get(1) ?: continue
             val type = Regex(""""type":"(SHOW|MOVIE)"""").find(window)?.groupValues?.get(1) ?: continue
             val yearRaw = Regex(""""year":("[^"]*"|\d+)""").find(window)?.groupValues?.get(1)
@@ -210,7 +208,7 @@ object ToonixApi {
                 yearRaw == null -> null
                 yearRaw.startsWith("\"") -> yearRaw.trim('"').toIntOrNull()
                 else -> yearRaw.toIntOrNull()
-            }
+            }?.takeIf { it in 1000..9998 } // 9999 is the site's placeholder for an unknown year
             out.add(
                 ToonixCard(
                     slug = m.groupValues[1],
@@ -227,12 +225,20 @@ object ToonixApi {
         return out
     }
 
-    /** Balanced-bracket extract of the "seasons":[...] rail JSON and Jackson parse. */
+    fun sectionCards(flight: String, sectionTitle: String): List<ToonixCard> {
+        val markers = sectionRegex.findAll(flight).toList()
+        val idx = markers.indexOfFirst { it.groupValues[1] == sectionTitle }
+        if (idx < 0) return emptyList()
+        val from = markers[idx].range.first
+        val to = markers.getOrNull(idx + 1)?.range?.first ?: flight.length
+        return parseCards(flight.substring(from, to))
+    }
+
     fun parseSeasonsRail(flight: String): List<ToonixRailSeason> {
         val needle = "\"seasons\":["
         val start = flight.indexOf(needle)
         if (start < 0) return emptyList()
-        var i = start + needle.length - 1 // at the '['
+        var i = start + needle.length - 1
         var depth = 0
         var inString = false
         var escaped = false
@@ -278,7 +284,6 @@ object ToonixApi {
         return t.ifBlank { fallback }
     }
 
-    /** Show page metadata + episode refs + season list. */
     fun parseShow(html: String, flight: String, slug: String): ToonixShowInfo {
         val title = htmlTitle(html, slug)
         val year = yearShowRegex.find(flight)?.groupValues?.get(1)?.toIntOrNull()
@@ -299,7 +304,6 @@ object ToonixApi {
         return ToonixShowInfo(title, year, poster, synopsis, genres, refs, seasonHrefs)
     }
 
-    /** Movie detail page metadata. */
     fun parseMovie(html: String, flight: String, slug: String): ToonixMovieInfo {
         val title = htmlTitle(html, slug)
         val year = yearMovieRegex.find(flight)?.groupValues?.get(1)?.toIntOrNull()
@@ -310,12 +314,17 @@ object ToonixApi {
         return ToonixMovieInfo(title, year, poster, synopsis, genres, runtime)
     }
 
-    /** fastSrc + legacySrc of an episode or movie watch page. */
-    fun parseStreamSrcs(flight: String): Pair<String?, String?> {
-        val fast = fastSrcRegex.find(flight)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
-        val legacy = legacySrcRegex.find(flight)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
-        return fast to legacy
+    fun parseServers(flight: String): List<String> {
+        val block = serversRegex.find(flight)?.groupValues?.get(1) ?: return emptyList()
+        return serverSrcRegex.findAll(block)
+            .map { it.groupValues[1] }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
     }
+
+    fun parseLegacySrc(flight: String): String? =
+        legacySrcRegex.find(flight)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
 
     fun absolutize(url: String, base: String): String = when {
         url.startsWith("http") -> url
@@ -323,10 +332,6 @@ object ToonixApi {
         else -> base.substringBeforeLast('/') + "/" + url
     }
 
-    /**
-     * Fetch an m3u8 and classify it: master (variants), media playlist (auto),
-     * transient busy, or permanently dead.
-     */
     suspend fun fetchMaster(url: String): ToonixMaster {
         return try {
             val resp = httpGet(url)
