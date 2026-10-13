@@ -1,8 +1,10 @@
 package com.elitestreams
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.lagradost.cloudstream3.CloudStreamApp
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -20,15 +22,34 @@ object EsFeeds {
         "https://raw.githubusercontent.com/drmlive/fancode-live-events/refs/heads/main/fancode.m3u"
     private const val BIGGBOSS = "https://biggbossstreamx.livenoww.workers.dev/playlist.m3u"
     private const val JIOTV_API = "https://jiotv-api.manishjaiswal.workers.dev/"
+    private const val JIO_STB = "https://premiumplugx.top/jiostb/mjelo.php?view=raw"
 
     private const val CACHE_TTL = 5 * 60 * 1000L
 
-    // the zee5 and dangal groups ride along inside the big jio feed, the
-    // user does not want them in the plugin
+    // a 530 body parses to zero channels, holding that for the full ttl
+    // would keep a recovered server hidden, so failures retry sooner
+    private const val FAILED_TTL = 45 * 1000L
+    private const val HOTSTAR_WRITE_TTL = 10 * 60 * 1000L
+    private const val JIO_WARM_TTL = 30 * 60 * 1000L
+
+    // a cookie close to its expiry can die mid stream, only trust ones
+    // with some runway left
+    private const val EXPIRY_MARGIN_MS = 2 * 60 * 1000L
+
+    private const val KEY_JIO_STREAMS = "ES_JIO_STREAMS"
+    private const val KEY_HOTSTAR_FEED = "ES_HOTSTAR_FEED"
+
+    // zee5 and dangal groups ride along inside the big jio feed, skip them
     private val EXCLUDED_GROUPS = setOf("ZEE5 India", "ZEE5 Worldwide", "Dangal Play")
     private val BIGGBOSS_KEEP = "BIGG BOSS LIVE 24/7"
 
     private const val JIO_UA = "plaYtv/7.1.5"
+
+    // the feeds call it star maa hd, the curated list kept the short form
+    private val FEED_NAME_ALIASES = mapOf("maa hd" to "star maa hd")
+
+    private val COOKIE_EXP_RE = Regex("""(?:^|[~=])exp=(\d{9,12})""")
+    private val COOKIE_ACL_RE = Regex("""acl=([^~]+)""")
 
     const val CAT_SPORTS = "sports"
     const val CAT_MOVIES = "movies"
@@ -74,7 +95,7 @@ object EsFeeds {
         JioStatic("3278", "Star Sports 1 Telugu HD", "https://img.media.jio.com/tvpimages/19/57/302123_1749663029798_l_medium.jpg"),
         JioStatic("1651", "Star Sports 1 Telugu", "https://img.media.jio.com/tvpimages/26/67/302119_1749662981095_l_medium.jpg"),
         JioStatic("1650", "Star Sports 1 Kannada", "https://img.media.jio.com/tvpimages/13/91/302118_1749663894692_l_medium.jpg"),
-        JioStatic("3372", "Sony LIV Sports 1", "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyLIV_Sports_1.png"),
+        JioStatic("162", "Sony LIV Sports 1", "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyLIV_Sports_1.png"),
         JioStatic("3373", "Sony LIV Sports 2", "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyLIV_Sports_2.png"),
         JioStatic("3374", "Sony LIV Sports 3", "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyLIV_Sports_3.png"),
         JioStatic("3399", "Sony LIV Sports 5", "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyLIV_Sports_5.png"),
@@ -105,7 +126,7 @@ object EsFeeds {
         JioStatic("255", "NDTV 24x7", "https://jiotv.catchup.cdn.jio.com/dare_images/images/NDTV_24x7.png"),
         JioStatic("383", "Times NOW", "https://jiotv.catchup.cdn.jio.com/dare_images/images/Times_NOW.png"),
         JioStatic("412", "Wion", "https://jiotv.catchup.cdn.jio.com/dare_images/images/Wion.png"),
-        JioStatic("231", "News 18 India", "https://jiotv.catchup.cdn.jio.com/dare_images/images/IBN_7.png"),
+        JioStatic("1499", "News 18 India", "https://jiotv.catchup.cdn.jio.com/dare_images/images/IBN_7.png"),
         JioStatic("504", "Zee News", "https://jiotv.catchup.cdn.jio.com/dare_images/images/Zee_News.png"),
         JioStatic("1403", "Republic Bharat", "https://jiotv.catchup.cdn.jio.com/dare_images/images/Republic_Bharat.png"),
         JioStatic("463", "Discovery HD English", "https://jiotv.catchup.cdn.jio.com/dare_images/images/DiscoveryHDEng.png"),
@@ -149,6 +170,33 @@ object EsFeeds {
     )
 
 
+    // the sony feed logos point at sonypicturesnetworks.com which rejects
+    // every client with a 403, the jio cdn carries the same channel logos
+    private val SONY_LOGOS = mapOf(
+        "sony sab hd" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonySAB.png",
+        "set hd" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/Sony_HD.png",
+        "sony pal" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyPAL.png",
+        "sony wah" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyWAH.png",
+        "sony max" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/Sony_Max_SD.png",
+        "sony max hd" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyMAX.png",
+        "sony max2" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyMAX2.png",
+        "sony sports ten 1" to "https://jiotvimages.cdn.jio.com/dare_images/images/Ten_1.png",
+        "sony sports ten 1 hd" to "https://jiotvimages.cdn.jio.com/dare_images/images/Ten_HD.png",
+        "sony sports ten 2" to "https://jiotvimages.cdn.jio.com/dare_images/images/Ten_2.png",
+        "sony sports ten 2 hd" to "https://jiotvimages.cdn.jio.com/dare_images/images/Ten2_HD.png",
+        "sony sports ten 3" to "https://jiotvimages.cdn.jio.com/dare_images/images/Ten_3.png",
+        "sony sports ten 3 hd" to "https://jiotvimages.cdn.jio.com/dare_images/images/Ten3_HD.png",
+        "sony sports ten 4 tamil" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/Ten_4_Tamil.png",
+        "sony sports ten 4 telugu" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/Ten_4_Telugu.png",
+        "sony sports ten 5" to "https://jiotvimages.cdn.jio.com/dare_images/images/Sony_Six_SD.png",
+        "sony sports ten 5 hd" to "https://jiotvimages.cdn.jio.com/dare_images/images/Six_HD.png",
+        "sony yay" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyYAYHin.png",
+        "sony bbc earth hd" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyBBCEarthHin.png",
+        "sony pix hd" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyPIX.png",
+        "sony marathi" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyMarathi.png",
+        "sony aath" to "https://jiotv.catchup.cdn.jio.com/dare_images/images/SonyAATH.png"
+    )
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     private data class SonyEntry(
         val id: String? = null,
@@ -180,13 +228,107 @@ object EsFeeds {
     private val caches = ConcurrentHashMap<String, FeedCache>()
     private val jioApiCache = JioApiCache()
 
-    private fun cached(cache: FeedCache): List<ChannelData>? =
-        if (cache.at > 0 && System.currentTimeMillis() - cache.at < CACHE_TTL) cache.channels else null
+    private fun cached(cache: FeedCache): List<ChannelData>? {
+        if (cache.at <= 0) return null
+        val ttl = if (cache.channels.isEmpty()) FAILED_TTL else CACHE_TTL
+        return if (System.currentTimeMillis() - cache.at < ttl) cache.channels else null
+    }
 
     private suspend fun fetchText(url: String): String? = try {
         app.get(url, timeout = 30L).text
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
+    }
+
+    private fun feedBaseName(name: String): String {
+        sources.forEach { source ->
+            val suffix = " (${source.label})"
+            if (name.endsWith(suffix)) return name.removeSuffix(suffix)
+        }
+        return name
+    }
+
+    private fun cookieExpiryMs(cookie: String): Long? =
+        COOKIE_EXP_RE.find(cookie)?.groupValues?.get(1)?.toLongOrNull()?.times(1000L)
+
+    private fun streamUsable(stream: StreamData): Boolean {
+        val cookie = stream.headers["Cookie"] ?: return true
+        val exp = cookieExpiryMs(cookie) ?: return true
+        if (exp - System.currentTimeMillis() > EXPIRY_MARGIN_MS) return true
+        // the token only gates the jio and hotstar cdns, mirrors on other
+        // hosts keep playing after it dies
+        return !stream.url.contains("cdn.jio.com") && !stream.url.contains("hotstar")
+    }
+
+    // the standalone app keeps its whole channel database on disk, these
+    // stores mirror that so a stream resolved hours ago still plays while
+    // every server is throwing 530s
+    private val jioStoreLock = Any()
+    private var jioStore: MutableMap<String, StreamData>? = null
+
+    @Volatile
+    private var hotstarWriteAt = 0L
+
+    @Volatile
+    private var jioWarmAt = 0L
+
+    private fun jioStreamStore(): MutableMap<String, StreamData> {
+        jioStore?.let { return it }
+        synchronized(jioStoreLock) {
+            jioStore?.let { return it }
+            val loaded = try {
+                CloudStreamApp.getKey<String>(KEY_JIO_STREAMS)
+                    ?.let { parseJson<Map<String, StreamData>>(it).toMutableMap() }
+            } catch (_: Exception) {
+                null
+            } ?: mutableMapOf()
+            jioStore = loaded
+            return loaded
+        }
+    }
+
+    private fun rememberJioStreams(entries: Map<String, StreamData>) {
+        if (entries.isEmpty()) return
+        synchronized(jioStoreLock) {
+            val store = jioStreamStore()
+            var changed = false
+            entries.forEach { (id, stream) ->
+                if (store[id] != stream) {
+                    store[id] = stream
+                    changed = true
+                }
+            }
+            if (changed) {
+                try {
+                    CloudStreamApp.setKey(KEY_JIO_STREAMS, store.toJson())
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun cachedJioStream(jioId: String): StreamData? = try {
+        jioStreamStore()[jioId]?.takeIf { streamUsable(it) }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun cacheHotstarFeed(channels: List<ChannelData>) {
+        if (System.currentTimeMillis() - hotstarWriteAt < HOTSTAR_WRITE_TTL) return
+        hotstarWriteAt = System.currentTimeMillis()
+        try {
+            CloudStreamApp.setKey(KEY_HOTSTAR_FEED, channels.toJson())
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun cachedHotstarFeed(): List<ChannelData> = try {
+        val raw = CloudStreamApp.getKey<String>(KEY_HOTSTAR_FEED) ?: return emptyList()
+        val channels = parseJson<List<ChannelData>>(raw)
+        val alive = channels.firstOrNull()?.streams?.firstOrNull()?.let { streamUsable(it) } == true
+        if (alive) channels else emptyList()
+    } catch (_: Exception) {
+        emptyList()
     }
 
     private suspend fun loadFeed(
@@ -197,7 +339,7 @@ object EsFeeds {
         cached(cache)?.let { return it }
         val loaded = try {
             loader()
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
         cache.at = System.currentTimeMillis()
@@ -210,6 +352,23 @@ object EsFeeds {
 
     private fun attr(line: String, name: String): String? =
         Regex("""$name="([^"]*)"""").find(line)?.groupValues?.get(1)
+
+    // the feeds and the jio api both hand out urls with doubled slashes in
+    // the path or a dangling empty query, the jio cdns reject those outright
+    private fun cleanUrl(raw: String): String {
+        var url = raw.trim()
+        val schemeAt = url.indexOf("://")
+        if (schemeAt >= 0 && schemeAt + 3 < url.length) {
+            val scheme = url.substring(0, schemeAt + 3)
+            val rest = url.substring(schemeAt + 3)
+            val queryAt = rest.indexOf('?')
+            val path = if (queryAt >= 0) rest.substring(0, queryAt) else rest
+            val query = if (queryAt >= 0) rest.substring(queryAt) else ""
+            url = scheme + path.replace(Regex("/{2,}"), "/") + query
+        }
+        while (url.endsWith("?") || url.endsWith("&")) url = url.dropLast(1)
+        return url
+    }
 
     private fun extinfTitle(line: String): String {
         var inside = false
@@ -285,11 +444,10 @@ object EsFeeds {
                             }
                             cur.headers[proper] = v
                         }
-                    } catch (e: Exception) {
-                    }
+                    } catch (_: Exception) {}
                 }
                 line.isNotEmpty() && !line.startsWith("#") -> {
-                    cur.url = line.substringBefore("|").trim()
+                    cur.url = cleanUrl(line.substringBefore("|"))
                     for (param in line.substringAfter("|", "").split("&")) {
                         val kv = param.split("=", limit = 2)
                         if (kv.size != 2) continue
@@ -430,15 +588,29 @@ object EsFeeds {
     }
 
     suspend fun hotstar(): List<ChannelData> = loadFeed("hotstar") {
-        val text = fetchText(HOTSTAR) ?: return@loadFeed emptyList()
-        parseM3u(text).map { toChannel(it, "jio-hotstar", "Jio Hotstar") }
+        // hot.php answers with short 530 bursts, one more try right away
+        // clears most of them
+        var text = fetchText(HOTSTAR)
+        if (text.isNullOrBlank() || !text.contains("#EXTINF")) {
+            text = fetchText(HOTSTAR)
+        }
+        if (text.isNullOrBlank() || !text.contains("#EXTINF")) {
+            return@loadFeed cachedHotstarFeed()
+        }
+        val channels = parseM3u(text).map { toChannel(it, "jio-hotstar", "Jio Hotstar") }
+        if (channels.isNotEmpty()) {
+            cacheHotstarFeed(channels)
+            channels
+        } else {
+            cachedHotstarFeed()
+        }
     }
 
     suspend fun sony(): List<ChannelData> = loadFeed("sony") {
         val text = fetchText(SONY_JSON) ?: return@loadFeed emptyList()
         val entries = try {
             parseJson<List<SonyEntry>>(text)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
         entries.mapNotNull { e ->
@@ -449,7 +621,7 @@ object EsFeeds {
                 name = "$name (Sony LIV)",
                 sourceId = "sony-liv",
                 sourceLabel = "Sony LIV",
-                logo = e.logo,
+                logo = SONY_LOGOS[name.lowercase()] ?: e.logo,
                 streams = listOf(StreamData(url = url)),
                 category = nameCategory(name)
             )
@@ -505,9 +677,87 @@ object EsFeeds {
         )
     }
 
-    // resolves a static jio channel to a playable stream, the api hands out
-    // fresh akamai cookies and clearkey pairs for every channel id
+    // the api reuses a few ids across two different channels and drops
+    // channels from time to time, the channel name sorts both cases out
+    private fun jioCandidates(jioId: String, name: String?): List<JioApiEntry> {
+        val byId = jioApiCache.entries.filter { it.id == jioId }
+        val byName = if (name.isNullOrBlank()) {
+            emptyList()
+        } else {
+            jioApiCache.entries.filter { sameChannelName(it.name, name) }
+        }
+        return byId + byName.filterNot { it in byId }
+    }
+
+    // a premium cdn url carrying the shared mobile cookie always answers
+    // 403, and a path scoped cookie on a different path means the url was
+    // refreshed ahead of the cookie, both pairs are dead on arrival
+    private fun entryUsable(url: String, rawCookie: String): Boolean {
+        if (rawCookie.isBlank()) return true
+        val cookie = rawCookie.split("&").first()
+        val exp = cookieExpiryMs(cookie)
+        if (exp != null && exp - System.currentTimeMillis() <= EXPIRY_MARGIN_MS &&
+            (url.contains("cdn.jio.com") || url.contains("hotstar"))
+        ) return false
+        val acl = COOKIE_ACL_RE.find(cookie)?.groupValues?.get(1)
+            ?.lowercase()?.replace("%2f", "/")
+        if (acl == null) return true
+        if (url.contains("jiotvpllive") && acl == "/*") return false
+        if (acl != "/*" && !url.contains(acl.trimEnd('*'), ignoreCase = true)) return false
+        return true
+    }
+
+    // api names drift a little from the curated list, "&" vs "and", word
+    // order and spacing, none of that should break the lookup
+    private fun sameChannelName(a: String?, b: String?): Boolean {
+        if (a.isNullOrBlank() || b.isNullOrBlank()) return false
+        val one = FEED_NAME_ALIASES[a.trim().lowercase()] ?: a.trim().lowercase()
+        val two = FEED_NAME_ALIASES[b.trim().lowercase()] ?: b.trim().lowercase()
+        if (one == two) return true
+        val oneAmp = one.replace("&", " and ")
+        val twoAmp = two.replace("&", " and ")
+        if (oneAmp == twoAmp) return true
+        if (oneAmp.replace(" ", "") == twoAmp.replace(" ", "")) return true
+        val oneWords = oneAmp.split(Regex("\\s+")).filter { it.isNotBlank() }.sorted()
+        val twoWords = twoAmp.split(Regex("\\s+")).filter { it.isNotBlank() }.sorted()
+        return oneWords == twoWords
+    }
+
+    // resolved at play time so the cookie is fresh. the stb feed and the
+    // pluglist mint url and cookie together, the api mixes stale mobile
+    // cookies into premium urls while it refreshes, so it is validated and
+    // only tried after both feeds, and the stored copy is the last resort
+    // for when every server is down at once
     suspend fun resolveJio(jioId: String, fallbackName: String? = null): StreamData? {
+        if (!fallbackName.isNullOrBlank()) {
+            stbChannels().firstOrNull {
+                sameChannelName(feedBaseName(it.name), fallbackName)
+            }?.streams?.firstOrNull()?.let {
+                if (streamUsable(it)) {
+                    rememberJioStreams(mapOf(jioId to it))
+                    return it
+                }
+            }
+        }
+        jioFallback(fallbackName)?.let {
+            if (streamUsable(it)) {
+                rememberJioStreams(mapOf(jioId to it))
+                return it
+            }
+        }
+        resolveJioApi(jioId, fallbackName)?.let {
+            rememberJioStreams(mapOf(jioId to it))
+            return it
+        }
+        return cachedJioStream(jioId)
+    }
+
+    private suspend fun stbChannels(): List<ChannelData> = loadFeed("jio-stb") {
+        val text = fetchText(JIO_STB) ?: return@loadFeed emptyList()
+        parseM3u(text).map { toChannel(it, "jio-stb", "JioTV+") }
+    }
+
+    private suspend fun resolveJioApi(jioId: String, fallbackName: String?): StreamData? {
         if (jioApiCache.at == 0L ||
             System.currentTimeMillis() - jioApiCache.at >= CACHE_TTL
         ) {
@@ -515,28 +765,46 @@ object EsFeeds {
             if (!text.isNullOrBlank()) {
                 try {
                     jioApiCache.entries = parseJson<List<JioApiEntry>>(text)
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     jioApiCache.entries = emptyList()
                 }
             }
             jioApiCache.at = System.currentTimeMillis()
         }
-        val entry = jioApiCache.entries.firstOrNull { it.id == jioId }
-            ?: return jioFallback(fallbackName)
-        val base = entry.url?.takeIf { it.startsWith("http") } ?: return jioFallback(fallbackName)
+        val entry = jioCandidates(jioId, fallbackName).firstOrNull { e ->
+            val url = e.url?.takeIf { it.startsWith("http") }?.let { cleanUrl(it) }
+            url != null && entryUsable(url, e.cookie.orEmpty().trim())
+        } ?: return null
+        val base = entry.url?.takeIf { it.startsWith("http") }?.let { cleanUrl(it) }
+            ?: return null
 
         val headers = mutableMapOf(
             "User-Agent" to JIO_UA,
             "Referer" to "https://www.jiotv.com/"
         )
-        entry.cookie?.takeIf { it.isNotBlank() }?.let {
-            headers["Cookie"] = it
+        // some entries pack referer, origin and user-agent into the cookie
+        // field behind ampersands, only the first segment is the cookie
+        entry.cookie?.takeIf { it.isNotBlank() }?.let { raw ->
+            val parts = raw.split("&")
+            parts.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                headers["Cookie"] = it
+            }
+            parts.drop(1).forEach { part ->
+                val name = part.substringBefore("=").trim().lowercase()
+                val value = part.substringAfter("=", "").trim()
+                if (value.isEmpty()) return@forEach
+                when (name) {
+                    "user-agent" -> headers["User-Agent"] = value
+                    "referer", "referrer" -> headers["Referer"] = value
+                    "origin" -> headers["Origin"] = value
+                }
+            }
         }
 
-        // the api mixes two shapes: most entries keep a bare kid in keyId
-        // with the key beside it, a few pack kid:key pairs for every audio
-        // track into keyId instead
-        val pairs = HashMap<String, String>()
+        // keyId holds either kid:key pairs or a bare kid with the key beside
+        // it, and the bare shape turns up swapped on some entries, so both
+        // orientations ride in and the player keeps the pair that decrypts
+        val pairs = LinkedHashMap<String, String>()
         val keyIdRaw = entry.keyId.orEmpty().trim()
         val keyRaw = entry.key.orEmpty().trim()
         if (keyIdRaw.contains(":")) {
@@ -549,42 +817,26 @@ object EsFeeds {
             }
         } else if (keyIdRaw.length == 32 && keyRaw.length == 32) {
             pairs[keyIdRaw.lowercase()] = keyRaw.lowercase()
+            pairs[keyRaw.lowercase()] = keyIdRaw.lowercase()
         }
-        if (pairs.isEmpty()) {
-            return StreamData(url = base, headers = headers)
-        }
-
-        var kid = pairs.keys.firstOrNull()
-        var key = pairs[kid]
-        if (pairs.size > 1) {
-            // multi audio tracks ship several key pairs, the video track kid
-            // from the manifest picks the right one
-            val mpd = try {
-                app.get(base, headers = headers, timeout = 15L).text
-            } catch (e: Exception) {
-                null
-            }
-            val mpdKid = mpd?.let {
-                Regex("""cenc:default_KID=["']([0-9a-fA-F-]{36})["']""").find(it)
-                    ?.groupValues?.get(1)?.replace("-", "")?.lowercase()
-            }
-            if (mpdKid != null && pairs.containsKey(mpdKid)) {
-                kid = mpdKid
-                key = pairs[mpdKid]
-            }
-        }
-        if (kid == null || key == null) {
-            return StreamData(url = base, headers = headers)
-        }
-        return StreamData(url = base, headers = headers, kid = kid, key = key)
+        val kid = pairs.keys.firstOrNull()
+            ?: return StreamData(url = base, headers = headers)
+        return StreamData(
+            url = base,
+            headers = headers,
+            kid = kid,
+            key = pairs[kid],
+            kids = if (pairs.size > 1) pairs else null
+        )
     }
 
-    // a few of the curated channels are missing from the api right now, the
-    // big pluglist feed carries the same channels with inline keys
+    // the api drops curated channels from time to time, the big pluglist
+    // feed carries the same channels with inline keys and cookies
     private suspend fun jioFallback(fallbackName: String?): StreamData? {
         if (fallbackName.isNullOrBlank()) return null
-        val hit = pluglist().firstOrNull { it.name == "$fallbackName (JioTV+ 3)" }
-        return hit?.streams?.firstOrNull()
+        return pluglist().firstOrNull {
+            sameChannelName(feedBaseName(it.name), fallbackName)
+        }?.streams?.firstOrNull()
     }
 
     val sources = listOf(
@@ -612,6 +864,31 @@ object EsFeeds {
             { biggBoss() }
         )
         val deferred = loaders.map { async(Dispatchers.IO) { it() } }
-        deferred.flatMap { runCatching { it.await() }.getOrDefault(emptyList()) }
+        val channels = deferred.flatMap { runCatching { it.await() }.getOrDefault(emptyList()) }
+        warmJioStore(channels)
+        channels
+    }
+
+    // fills the stored streams for the whole curated list while the pluglist
+    // is healthy, a channel never played before then still resolves during
+    // a later outage
+    private fun warmJioStore(channels: List<ChannelData>) {
+        if (channels.isEmpty()) return
+        if (System.currentTimeMillis() - jioWarmAt < JIO_WARM_TTL) return
+        jioWarmAt = System.currentTimeMillis()
+        try {
+            val feedChannels = channels.filter { it.sourceId == "jio-tv-plus-3" }
+            if (feedChannels.isEmpty()) return
+            val found = LinkedHashMap<String, StreamData>()
+            (JIO_PLUS + JIO_PLUS_2).distinctBy { it.jioId }.forEach { curated ->
+                feedChannels.firstOrNull {
+                    sameChannelName(feedBaseName(it.name), curated.name)
+                }?.streams?.firstOrNull()?.let {
+                    if (streamUsable(it)) found[curated.jioId] = it
+                }
+            }
+            rememberJioStreams(found)
+        } catch (_: Exception) {
+        }
     }
 }

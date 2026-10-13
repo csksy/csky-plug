@@ -11,8 +11,7 @@ class EliteStreamsPlugin : Plugin() {
         openSettings = { ctx ->
             try {
                 EsSettings.show(ctx)
-            } catch (e: Exception) {
-            }
+            } catch (_: Exception) {}
         }
     }
 }

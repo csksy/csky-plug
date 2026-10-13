@@ -1,10 +1,4 @@
-version = 2
-
-android {
-    buildFeatures {
-        buildConfig = true
-    }
-}
+version = 4
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
@@ -12,9 +6,9 @@ dependencies {
 
 cloudstream {
     language = "hi"
-    description = "Live sports and TV channels from JioTV+, Jio Hotstar, Sony LIV, FanCode and Bigg Boss with a channel manager in settings"
-    authors = listOf("raghav")
+    description = "Live sports and TV channels from JioTV+, Jio Hotstar, Sony LIV and FanCode"
+    authors = listOf("KSHITIJ8473")
     status = 1
     tvTypes = listOf("Live")
-    iconUrl = "https://i.postimg.cc/nzRJ94Vb/31-Gngoi-H5p-L.png"
+    iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSvjVrQOYj-sTUXwbXmmIso7vR3mqtH_sxhXF69vtY5FXAK4M4iCaeLoatA&s=10"
 }

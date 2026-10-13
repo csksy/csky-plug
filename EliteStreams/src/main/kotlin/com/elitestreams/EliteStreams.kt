@@ -21,24 +21,18 @@ class EliteStreams : MainAPI() {
     override var lang = "hi"
 
     companion object {
-        private const val KEY_PREFIX_CH = "ES_CH_"
+        private const val KEY_PREFIX_SRC = "ES_SRC_"
 
-        fun channelEnabled(channel: EsFeeds.ChannelData): Boolean = try {
-            CloudStreamApp.getKey<Boolean>(channelPrefKey(channel)) ?: true
-        } catch (e: Exception) {
+        fun sourceEnabled(sourceId: String): Boolean = try {
+            CloudStreamApp.getKey<Boolean>(KEY_PREFIX_SRC + sourceId) ?: true
+        } catch (_: Exception) {
             true
         }
 
-        fun setChannelEnabled(channel: EsFeeds.ChannelData, on: Boolean) {
+        fun setSourceEnabled(sourceId: String, on: Boolean) {
             try {
-                CloudStreamApp.setKey(channelPrefKey(channel), on)
-            } catch (e: Exception) {
-            }
-        }
-
-        fun channelPrefKey(channel: EsFeeds.ChannelData): String {
-            val safe = channel.key.replace(Regex("[^A-Za-z0-9]"), "_")
-            return KEY_PREFIX_CH + safe.take(120)
+                CloudStreamApp.setKey(KEY_PREFIX_SRC + sourceId, on)
+            } catch (_: Exception) {}
         }
     }
 
@@ -47,7 +41,7 @@ class EliteStreams : MainAPI() {
         if (page > 1) {
             return newHomePageResponse(request.name, emptyList<SearchResponse>(), hasNext = false)
         }
-        val channels = EsFeeds.allChannels().filter { channelEnabled(it) }
+        val channels = EsFeeds.allChannels().filter { sourceEnabled(it.sourceId) }
         val lists = mutableListOf<HomePageList>()
         EsFeeds.sources.forEach { source ->
             val items = channels.filter { it.sourceId == source.id }.map { it.toSearchResponse() }
@@ -89,7 +83,7 @@ class EliteStreams : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
         return EsFeeds.allChannels()
-            .filter { channelEnabled(it) }
+            .filter { sourceEnabled(it.sourceId) }
             .filter { it.name.contains(query, ignoreCase = true) }
             .take(60)
             .map { it.toSearchResponse() }
@@ -98,7 +92,7 @@ class EliteStreams : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val payload = try {
             parseJson<ChannelPayload>(url)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return null
         }
         return newLiveStreamLoadResponse(payload.name, url, url) {
@@ -113,7 +107,7 @@ class EliteStreams : MainAPI() {
         return try {
             val bytes = clean.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -124,50 +118,68 @@ class EliteStreams : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         if (!stream.url.startsWith("http")) return
-        var kid = stream.kid
-        var key = stream.key
-        // multi audio channels ship several clearkey pairs, the video track
-        // kid from the manifest picks the right one
-        if (stream.kids != null && stream.kids.size > 1 && kid != null) {
-            val mpd = try {
-                app.get(stream.url, headers = stream.headers, timeout = 15L).text
-            } catch (e: Exception) {
-                null
-            }
-            val mpdKid = mpd?.let {
-                Regex("""cenc:default_KID=["']([0-9a-fA-F-]{36})["']""").find(it)
-                    ?.groupValues?.get(1)?.replace("-", "")?.lowercase()
-            }
-            if (mpdKid != null && stream.kids.containsKey(mpdKid)) {
-                kid = mpdKid
-                key = stream.kids[mpdKid]
-            }
+        val pairs = ArrayList<Pair<String, String>>()
+        val firstKid = stream.kid
+        val firstKey = stream.key
+        if (firstKid != null && firstKey != null) {
+            pairs.add(firstKid to firstKey)
         }
-        val kid64 = kid?.let { hexToBase64Url(it) }
-        val key64 = key?.let { hexToBase64Url(it) }
-        if (kid64 != null && key64 != null) {
-            callback(
-                newDrmExtractorLink(
-                    this.name,
-                    label,
-                    stream.url,
-                    INFER_TYPE,
-                    CLEARKEY_UUID
-                ) {
-                    this.quality = stream.quality ?: Qualities.Unknown.value
-                    if (stream.headers.isNotEmpty()) this.headers = stream.headers
-                    this.key = key64
-                    this.kid = kid64
-                }
-            )
-        } else {
+        // multi audio channels ship one clearkey pair per track, a license
+        // that only carries the first one kills the video track with a
+        // missing key error
+        stream.kids?.forEach { (kid, key) ->
+            if (pairs.none { it.first == kid }) pairs.add(kid to key)
+        }
+
+        if (pairs.isEmpty()) {
             callback(
                 newExtractorLink(this.name, label, stream.url, INFER_TYPE) {
                     this.quality = stream.quality ?: Qualities.Unknown.value
                     if (stream.headers.isNotEmpty()) this.headers = stream.headers
                 }
             )
+            return
         }
+
+        val encoded = ArrayList<Pair<String, String>>()
+        pairs.forEach { (kid, key) ->
+            val k = hexToBase64Url(kid)
+            val v = hexToBase64Url(key)
+            if (k != null && v != null) encoded.add(k to v)
+        }
+        if (encoded.isEmpty()) {
+            callback(
+                newExtractorLink(this.name, label, stream.url, INFER_TYPE) {
+                    this.quality = stream.quality ?: Qualities.Unknown.value
+                    if (stream.headers.isNotEmpty()) this.headers = stream.headers
+                }
+            )
+            return
+        }
+
+        // the player drops kid and key into a single entry clearkey license.
+        // the remaining pairs ride inside the kid string and close the extra
+        // entries around it, so the finished license holds every pair
+        val kidField = StringBuilder(encoded.first().first)
+        for (i in 1 until encoded.size) {
+            kidField.append("\"},{\"kty\":\"oct\",\"k\":\"").append(encoded[i].second)
+            kidField.append("\",\"kid\":\"").append(encoded[i].first)
+        }
+        callback(
+            newDrmExtractorLink(
+                this.name,
+                label,
+                stream.url,
+                INFER_TYPE,
+                CLEARKEY_UUID
+            ) {
+                this.quality = stream.quality ?: Qualities.Unknown.value
+                if (stream.headers.isNotEmpty()) this.headers = stream.headers
+                this.kty = "oct"
+                this.key = encoded.first().second
+                this.kid = kidField.toString()
+            }
+        )
     }
 
     override suspend fun loadLinks(
@@ -178,7 +190,7 @@ class EliteStreams : MainAPI() {
     ): Boolean {
         val payload = try {
             parseJson<ChannelPayload>(data)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return false
         }
 
