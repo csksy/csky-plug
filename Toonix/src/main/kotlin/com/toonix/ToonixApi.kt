@@ -47,8 +47,12 @@ data class ToonixServerStream(
     val key: String? = null,
     val src: String = "",
     val versions: List<ToonixStreamVersion> = emptyList(),
-    val embed: Boolean = false
+    val embed: Boolean = false,
+    val direct: Boolean = false
 )
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ToonixHydraxQuality(val label: String? = null, val src: String = "")
 
 data class ToonixPlayer(
     val servers: List<ToonixServerStream>,
@@ -69,6 +73,9 @@ data class ToonixAbyssResult(
     val status: Int? = null,
     val sources: List<ToonixAbyssSource> = emptyList()
 )
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ToonixHydraxResult(val qualities: List<ToonixHydraxQuality> = emptyList())
 
 data class ToonixShowInfo(
     val title: String,
@@ -407,6 +414,19 @@ object ToonixApi {
             }
         } catch (e: Exception) {
             Log.d("Toonix", "abyss resolver failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    // the hydrax slot hands out ready qualities, the worker wraps the real
+    // stream so the urls play as they are
+    suspend fun resolveHydrax(src: String): List<ToonixHydraxQuality> {
+        val url = if (src.startsWith("http")) src else BASE + src
+        return try {
+            val res = httpGet(url)
+            mapper.readValue(res.text, ToonixHydraxResult::class.java).qualities
+        } catch (e: Exception) {
+            Log.d("Toonix", "hydrax unavailable: ${e.message}")
             emptyList()
         }
     }

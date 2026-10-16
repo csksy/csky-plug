@@ -511,9 +511,28 @@ class Toonix : MainAPI() {
         // the site numbers its servers by position, legacy is a separate field
         player.servers.forEachIndexed { idx, server ->
             val name = "Server ${idx + 1}"
-            if (server.embed) {
+            if (server.embed || server.direct) {
                 val src = server.versions.firstOrNull()?.src?.takeIf { it.isNotBlank() } ?: server.src
                 if (src.isBlank()) return@forEachIndexed
+                val isHydrax = server.direct || src.contains("/api/hydrax/")
+                if (isHydrax) {
+                    val quals = ToonixApi.resolveHydrax(src)
+                    val probes = coroutineScope {
+                        quals.map { q -> async { ToonixApi.probeRange(q.src, "$ToonixApi.BASE/") } }.awaitAll()
+                    }
+                    quals.forEachIndexed { i, q ->
+                        if (q.src.isBlank() || probes[i] !in 200..399) return@forEachIndexed
+                        val height = q.label?.removeSuffix("p")?.takeIf { it.all(Char::isDigit) }?.toIntOrNull()
+                        emit(
+                            if (q.label.isNullOrBlank()) name else "$name ${q.label}",
+                            q.src,
+                            ExtractorLinkType.VIDEO,
+                            height,
+                            "$ToonixApi.BASE/"
+                        )
+                    }
+                    return@forEachIndexed
+                }
                 val sources = ToonixApi.resolveEmbedSources(src)
                 val probes = coroutineScope {
                     sources.map { s -> async { ToonixApi.probeRange(s.url, "https://player.abyssplayer.com/") } }.awaitAll()
