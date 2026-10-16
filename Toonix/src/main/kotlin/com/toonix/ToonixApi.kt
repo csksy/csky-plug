@@ -1,10 +1,13 @@
 package com.toonix
 
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.nicehttp.NiceResponse
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -16,7 +19,9 @@ data class ToonixCard(
     val year: Int? = null,
     val type: String = "SHOW",
     val category: String = "CARTOON",
-    val meta: String? = null
+    val meta: String? = null,
+    val genres: List<String> = emptyList(),
+    val aka: List<String> = emptyList()
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -32,6 +37,37 @@ data class ToonixRailSeason(
     val number: Int? = null,
     val title: String? = null,
     val episodes: List<ToonixRailEpisode> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ToonixStreamVersion(val label: String? = null, val src: String = "")
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ToonixServerStream(
+    val key: String? = null,
+    val src: String = "",
+    val versions: List<ToonixStreamVersion> = emptyList(),
+    val embed: Boolean = false
+)
+
+data class ToonixPlayer(
+    val servers: List<ToonixServerStream>,
+    val legacySrc: String?
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ToonixAbyssSource(
+    val url: String = "",
+    val size: Long? = null,
+    val type: String? = null,
+    val codec: String? = null,
+    val status: Boolean? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ToonixAbyssResult(
+    val status: Int? = null,
+    val sources: List<ToonixAbyssSource> = emptyList()
 )
 
 data class ToonixShowInfo(
@@ -77,8 +113,6 @@ object ToonixApi {
     private val flightChunkRegex = Regex("""self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)""")
     private val sectionRegex = Regex(""""title":"([^"]+)","viewAllHref"""")
     private val slugHrefRegex = Regex(""""slug":"([^"]+)","href":"([^"]+)"""")
-    private val serversRegex = Regex(""""servers":\[(.*?)]""")
-    private val serverSrcRegex = Regex(""""key":"[^"]*","src":"([^"]+)""")
     private val legacySrcRegex = Regex(""""legacySrc":(?:"([^"]+)"|null)""")
     private val yearShowRegex = Regex(""""children":\["\(",(\d{4}),"\)"\]""")
     private val yearMovieRegex = Regex(""""children":(\d{4})\}""")
@@ -190,7 +224,59 @@ object ToonixApi {
         return out.toString()
     }
 
+    private fun jsonArrayAfter(flight: String, bracketStart: Int): String? {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in bracketStart until flight.length) {
+            val c = flight[i]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+            } else {
+                when (c) {
+                    '"' -> inString = true
+                    '[' -> depth++
+                    ']' -> {
+                        depth--
+                        if (depth == 0) return flight.substring(bracketStart, i + 1)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
     fun parseCards(flight: String): List<ToonixCard> {
+        val out = LinkedHashMap<String, ToonixCard>()
+        val key = "\"cards\":["
+        var idx = flight.indexOf(key)
+        while (idx >= 0) {
+            val raw = jsonArrayAfter(flight, idx + key.length - 1)
+            if (raw != null) {
+                // RSC emits "$undefined" for absent values, Jackson cannot map that to Int
+                val json = raw.replace("\"\$undefined\"", "null")
+                val cards = runCatching { mapper.readValue(json, Array<ToonixCard>::class.java).toList() }.getOrNull()
+                if (cards != null) {
+                    for (card in cards) {
+                        if ((card.href.startsWith("/show/") || card.href.startsWith("/title/")) && card.title.isNotBlank()) {
+                            out.putIfAbsent(card.href, card)
+                        }
+                    }
+                    idx = flight.indexOf(key, idx + key.length - 1 + raw.length)
+                    continue
+                }
+            }
+            idx = flight.indexOf(key, idx + key.length)
+        }
+        if (out.isNotEmpty()) return out.values.toList()
+        return parseCardsLoose(flight)
+    }
+
+    private fun parseCardsLoose(flight: String): List<ToonixCard> {
         val out = mutableListOf<ToonixCard>()
         val seen = mutableSetOf<String>()
         for (m in slugHrefRegex.findAll(flight)) {
@@ -198,7 +284,7 @@ object ToonixApi {
             if (!href.startsWith("/show/") && !href.startsWith("/title/")) continue
             if (!seen.add(href)) continue
             val window = flight.substring(m.range.first, minOf(m.range.first + 700, flight.length))
-            val poster = Regex(""""poster":"([^"]+)"""").find(window)?.groupValues?.get(1)
+            val poster = Regex(""""poster":"([^"]+)"""").find(window)?.groupValues?.get(1) ?: continue
             val title = Regex(""""title":"([^"]+)"""").find(window)?.groupValues?.get(1) ?: continue
             val type = Regex(""""type":"(SHOW|MOVIE)"""").find(window)?.groupValues?.get(1) ?: continue
             val yearRaw = Regex(""""year":("[^"]*"|\d+)""").find(window)?.groupValues?.get(1)
@@ -208,7 +294,7 @@ object ToonixApi {
                 yearRaw == null -> null
                 yearRaw.startsWith("\"") -> yearRaw.trim('"').toIntOrNull()
                 else -> yearRaw.toIntOrNull()
-            }?.takeIf { it in 1000..9998 } // 9999 is the site's placeholder for an unknown year
+            }
             out.add(
                 ToonixCard(
                     slug = m.groupValues[1],
@@ -234,45 +320,143 @@ object ToonixApi {
         return parseCards(flight.substring(from, to))
     }
 
+    fun parseSearchResults(html: String): List<ToonixCard> {
+        val body = Jsoup.parse(html).body() ?: return emptyList()
+        val yearRegex = Regex("""(19|20)\d{2}""")
+        val out = LinkedHashMap<String, ToonixCard>()
+        for (el in body.getAllElements()) {
+            val tag = el.tagName()
+            if (tag == "h3" && el.ownText().equals("More like this", ignoreCase = true)) break
+            if (tag != "a") continue
+            val href = el.attr("href")
+            if (!href.startsWith("/show/") && !href.startsWith("/title/")) continue
+            if (out.containsKey(href)) continue
+            val img = el.selectFirst("img[src]")
+            val title = el.selectFirst("h3")?.text()?.takeIf { it.isNotBlank() }
+                ?: img?.attr("alt")?.takeIf { it.isNotBlank() }
+                ?: continue
+            out[href] = ToonixCard(
+                slug = href.substringAfterLast('/'),
+                href = href,
+                poster = img?.attr("src"),
+                title = title,
+                year = el.select("span")
+                    .firstOrNull { yearRegex.matches(it.text()) }
+                    ?.text()?.toIntOrNull(),
+                type = if (href.startsWith("/title/")) "MOVIE" else "SHOW",
+                category = el.select("span")
+                    .firstOrNull { it.text().equals("ANIME", ignoreCase = true) }
+                    ?.text()?.uppercase() ?: "CARTOON"
+            )
+        }
+        return out.values.toList()
+    }
+
+    fun parsePlayer(flight: String): ToonixPlayer {
+        val servers = mutableListOf<ToonixServerStream>()
+        val key = "\"servers\":["
+        var idx = flight.indexOf(key)
+        while (idx >= 0) {
+            val raw = jsonArrayAfter(flight, idx + key.length - 1)
+            if (raw != null) {
+                val parsed = runCatching { mapper.readValue(raw, Array<ToonixServerStream>::class.java).toList() }.getOrNull()
+                if (parsed != null) {
+                    servers.addAll(parsed.filter { it.src.isNotBlank() || it.versions.any { v -> v.src.isNotBlank() } })
+                    idx = flight.indexOf(key, idx + key.length - 1 + raw.length)
+                    continue
+                }
+            }
+            idx = flight.indexOf(key, idx + key.length)
+        }
+        val legacy = legacySrcRegex.find(flight)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+        return ToonixPlayer(servers, legacy)
+    }
+
+    private val datasRegex = Regex("""const\s+datas\s*=\s*"([^"]+)"""")
+
+    // the embed page carries an encrypted media blob, the resolver turns it
+    // into ready stream urls so the plugin never needs the cipher itself
+    suspend fun resolveEmbedSources(src: String): List<ToonixAbyssSource> {
+        val url = if (src.startsWith("http")) src else BASE + src
+        val page = try {
+            httpGet(url).text
+        } catch (e: Exception) {
+            Log.d("Toonix", "embed page unavailable: ${e.message}")
+            return emptyList()
+        }
+        val payload = datasRegex.find(page)?.groupValues?.get(1) ?: return emptyList()
+        return try {
+            val res = app.post(
+                "https://enc-dec.app/api/dec-abyss",
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Accept" to "application/json",
+                    "Content-Type" to "application/json",
+                    "Origin" to "https://enc-dec.app",
+                    "Referer" to "https://enc-dec.app/"
+                ),
+                requestBody = """{"text":"$payload"}""".toRequestBody(
+                    "application/json".toMediaTypeOrNull()
+                )
+            )
+            val tree = mapper.readTree(res.text)
+            if (tree.path("status").asInt(-1) == 200) {
+                mapper.readValue(tree.path("result").toString(), ToonixAbyssResult::class.java).sources
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) {
+            Log.d("Toonix", "abyss resolver failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    // a cheap liveness check, the segment hosts answer 403 when a source is
+    // down so a ranged read tells real links apart from dead playlists
+    suspend fun probeRange(url: String, referer: String): Int {
+        return try {
+            val res = app.get(
+                url,
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Referer" to referer,
+                    "Range" to "bytes=0-1023"
+                )
+            )
+            res.code
+        } catch (e: Exception) {
+            -1
+        }
+    }
+
+    // fetches a media playlist and returns its first segment url, used to
+    // check a server before advertising its links
+    suspend fun firstSegmentOf(playlistUrl: String, referer: String): String? {
+        return try {
+            val res = app.get(playlistUrl, headers = mapOf("User-Agent" to UA, "Referer" to referer))
+            if (res.code != 200) return null
+            val body = res.text
+            if (!body.startsWith("#EXTM3U")) return null
+            body.lineSequence()
+                .map { it.trim() }
+                .firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+                ?.let { absolutize(it, playlistUrl) }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun parseSeasonsRail(flight: String): List<ToonixRailSeason> {
         val needle = "\"seasons\":["
         val start = flight.indexOf(needle)
         if (start < 0) return emptyList()
-        var i = start + needle.length - 1
-        var depth = 0
-        var inString = false
-        var escaped = false
-        val from = i
-        while (i < flight.length) {
-            val c = flight[i]
-            if (inString) {
-                when {
-                    escaped -> escaped = false
-                    c == '\\' -> escaped = true
-                    c == '"' -> inString = false
-                }
-            } else {
-                when (c) {
-                    '"' -> inString = true
-                    '[' -> depth++
-                    ']' -> {
-                        depth--
-                        if (depth == 0) {
-                            return try {
-                                mapper.readValue(
-                                    flight.substring(from, i + 1),
-                                    Array<ToonixRailSeason>::class.java
-                                ).toList()
-                            } catch (e: Exception) {
-                                emptyList()
-                            }
-                        }
-                    }
-                }
-            }
-            i++
+        val raw = jsonArrayAfter(flight, start + needle.length - 1) ?: return emptyList()
+        return try {
+            mapper.readValue(raw, Array<ToonixRailSeason>::class.java).toList()
+        } catch (e: Exception) {
+            Log.d("Toonix", "season rail parse failed: ${e.message}")
+            emptyList()
         }
-        return emptyList()
     }
 
     private fun htmlTitle(html: String, fallback: String): String {
@@ -295,7 +479,7 @@ object ToonixApi {
                 val s = r.groupValues[1].toIntOrNull()
                 val e = r.groupValues[2].toIntOrNull()
                 if (s != null && e != null) s to e else null
-            }?.toList() } ?: emptyList()
+            }.toList() } ?: emptyList()
         val seasonRegex = Regex(""""href":"(/show/${Regex.escape(slug)}/(\d+))".{0,900}?"alt":"([^"]+)\"""")
         val seasonHrefs = seasonRegex.findAll(flight).mapNotNull { m ->
             val num = m.groupValues[2].toIntOrNull() ?: return@mapNotNull null
@@ -313,18 +497,6 @@ object ToonixApi {
         val runtime = runtimeRegex.find(flight)?.groupValues?.get(1)?.toIntOrNull()
         return ToonixMovieInfo(title, year, poster, synopsis, genres, runtime)
     }
-
-    fun parseServers(flight: String): List<String> {
-        val block = serversRegex.find(flight)?.groupValues?.get(1) ?: return emptyList()
-        return serverSrcRegex.findAll(block)
-            .map { it.groupValues[1] }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .toList()
-    }
-
-    fun parseLegacySrc(flight: String): String? =
-        legacySrcRegex.find(flight)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
 
     fun absolutize(url: String, base: String): String = when {
         url.startsWith("http") -> url
@@ -365,6 +537,7 @@ object ToonixApi {
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            Log.d("Toonix", "master probe failed for $url: ${e.message}")
             ToonixMaster(isMaster = false, isMedia = false, isBusy = true, isDead = false, variants = emptyList())
         }
     }
