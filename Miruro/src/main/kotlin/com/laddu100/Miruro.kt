@@ -70,14 +70,6 @@ class Miruro : MainAPI() {
     private fun providerLabel(key: String): String =
         providerNames[key] ?: key.replaceFirstChar { it.uppercase() }
 
-    private fun queryFor(data: String): String = when (data) {
-        "trending" -> "/api/v1/anime/trending?limit=30&status=RELEASING"
-        "popular" -> "/api/v1/anime?sort=-popularity&limit=30"
-        "recent" -> "/api/v1/anime?sort=-updated_at&limit=30"
-        "movies" -> "/api/v1/anime?format=MOVIE&sort=-score&limit=30"
-        else -> "/api/v1/anime?sort=-score&limit=30"
-    }
-
     private fun encodeParam(value: String): String =
         URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
@@ -112,14 +104,15 @@ class Miruro : MainAPI() {
         if (page > 1 && (previous == null || previous.page != page - 1 || previous.next == null)) {
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
-        val base = queryFor(request.data)
-        val path = if (page > 1 && previous?.next != null) {
-            base + "&cursor=" + encodeParam(previous.next)
-        } else {
-            base
-        }
+        val cursor = if (page > 1) previous?.next else null
         val result = try {
-            MiruroApi.list(path)
+            when (request.data) {
+                "trending" -> MiruroApi.trending()
+                "popular" -> MiruroApi.popular(cursor)
+                "recent" -> MiruroApi.recent(cursor)
+                "movies" -> MiruroApi.movies(cursor)
+                else -> MiruroApi.topRated(cursor)
+            }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -138,7 +131,7 @@ class Miruro : MainAPI() {
         val encoded = encodeParam(query.trim())
         if (encoded.isEmpty()) return emptyList()
         val result = try {
-            MiruroApi.list("/api/v1/anime?q=$encoded&limit=30")
+            MiruroApi.search(encoded)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -324,10 +317,10 @@ class Miruro : MainAPI() {
                 }
             }
             for (subtitle in provider.subtitles) {
-                val url = subtitle.url ?: continue
+                val url = subtitle.file ?: continue
                 if (url.isNotBlank()) {
                     subtitleCallback(
-                        newSubtitleFile(subtitle.lang ?: "English", url) { }
+                        newSubtitleFile(subtitle.label ?: subtitle.language ?: "English", url) { }
                     )
                 }
             }

@@ -148,6 +148,7 @@ class MiruroWebView(private val sourceName: String, private val baseUrl: String)
                 }
             }
         }.onFailure { error ->
+            android.util.Log.d("Miruro", "webview resolve failed for $url: ${error.message}")
         }
     }
 }

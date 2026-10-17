@@ -1,6 +1,5 @@
 package com.laddu100
 
-import android.util.Base64
 import android.util.Log
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -95,8 +94,10 @@ data class MiruroPlayServer(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class MiruroPlaySubtitle(
-    val url: String? = null,
-    val lang: String? = null
+    val file: String? = null,
+    val language: String? = null,
+    val label: String? = null,
+    val format: String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -122,11 +123,17 @@ object MiruroApi {
     const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+    // the backend only accepts the page sizes its own web client sends,
+    // anything else is answered with a plain 400
+    private const val RAIL_LIMIT = 12
+    private const val SEARCH_LIMIT = 15
+    private const val EPISODES_LIMIT = 10000
+
     private val mapper = ObjectMapper()
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
-    // catalog responses ship as base64 of gzip xor'd with this fixed key, the
-    // web client decodes the exact same way before handing the payload to json
+    // catalog responses arrive as binary octet-stream: xor with this key
+    // then gunzip, the web client decodes the exact same way
     private val catalogKey = "miruro/catalog".toByteArray(Charsets.US_ASCII)
 
     private val fallbackDomains = listOf(
@@ -171,13 +178,13 @@ object MiruroApi {
         "Accept-Language" to "en-US,en;q=0.9"
     )
 
-    private fun decodeBody(body: String): String {
-        val trimmed = body.trim()
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) return trimmed
-        val padded = trimmed + "=".repeat((4 - trimmed.length % 4) % 4)
-        val decoded = Base64.decode(padded, Base64.DEFAULT)
-        val plain = ByteArray(decoded.size) {
-            (decoded[it].toInt() xor catalogKey[it % catalogKey.size].toInt()).toByte()
+    private fun decodeBytes(raw: ByteArray): String {
+        val head = raw.firstOrNull() ?: return ""
+        if (head == '{'.code.toByte() || head == '['.code.toByte()) {
+            return String(raw, Charsets.UTF_8)
+        }
+        val plain = ByteArray(raw.size) {
+            (raw[it].toInt() xor catalogKey[it % catalogKey.size].toInt()).toByte()
         }
         if (plain.size > 2 && plain[0] == 0x1f.toByte() && plain[1] == 0x8b.toByte()) {
             return GZIPInputStream(ByteArrayInputStream(plain)).use { bytes ->
@@ -197,7 +204,8 @@ object MiruroApi {
                     interceptor = killerFor(domain)
                 )
                 if (res.code == 200) {
-                    return decodeBody(res.text)
+                    val raw = res.body?.bytes() ?: throw Exception("empty body from $domain")
+                    return decodeBytes(raw)
                 }
                 lastError = Exception("http ${res.code} from $domain")
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -210,15 +218,36 @@ object MiruroApi {
         throw lastError ?: Exception("miruro is unreachable")
     }
 
-    suspend fun list(path: String): MiruroListPage =
-        mapper.readValue(fetch(path), MiruroListPage::class.java)
+    suspend fun trending(): MiruroListPage =
+        mapper.readValue(fetch("/api/v1/anime/trending?limit=$RAIL_LIMIT&status=RELEASING"), MiruroListPage::class.java)
+
+    suspend fun popular(cursor: String?): MiruroListPage =
+        list("/api/v1/anime?sort=-popularity&limit=$RAIL_LIMIT", cursor)
+
+    suspend fun recent(cursor: String?): MiruroListPage =
+        list("/api/v1/anime?sort=-updated_at&limit=$RAIL_LIMIT", cursor)
+
+    suspend fun movies(cursor: String?): MiruroListPage =
+        list("/api/v1/anime?format=MOVIE&sort=-score&limit=$RAIL_LIMIT", cursor)
+
+    suspend fun topRated(cursor: String?): MiruroListPage =
+        list("/api/v1/anime?sort=-score&limit=$RAIL_LIMIT", cursor)
+
+    suspend fun search(query: String): MiruroListPage =
+        list("/api/v1/anime?q=$query&limit=$SEARCH_LIMIT", null)
+
+    private suspend fun list(path: String, cursor: String?): MiruroListPage {
+        val sep = if ("?" in path) "&" else "?"
+        val full = if (cursor != null) "$path${sep}cursor=$cursor" else path
+        return mapper.readValue(fetch(full), MiruroListPage::class.java)
+    }
 
     suspend fun detail(id: String): MiruroAnime =
         mapper.readValue(fetch("/api/v1/anime/$id"), MiruroAnime::class.java)
 
     suspend fun episodes(id: String): List<MiruroEpisode> =
         mapper.readValue(
-            fetch("/api/v1/anime/$id/episodes?limit=10000"),
+            fetch("/api/v1/anime/$id/episodes?limit=$EPISODES_LIMIT"),
             MiruroEpisodesPage::class.java
         ).data
 
