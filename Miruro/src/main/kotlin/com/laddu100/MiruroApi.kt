@@ -1,11 +1,12 @@
 package com.laddu100
 
 import android.util.Log
+import android.webkit.CookieManager
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.network.WebViewResolver
 import java.io.ByteArrayInputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.GZIPInputStream
@@ -129,6 +130,14 @@ object MiruroApi {
     private const val SEARCH_LIMIT = 15
     private const val EPISODES_LIMIT = 10000
 
+    // a clearance is bound to the webview session that minted it, keeping it
+    // warm for this long avoids spinning a webview on every call
+    private const val CLEAR_TTL_MS = 20 * 60 * 1000L
+
+    // a failed webview solve is expensive, the domain waits this long before
+    // another attempt so a dead homepage does not hang for minutes
+    private const val MINT_COOLDOWN_MS = 3 * 60 * 1000L
+
     private val mapper = ObjectMapper()
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
@@ -142,10 +151,17 @@ object MiruroApi {
         "https://www.miruro.tv"
     )
 
-    private val killers = ConcurrentHashMap<String, CloudflareKiller>()
+    private data class ClearedAccess(
+        val cookie: String,
+        val userAgent: String,
+        val mintedAt: Long
+    )
 
     @Volatile
     private var domainCache: Pair<Long, List<String>>? = null
+
+    private val cleared = ConcurrentHashMap<String, ClearedAccess>()
+    private val mintFailedAt = ConcurrentHashMap<String, Long>()
 
     private suspend fun domains(): List<String> {
         val now = System.currentTimeMillis()
@@ -168,15 +184,26 @@ object MiruroApi {
         return list
     }
 
-    private fun killerFor(domain: String): CloudflareKiller =
-        killers.getOrPut(domain) { CloudflareKiller() }
+    private fun cookieJarFor(domain: String): String? = try {
+        CookieManager.getInstance().getCookie("$domain/")
+    } catch (e: Exception) {
+        null
+    }
 
-    private fun headersFor(domain: String): Map<String, String> = mapOf(
-        "User-Agent" to USER_AGENT,
-        "Accept" to "*/*",
-        "Referer" to "$domain/",
-        "Accept-Language" to "en-US,en;q=0.9"
-    )
+    private fun hasClearance(domain: String): Boolean =
+        cookieJarFor(domain)?.contains("cf_clearance") == true
+
+    private fun headersFor(domain: String): Map<String, String> {
+        val access = cleared[domain]
+        val headers = mutableMapOf(
+            "User-Agent" to (access?.userAgent ?: USER_AGENT),
+            "Accept" to "*/*",
+            "Referer" to "$domain/",
+            "Accept-Language" to "en-US,en;q=0.9"
+        )
+        access?.let { headers["Cookie"] = it.cookie }
+        return headers
+    }
 
     private fun decodeBytes(raw: ByteArray): String {
         val head = raw.firstOrNull() ?: return ""
@@ -194,25 +221,82 @@ object MiruroApi {
         return plain.toString(Charsets.UTF_8)
     }
 
+    // the zone sits behind a managed challenge that answers non-browser
+    // clients with 403 or a plain 400, the stock interceptor only reacts to
+    // 403 so the webview is driven here and its clearance reused with the
+    // exact user agent it was issued for
+    private suspend fun mintClearance(domain: String): Boolean {
+        val lastFail = mintFailedAt[domain]
+        if (lastFail != null && System.currentTimeMillis() - lastFail < MINT_COOLDOWN_MS) {
+            return false
+        }
+        val ok = try {
+            WebViewResolver(
+                interceptUrl = Regex(".^"),
+                userAgent = null,
+                useOkhttp = false,
+                additionalUrls = listOf(Regex("."))
+            ).resolveUsingWebView("$domain/") { hasClearance(domain) }
+            val cookie = cookieJarFor(domain)?.takeIf { it.contains("cf_clearance") }
+            val userAgent = WebViewResolver.webViewUserAgent
+            if (cookie == null || userAgent.isNullOrBlank()) {
+                false
+            } else {
+                cleared[domain] = ClearedAccess(cookie, userAgent, System.currentTimeMillis())
+                true
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.d("Miruro", "webview clear failed for $domain: ${e.message}")
+            false
+        }
+        if (ok) {
+            mintFailedAt.remove(domain)
+        } else {
+            mintFailedAt[domain] = System.currentTimeMillis()
+        }
+        return ok
+    }
+
     private suspend fun fetch(path: String): String {
         var lastError: Exception? = null
         for (domain in domains()) {
+            val access = cleared[domain]
+            if (access != null && System.currentTimeMillis() - access.mintedAt > CLEAR_TTL_MS) {
+                cleared.remove(domain)
+            }
+            var status = 0
+            var text: String? = null
             try {
-                val res = app.get(
-                    domain + path,
-                    headers = headersFor(domain),
-                    interceptor = killerFor(domain)
-                )
+                val res = app.get(domain + path, headers = headersFor(domain))
+                status = res.code
                 if (res.code == 200) {
-                    val raw = res.body?.bytes() ?: throw Exception("empty body from $domain")
-                    return decodeBytes(raw)
+                    res.body?.bytes()?.takeIf { it.isNotEmpty() }?.let { text = decodeBytes(it) }
                 }
-                lastError = Exception("http ${res.code} from $domain")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 lastError = e
             }
+            if (text == null) {
+                cleared.remove(domain)
+                if (mintClearance(domain)) {
+                    try {
+                        val retry = app.get(domain + path, headers = headersFor(domain))
+                        status = retry.code
+                        if (retry.code == 200) {
+                            retry.body?.bytes()?.takeIf { it.isNotEmpty() }?.let { text = decodeBytes(it) }
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        lastError = e
+                    }
+                }
+            }
+            if (text != null) return text
+            if (status != 0) lastError = Exception("http $status from $domain")
         }
         Log.d("Miruro", "catalog request failed for $path: ${lastError?.message}")
         throw lastError ?: Exception("miruro is unreachable")
