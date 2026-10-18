@@ -8,9 +8,9 @@ class TheMoviesFlixPlugin : Plugin() {
     override fun load() {
         registerMainAPI(TheMoviesFlix())
         registerExtractorAPI(FastDlExtractor())
+        registerExtractorAPI(MCloudExtractor())
         registerExtractorAPI(VCloudExtractor())
         registerExtractorAPI(VegaDriveExtractor())
-        registerExtractorAPI(MDriveExtractor())
         registerExtractorAPI(FilePressExtractor())
     }
 }

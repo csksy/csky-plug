@@ -12,6 +12,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URI
 import java.net.URLDecoder
 
 // hosts are resolved here instead of through loadExtractor, whose result depends on extension order
@@ -30,7 +31,7 @@ object TmfSources {
     private suspend fun redirectOf(
         url: String,
         referer: String?,
-        hops: Int = 6
+        hops: Int = 8
     ): String? {
         var current = url
         repeat(hops) {
@@ -59,18 +60,14 @@ object TmfSources {
     // pass, handing them to the player or another extractor only produces
     // dead entries
     private val deadHosts = Regex(
-        "mcloud\\.best|gofile\\.io|1fichier\\.com|megaup\\.net|vikingfile\\.com|gdtot\\.|dropgalaxy"
+        "gofile\\.io|1fichier\\.com|megaup\\.net|vikingfile\\.com|gdtot\\.|dropgalaxy"
     )
 
     // fastdl serves a redirect stub with the drive link in the reurl variable,
     // the hubcdn wiki host serves the same stub with one extra base64 hop in r
     suspend fun resolveFastDl(url: String): List<Stream> {
         return try {
-            val res = app.get(
-                url,
-                headers = TmfNet.browserHeaders("https://mobilejsr.best/"),
-                timeout = 20L
-            )
+            val res = TmfCf.get(url, "https://mobilejsr.best/", 25L) ?: return emptyList()
             val text = res.text
             if (text.contains("File is Deleted") || text.contains("Something went wrong")) {
                 return emptyList()
@@ -96,16 +93,84 @@ object TmfSources {
         }
     }
 
+    // the mcloud file page hides its real target behind a generate button, the
+    // button decodes a double base64 url on the vcloud origin and swaps that
+    // origin for the host the page sits on, the page behind it lists one r2
+    // mirror and one worker bridge per file
+    private val doubleAtob = Regex("""atob\s*\(\s*atob\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\)""")
+
+    private fun decodeDoubleBase64(text: String): String? =
+        doubleAtob.find(text)?.groupValues?.get(1)
+            ?.let { wrapped ->
+                runCatching { base64Decode(wrapped) }.getOrNull()
+                    ?.let { runCatching { base64Decode(it) }.getOrNull() }
+            }
+            ?.takeIf { it.startsWith("http") }
+
+    private val linkParam = Regex("""link=(https?://[^&"']+)""")
+
+    private suspend fun mcloudMirrors(pageHtmlDoc: org.jsoup.nodes.Document, pageUrl: String): List<Stream> {
+        val out = mutableListOf<Stream>()
+        val base = TmfNet.originOf(pageUrl)
+        val buttons = pageHtmlDoc.select("div.mirrors-container a[href]").ifEmpty {
+            pageHtmlDoc.select("div.card-body a.btn[href]")
+        }
+        for (a in buttons) {
+            val text = a.text().lowercase()
+            val href = a.attr("href").trim()
+            if (!href.startsWith("http") || hubJunk.containsMatchIn(href)) continue
+            when {
+                text.contains("fsl") -> {
+                    // the r2 mirrors expire quietly, the file is only offered when it answers
+                    val code = TmfNet.probe(href, base)
+                    if (code != null && code in 200..299) {
+                        out.add(Stream("M-Cloud FSL", href, ExtractorLinkType.VIDEO))
+                    }
+                }
+                text.contains("10gbps") || text.contains("server") -> {
+                    val target = redirectOf(href, base) ?: continue
+                    val direct = linkParam.find(target)?.groupValues?.get(1) ?: continue
+                    if (direct.startsWith("http")) {
+                        out.add(Stream("M-Cloud 10Gbps", direct, ExtractorLinkType.VIDEO))
+                    }
+                }
+            }
+        }
+        return out.distinctBy { it.url }
+    }
+
+    suspend fun resolveMCloud(url: String): List<Stream> {
+        return try {
+            val res = TmfCf.get(url, "https://mobilejsr.best/", 25L) ?: return emptyList()
+            if (!res.isSuccessful) return emptyList()
+            val base = TmfNet.originOf(res.url)
+
+            val direct = mcloudMirrors(res.document, res.url)
+            if (direct.isNotEmpty()) return direct
+
+            val hop = decodeDoubleBase64(res.text) ?: return emptyList()
+            val hopUrl = hop.replace(
+                Regex("""https?://(www\.)?vcloud\.beer""", RegexOption.IGNORE_CASE),
+                base
+            )
+            val hopRes = TmfCf.get(hopUrl, "$base/", 25L) ?: return emptyList()
+            if (!hopRes.isSuccessful) return emptyList()
+
+            val viaHop = mcloudMirrors(hopRes.document, hopRes.url)
+            if (viaHop.isNotEmpty()) return viaHop
+
+            hubStreams(hopRes.document, TmfNet.originOf(hopRes.url), hopRes.url, 0)
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     // older vcloud pages carry a div.main h4 a hop first, the current ones
     // keep the target in a script variable that is either double base64 or a
     // plain url, and when the target is not the file itself it is a hub page
     suspend fun resolveVCloud(url: String): List<Stream> {
         return try {
-            val res = app.get(
-                url,
-                headers = TmfNet.browserHeaders("https://mobilejsr.best/"),
-                timeout = 30L
-            )
+            val res = TmfCf.get(url, "https://mobilejsr.best/", 30L) ?: return emptyList()
             if (!res.isSuccessful) return emptyList()
             val base = TmfNet.originOf(res.url)
             val originalDoc = res.document
@@ -116,7 +181,7 @@ object TmfSources {
             if (!hop.isNullOrBlank()) {
                 val hopUrl = absolute(hop, base)
                 val hopRes = try {
-                    app.get(hopUrl, headers = TmfNet.browserHeaders(base), timeout = 30L)
+                    TmfCf.get(hopUrl, base, 30L)
                 } catch (_: Exception) {
                     null
                 }
@@ -136,7 +201,7 @@ object TmfSources {
             if (!target.startsWith("http")) return emptyList()
 
             val targetRes = try {
-                app.get(target, headers = TmfNet.browserHeaders(base), timeout = 25L)
+                TmfCf.get(target, base, 25L)
             } catch (_: Exception) {
                 null
             }
@@ -206,12 +271,8 @@ object TmfSources {
     // of the share url works on every provider endpoint of its own origin
     suspend fun resolveVegaDrive(url: String): List<Stream> {
         return try {
-            val page = app.get(
-                url,
-                headers = TmfNet.browserHeaders("https://mobilejsr.best/"),
-                timeout = 20L
-            )
-            val base = TmfNet.originOf(page.url)
+            val res = TmfCf.get(url, "https://mobilejsr.best/", 20L) ?: return emptyList()
+            val base = TmfNet.originOf(res.url)
             val token = url.substringAfter("/s/").substringBefore("?")
             vegaStreams(
                 listOf(
@@ -232,11 +293,7 @@ object TmfSources {
 
     suspend fun resolveMDrive(url: String): List<Stream> {
         return try {
-            val res = app.get(
-                url,
-                headers = TmfNet.browserHeaders("https://mobilejsr.best/"),
-                timeout = 20L
-            )
+            val res = TmfCf.get(url, "https://mobilejsr.best/", 20L) ?: return emptyList()
             if (!res.isSuccessful) return emptyList()
             val mapJson = urlMapRegex.find(res.text)?.groupValues?.get(1) ?: return emptyList()
             val entries = try {
@@ -599,9 +656,10 @@ object TmfSources {
         href.contains("fastdl.") || href.contains("vcloud.") ||
             href.contains("vegadrive.") || href.contains("filebee.") ||
             href.contains("filepress.") || href.contains("fpgo.") ||
-            href.contains("m-drive.")
+            href.contains("m-drive.") || href.contains("mcloud.")
 
     suspend fun resolveOne(href: String): List<Stream> = when {
+        href.contains("mcloud.") || href.contains("vcloud.beer") -> resolveMCloud(href)
         href.contains("fastdl.") || href.contains("hubcdn.") -> resolveFastDl(href)
         href.contains("vcloud.") -> resolveVCloud(href)
         href.contains("vegadrive.") -> resolveVegaDrive(href)

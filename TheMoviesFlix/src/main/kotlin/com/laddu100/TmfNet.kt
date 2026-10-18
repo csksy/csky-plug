@@ -3,10 +3,10 @@ package com.laddu100
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.withLock
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.util.concurrent.ConcurrentHashMap
@@ -38,6 +38,7 @@ object TmfNet {
     // the live domain moves every few months, firebase is first and every
     // known mirror is tried until one answers
     private val FALLBACK_DOMAINS = listOf(
+        "https://themoviesflix.garden",
         "https://themoviesflix.forum",
         "https://moviesflix.red",
         "https://moviesflixhq.com",
@@ -51,6 +52,7 @@ object TmfNet {
     @Volatile
     private var activeDomain: String? = null
 
+    // the firebase entry regularly points at a dead or cloudflare walled mirror, first answer wins
     suspend fun domain(): String {
         activeDomain?.let { return it }
         return domainMutex.withLock {
@@ -61,7 +63,7 @@ object TmfNet {
             ).distinct()
             for (candidate in candidates) {
                 val res = try {
-                    app.get("$candidate/", headers = browserHeaders(), timeout = 12L)
+                    app.get("$candidate/?s=the", headers = browserHeaders(), timeout = 15L)
                 } catch (_: Exception) {
                     null
                 }
@@ -108,7 +110,7 @@ object TmfNet {
         val episodes: Map<Int, List<String>>
     )
 
-    private class CachedDrivePage(val savedAt: Long, val page: DrivePage)
+    private class CachedDrivePage(val savedAt: Long, val page: DrivePage?)
 
     private val driveCache = ConcurrentHashMap<String, CachedDrivePage>()
     private val driveLocks = ConcurrentHashMap<String, Mutex>()
@@ -126,12 +128,11 @@ object TmfNet {
             .joinToString(" · ")
 
     // links that belong to the drive page itself, the site's own bookmark
-    // promos, hosts that sit behind an interactive turnstile the player can
-    // never pass, and file lockers that have been dead for months
+    // promos and file lockers that have been dead for months
     private val DRIVE_JUNK = listOf(
         "nexdrive", "mobilejsr", "vglist", "w.org", "wordpress", "gmpg",
         "googleapis", "googletagmanager", "font-awesome", "schema", "category/",
-        "t.me/+", "telegram", "moviesflix", "mcloud.best", "gofile.io",
+        "t.me/+", "telegram", "moviesflix", "gofile.io",
         "1fichier", "megaup", "vikingfile", "gdtot", "dropgalaxy"
     )
 
@@ -158,7 +159,6 @@ object TmfNet {
 
     private fun parseDrivePage(doc: Document, rawHtml: String): DrivePage {
         val embedded = decodeEmbeddedBody(rawHtml)
-
         val title = doc.selectFirst("h1")?.text()?.trim()
             ?: doc.title().substringBefore(" – ").substringBefore(" - ").trim()
 
@@ -218,32 +218,46 @@ object TmfNet {
         else -> url
     }
 
+    private fun challenged(code: Int, body: String): Boolean =
+        (code == 403 || code == 503) && run {
+            body.contains("challenge-platform") || body.contains("Just a moment", true)
+        }
+
     private suspend fun driveFetchOnce(url: String): String? {
         val jar = mutableMapOf<String, String>()
         var current = url
         val seen = mutableSetOf<String>()
-        repeat(8) {
+        repeat(10) {
             if (!seen.add(current)) return null
-            val res = try {
+            var res = try {
                 app.get(
                     current,
-                    headers = browserHeaders("https://themoviesflix.forum/"),
+                    headers = browserHeaders("https://themoviesflix.garden/"),
                     cookies = jar,
                     allowRedirects = false,
-                    timeout = 12L
+                    timeout = 15L
                 )
             } catch (_: Exception) {
-                return null
-            }
+                null
+            } ?: return null
             jar.putAll(res.cookies)
             val loc = res.headers["location"]?.trim().orEmpty()
             if (loc.isEmpty()) {
-                if (res.code != 200) return null
-                val body = try {
+                var body = try {
                     res.text
                 } catch (_: Exception) {
                     return null
                 }
+                if (challenged(res.code, body)) {
+                    // the hop wants a clearance, solving once keeps the chain open for later calls
+                    res = TmfCf.get(current, "https://themoviesflix.garden/", 20L) ?: return null
+                    body = try {
+                        res.text
+                    } catch (_: Exception) {
+                        return null
+                    }
+                }
+                if (res.code != 200) return null
                 if (body.contains("challenge-platform") || body.contains("Just a moment", true)) {
                     return null
                 }
@@ -310,7 +324,7 @@ object TmfNet {
                 headers = browserHeaders(referer).toMutableMap().apply {
                     put("Range", "bytes=0-1023")
                 },
-                timeout = 12L
+                timeout = 15L
             )
             res.code
         } catch (_: Exception) {
