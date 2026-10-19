@@ -151,10 +151,14 @@ object MiruroApi {
     private val detailRegex = Regex("""^/api/v1/anime/([A-Za-z0-9_-]{32})$""")
     private val episodesRegex = Regex("""^/api/v1/anime/([A-Za-z0-9_-]{32})/episodes""")
 
+    // the site publishes more mirrors in its own page head, keep every
+    // known host around because any single one can be dns broken per isp
     private val fallbackDomains = listOf(
         "https://www.miruro.bz",
         "https://www.miruro.to",
-        "https://www.miruro.tv"
+        "https://www.miruro.tv",
+        "https://www.miruro.ru",
+        "https://www.miruro.cx"
     )
 
     // stream urls inside a play payload are short lived tokens so that body
@@ -167,11 +171,15 @@ object MiruroApi {
     // attempt must not be repeated on each call or the ui hangs for minutes
     private const val DIRECT_FAIL_TTL_MS = 10 * 60 * 1000L
     private const val WEB_FAIL_TTL_MS = 3 * 60 * 1000L
-    private const val DIRECT_TIMEOUT_MS = 8_000L
-    private const val WEBVIEW_TIMEOUT_MS = 22_000L
+    private const val DIRECT_TIMEOUT_MS = 6_000L
+    private const val WEBVIEW_TIMEOUT_MS = 25_000L
+    private const val MINT_TIMEOUT_MS = 20_000L
 
     @Volatile
     private var domainCache: Pair<Long, List<String>>? = null
+
+    @Volatile
+    private var lastGoodDomain: String? = null
 
     private val directFailedAt = ConcurrentHashMap<String, Long>()
     private val webFailedAt = ConcurrentHashMap<String, Long>()
@@ -219,7 +227,7 @@ object MiruroApi {
     private suspend fun domains(): List<String> {
         val now = System.currentTimeMillis()
         domainCache?.let { (at, list) ->
-            if (now - at < 300_000L) return list
+            if (now - at < 300_000L) return preferLastGood(list)
         }
         val override = try {
             FirebaseDomainHelper.getDomain("miruro")
@@ -234,7 +242,12 @@ object MiruroApi {
             if (domain !in list) list.add(domain)
         }
         domainCache = now to list
-        return list
+        return preferLastGood(list)
+    }
+
+    private fun preferLastGood(list: List<String>): List<String> {
+        val preferred = lastGoodDomain ?: return list
+        return list.sortedByDescending { it == preferred }
     }
 
     // cookies solved inside the app webview are valid for okhttp too when the
@@ -243,6 +256,14 @@ object MiruroApi {
         CookieManager.getInstance().getCookie("$domain/")
     } catch (e: Exception) {
         null
+    }
+
+    // the api answers 403 with a challenge until the webview owns a
+    // cf_clearance cookie, that cookie is the only thing that unlocks it
+    private fun hasClearance(domain: String): Boolean = try {
+        CookieManager.getInstance().getCookie("$domain/")?.contains("cf_clearance") == true
+    } catch (e: Exception) {
+        false
     }
 
     private fun directHeaders(domain: String): Map<String, String> {
@@ -256,20 +277,25 @@ object MiruroApi {
         return headers
     }
 
-    private fun decodeBytes(raw: ByteArray): String {
-        val head = raw.firstOrNull() ?: return ""
-        if (head == '{'.code.toByte() || head == '['.code.toByte()) {
-            return String(raw, Charsets.UTF_8)
-        }
-        val plain = ByteArray(raw.size) {
-            (raw[it].toInt() xor catalogKey[it % catalogKey.size].toInt()).toByte()
-        }
-        if (plain.size > 2 && plain[0] == 0x1f.toByte() && plain[1] == 0x8b.toByte()) {
-            return GZIPInputStream(ByteArrayInputStream(plain)).use { bytes ->
-                bytes.readBytes().toString(Charsets.UTF_8)
+    private fun decodeBytes(raw: ByteArray): String? {
+        if (raw.isEmpty()) return null
+        val head = raw[0]
+        val text = if (head == '{'.code.toByte() || head == '['.code.toByte()) {
+            String(raw, Charsets.UTF_8)
+        } else {
+            val plain = ByteArray(raw.size) {
+                (raw[it].toInt() xor catalogKey[it % catalogKey.size].toInt()).toByte()
+            }
+            if (plain.size > 2 && plain[0] == 0x1f.toByte() && plain[1] == 0x8b.toByte()) {
+                GZIPInputStream(ByteArrayInputStream(plain)).use { bytes ->
+                    bytes.readBytes().toString(Charsets.UTF_8)
+                }
+            } else {
+                plain.toString(Charsets.UTF_8)
             }
         }
-        return plain.toString(Charsets.UTF_8)
+        val trimmed = text.trimStart()
+        return if (trimmed.startsWith("{") || trimmed.startsWith("[")) trimmed else null
     }
 
     // one webview session is expensive so it covers everything the caller and
@@ -293,10 +319,16 @@ object MiruroApi {
 var w = window;
 if (w.__mrItems && w.__mrItems.length) {
   var item = w.__mrItems.shift();
+  w.__mrOut = (w.__mrOut || 0) + 1;
   var n = w.__mrSeq = (w.__mrSeq || 0) + 1;
-  if (w.__mrItems.length) { fetch('/__mr_next__?n=' + n).catch(function(){}); }
-  else { fetch('/__mr_done__?n=' + n).catch(function(){}); }
+  fetch('/__mr_next__?n=' + n).catch(function(){});
   return item;
+}
+if (w.__mrOut) {
+  w.__mrOut = 0;
+  var d = w.__mrSeq = (w.__mrSeq || 0) + 1;
+  fetch('/__mr_done__?n=' + d).catch(function(){});
+  return '';
 }
 if (w.__mrBusy) return '';
 if (location.origin !== '$origin') return '';
@@ -305,28 +337,35 @@ var T = $targetsJson;
 var K = new TextEncoder().encode('miruro/catalog');
 function d(b){
   var u = new Uint8Array(b);
+  if (u[0] === 0x7b || u[0] === 0x5b) return Promise.resolve(new TextDecoder().decode(u));
   var p = new Uint8Array(u.length);
   for (var i = 0; i < u.length; i++) p[i] = u[i] ^ K[i % K.length];
   if (p[0] === 0x1f && p[1] === 0x8b) {
     return new Response(new Blob([p]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
   }
-  if (u[0] === 0x7b || u[0] === 0x5b) return new TextDecoder().decode(u);
-  return new TextDecoder().decode(p);
+  return Promise.resolve(new TextDecoder().decode(p));
 }
-Promise.all(T.map(function(t){
+function attempt(t, k){
   return fetch(t, {credentials: 'same-origin', cache: 'no-store'}).then(function(r){
+    if ((r.status === 403 || r.status === 503) && k > 0) {
+      return new Promise(function(res){
+        setTimeout(function(){ res(attempt(t, k - 1)); }, 900);
+      });
+    }
     return r.arrayBuffer().then(function(b){
       return d(b).then(function(x){ return [t, r.status, x]; }, function(){ return [t, r.status, '']; });
     });
   }).catch(function(){ return [t, 0, '']; });
-})).then(function(items){
+}
+Promise.all(T.map(function(t){ return attempt(t, 4); })).then(function(items){
   w.__mrItems = items;
   var n = w.__mrSeq = (w.__mrSeq || 0) + 1;
   fetch('/__mr_next__?n=' + n).catch(function(){});
 }, function(){
   w.__mrItems = [];
+  w.__mrBusy = 0;
   var n = w.__mrSeq = (w.__mrSeq || 0) + 1;
-  fetch('/__mr_done__?n=' + n).catch(function(){});
+  fetch('/__mr_next__?n=' + n).catch(function(){});
 });
 return '';
 })()
@@ -341,6 +380,9 @@ return '';
     // one per request round, a final sentinel url ends the session
     private suspend fun webViewFetch(domain: String, targets: List<String>): List<FetchedItem> {
         val origin = domain.removeSuffix("/")
+        // an edge cached homepage skips the cloudflare javascript checks that
+        // hand out the clearance cookie, a fresh url forces the origin page
+        val home = if (hasClearance(domain)) "$origin/" else "$origin/?_mr=" + System.currentTimeMillis()
         val captured = ConcurrentLinkedQueue<String>()
         val resolver = WebViewResolver(
             interceptUrl = Regex("__mr_done__"),
@@ -353,7 +395,7 @@ return '';
             },
             timeout = WEBVIEW_TIMEOUT_MS,
         )
-        resolver.resolveUsingWebView("$origin/")
+        resolver.resolveUsingWebView(home)
         val out = mutableListOf<FetchedItem>()
         for (raw in captured) {
             try {
@@ -371,6 +413,47 @@ return '';
         return out
     }
 
+    private fun adopt(items: List<FetchedItem>, path: String): Boolean {
+        var useful = false
+        for (item in items) {
+            if (item.code == 200 && item.body.startsWith("{")) {
+                cachePut(item.path, item.body)
+                if (item.path == path) useful = true
+            }
+        }
+        return useful
+    }
+
+    private fun challenged(items: List<FetchedItem>): Boolean =
+        items.isNotEmpty() &&
+            (items.any { it.code == 403 || it.code == 503 } || items.all { it.code == 0 })
+
+    // loading a protected api url as a document makes the zone run its
+    // managed challenge inside the webview, a real chromium solves it on its
+    // own and the cf_clearance cookie lands in the shared cookie jar
+    private suspend fun mintClearance(domain: String): Boolean {
+        val origin = domain.removeSuffix("/")
+        if (hasClearance(domain)) return true
+        val resolver = WebViewResolver(
+            interceptUrl = Regex(".^"),
+            additionalUrls = listOf(Regex(".")),
+            userAgent = null,
+            useOkhttp = false,
+            script = null,
+            scriptCallback = null,
+            timeout = MINT_TIMEOUT_MS,
+        )
+        return try {
+            resolver.resolveUsingWebView(origin + recentPath) { hasClearance(domain) }
+            hasClearance(domain)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.d("Miruro", "clearance attempt failed for $domain: ${e.message}")
+            false
+        }
+    }
+
     private suspend fun directFetch(domain: String, path: String): String? {
         val res = app.get(
             domain + path,
@@ -378,7 +461,7 @@ return '';
             timeout = DIRECT_TIMEOUT_MS
         )
         if (res.code == 200) {
-            res.body?.bytes()?.takeIf { it.isNotEmpty() }?.let { return decodeBytes(it) }
+            res.body.bytes().takeIf { it.isNotEmpty() }?.let { return decodeBytes(it) }
         }
         return null
     }
@@ -395,6 +478,7 @@ return '';
                     val text = directFetch(domain, path)
                     if (!text.isNullOrBlank()) {
                         directFailedAt.remove(domain)
+                        lastGoodDomain = domain
                         cachePut(path, text)
                         return text
                     }
@@ -407,36 +491,67 @@ return '';
                 }
             }
             cacheGet(path)?.let { return it }
-            val webBlocked = webFailedAt[domain]?.let { now - it < WEB_FAIL_TTL_MS } == true
-            if (!webBlocked) {
-                try {
-                    fetchLock.withLock {
-                        cacheGet(path)?.let { return it }
-                        val items = webViewFetch(domain, targets)
-                        var haveRequested = false
-                        for (item in items) {
-                            if (item.code == 200 && item.body.startsWith("{")) {
-                                cachePut(item.path, item.body)
-                                if (item.path == path) haveRequested = true
-                            }
-                        }
-                        if (haveRequested) {
-                            webFailedAt.remove(domain)
-                        } else {
-                            webFailedAt[domain] = System.currentTimeMillis()
-                        }
-                    }
-                    cacheGet(path)?.let { return it }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    lastError = e
-                    webFailedAt[domain] = System.currentTimeMillis()
-                }
+            webPhase(domain, targets, path)
+            cacheGet(path)?.let {
+                lastGoodDomain = domain
+                return it
             }
         }
         Log.d("Miruro", "catalog request failed for $path: ${lastError?.message}")
         throw lastError ?: Exception("miruro is unreachable")
+    }
+
+    private suspend fun webPhase(domain: String, targets: List<String>, path: String) {
+        val now = System.currentTimeMillis()
+        if (webFailedAt[domain]?.let { now - it < WEB_FAIL_TTL_MS } == true) return
+        fetchLock.withLock {
+            cacheGet(path)?.let { return }
+            var items = try {
+                webViewFetch(domain, targets)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (items != null) {
+                Log.d("Miruro", "webview $domain codes: " + items.joinToString(",") { it.code.toString() })
+                if (adopt(items, path)) {
+                    webFailedAt.remove(domain)
+                    return
+                }
+            }
+            if ((items == null || challenged(items)) && !hasClearance(domain)) {
+                if (mintClearance(domain)) {
+                    directFailedAt.remove(domain)
+                    webFailedAt.remove(domain)
+                    try {
+                        directFetch(domain, path)?.let {
+                            cachePut(path, it)
+                            return
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // the webview retry below is the reliable path
+                    }
+                    val retried = try {
+                        webViewFetch(domain, targets)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (retried != null) {
+                        Log.d("Miruro", "webview $domain retry codes: " + retried.joinToString(",") { it.code.toString() })
+                        if (adopt(retried, path)) {
+                            webFailedAt.remove(domain)
+                            return
+                        }
+                    }
+                }
+            }
+            webFailedAt[domain] = System.currentTimeMillis()
+        }
     }
 
     suspend fun trending(): MiruroListPage =
