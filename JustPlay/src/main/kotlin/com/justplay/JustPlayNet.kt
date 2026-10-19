@@ -129,14 +129,142 @@ internal object PlayNet {
         ) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
     }
 
-    suspend fun m3u8Alive(url: String, headers: Map<String, String> = emptyMap()): Boolean {
-        if (!url.startsWith("http")) return false
+    // same file behind two different query strings (one resolver sends an
+    // api key, the other does not) is still the same file, drop the query for
+    // the dedupe key
+    fun dedupeKey(url: String): String {
+        val clean = url.substringBefore("?").substringBefore("#").lowercase()
         return try {
-            val res = app.get(url, headers = headers, timeout = 12L)
-            res.code == 200 && res.text.trimStart().startsWith("#EXTM3U")
+            val u = URI(clean)
+            "${u.scheme}://${u.host}${u.path}"
+        } catch (_: Exception) {
+            clean
+        }
+    }
+
+    // height of the best live video rung, measured while hlsCheck walks the
+    // playlist. the apis like calling a 720p master 1080p so the badge needs
+    // the real number
+    private val hlsHeights = ConcurrentHashMap<String, Int>()
+
+    fun hlsHeightFor(url: String): Int? = hlsHeights[url]
+
+    private fun dirOf(url: String): String =
+        url.substringBefore("?").substringBeforeLast("/") + "/"
+
+    // storyboard tracks are thumbnail sheets wearing a playlist costume, the
+    // segment names keep their image extension and that is the tell
+    private fun isStoryboardUri(u: String): Boolean {
+        val p = u.substringBefore("?").substringBefore("#").lowercase()
+        return p.endsWith(".png") || p.endsWith(".jpg") || p.endsWith(".jpeg") || p.endsWith(".webp")
+    }
+
+    private suspend fun segmentReachable(url: String, headers: Map<String, String>): Boolean {
+        val h = headers.toMutableMap()
+        if (h.keys.none { it.equals("Range", true) }) h["Range"] = "bytes=0-1023"
+        return try {
+            app.get(url, headers = h, timeout = 12L).code in 200..399
         } catch (_: Exception) {
             false
         }
+    }
+
+    // full chain check: master, every video rung down to its first segment,
+    // and the audio renditions. a master that only answers with a thumbnail
+    // storyboard, or whose video rungs are all gone while the audio is dead
+    // too, fails here instead of failing at play time on the device
+    suspend fun hlsCheck(url: String, headers: Map<String, String> = emptyMap()): Boolean {
+        if (!url.startsWith("http")) return false
+        val res = try {
+            app.get(url, headers = headers, timeout = 12L)
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        if (res.code != 200) return false
+        val text = res.text
+        if (!text.trimStart().startsWith("#EXTM3U")) return false
+
+        val dir = dirOf(url)
+        val lines = text.lines()
+
+        val variantLines = mutableListOf<Pair<String, Int?>>()
+        val audioUris = mutableListOf<String>()
+        var pendingHeight: Int? = null
+        var wantVariant = false
+        for (raw in lines) {
+            val line = raw.trim()
+            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                wantVariant = true
+                pendingHeight = Regex("RESOLUTION=(\\d+)x(\\d+)").find(line)
+                    ?.groupValues?.get(2)?.toIntOrNull()
+            } else if (wantVariant && line.isNotEmpty() && !line.startsWith("#")) {
+                variantLines.add(line to pendingHeight)
+                wantVariant = false
+            } else if (line.startsWith("#EXT-X-MEDIA") && line.contains("TYPE=AUDIO")) {
+                Regex("URI=\"([^\"]+)\"").find(line)?.groupValues?.get(1)?.let { audioUris.add(it) }
+            }
+        }
+
+        if (variantLines.isEmpty()) {
+            // plain media playlist, validate its first segment directly
+            val seg = lines.firstOrNull { it.isNotBlank() && !it.startsWith("#") }?.trim()
+                ?: return false
+            if (isStoryboardUri(seg)) return false
+            return segmentReachable(absolute(seg, dir), headers)
+        }
+
+        var bestHeight: Int? = null
+        for ((uri, height) in variantLines.sortedByDescending { it.second ?: 0 }) {
+            if (isStoryboardUri(uri)) continue
+            val vRes = try {
+                app.get(absolute(uri, dir), headers = headers, timeout = 12L)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            if (vRes.code != 200) continue
+            val vText = vRes.text
+            if (!vText.trimStart().startsWith("#EXTM3U")) continue
+            val vDir = dirOf(absolute(uri, dir))
+            val seg = vText.lines().firstOrNull { it.isNotBlank() && !it.startsWith("#") }?.trim()
+                ?: continue
+            if (isStoryboardUri(seg)) continue
+            if (!segmentReachable(absolute(seg, vDir), headers)) continue
+            bestHeight = height
+            break
+        }
+        if (bestHeight == null) return false
+
+        if (audioUris.isNotEmpty()) {
+            var audioOk = false
+            for (a in audioUris.take(3)) {
+                val aUrl = absolute(a, dir)
+                val aRes = try {
+                    app.get(aUrl, headers = headers, timeout = 12L)
+                } catch (_: Exception) {
+                    null
+                } ?: continue
+                if (aRes.code != 200) continue
+                val aText = aRes.text
+                if (!aText.trimStart().startsWith("#EXTM3U")) continue
+                val aDir = dirOf(aUrl)
+                val seg = aText.lines().firstOrNull { it.isNotBlank() && !it.startsWith("#") }?.trim()
+                    ?: continue
+                if (isStoryboardUri(seg)) continue
+                if (!segmentReachable(absolute(seg, aDir), headers)) continue
+                audioOk = true
+                break
+            }
+            if (!audioOk) return false
+        }
+
+        if (hlsHeights.size > 400) hlsHeights.clear()
+        hlsHeights[url] = bestHeight
+        return true
+    }
+
+    suspend fun m3u8Alive(url: String, headers: Map<String, String> = emptyMap()): Boolean {
+        if (!url.startsWith("http")) return false
+        return hlsCheck(url, headers)
     }
 
     suspend fun fileAlive(url: String, referer: String? = null): Boolean {
@@ -477,7 +605,12 @@ internal object PlayNet {
                 }.mapNotNull { runCatching { it.await() }.getOrNull() }
             }
         } ?: return
-        for (link in checked) {
+        // decodable first, h.264 plays on anything while 10bit hevc and dolby
+        // vision do not, the top of the sheet is what gets tapped first
+        val ordered = checked.sortedWith(
+            compareBy({ PlayLabels.codecRank(it.name) }, { -it.quality })
+        )
+        for (link in ordered) {
             buildSiteLink(site, label, quality, link)?.let(callback)
         }
     }

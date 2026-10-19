@@ -14,7 +14,8 @@ internal object PlayLabels {
         "netnaija" to "NetNaija",
         "netmirror_nf" to "NetMirror Netflix",
         "netmirror_hs" to "NetMirror Hotstar",
-        "netmirror_pv" to "NetMirror Prime Video"
+        "netmirror_pv" to "NetMirror Prime Video",
+        "hicine" to "HiCine"
     )
 
     private val qualityRegex = Regex("(?i)\\b(2160p|1440p|1080[pi]|720[pi]|480[pi]|360p|240p|4k|8k|uhd)\\b")
@@ -35,6 +36,22 @@ internal object PlayLabels {
 
     fun siteName(id: String): String =
         siteNames[id] ?: id.replaceFirstChar { it.uppercase() }
+
+    // decodability rank for the sheet order, lower taps safer. every device
+    // decodes h.264, 10bit hevc and dolby vision are where phones start
+    // dropping out, so they sink below the plain encodes
+    fun codecRank(name: String): Int {
+        val n = name.lowercase()
+        if (n.contains("dolby vision") || Regex("\\bdv\\b").containsMatchIn(n) ||
+            n.contains("hdr10") || Regex("\\bhdr\\b").containsMatchIn(n)
+        ) return 4
+        if (n.contains("av1")) return 3
+        if (n.contains("10bit") || n.contains("10 bit")) return 2
+        if (n.contains("x264") || n.contains("h264") || n.contains("h.264") ||
+            n.contains("avc")
+        ) return 0
+        return 1
+    }
 
     fun cleanText(s: String): String {
         val sb = StringBuilder(s.length)
