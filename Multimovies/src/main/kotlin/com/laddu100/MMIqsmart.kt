@@ -1,5 +1,6 @@
 package com.laddu100
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -10,6 +11,7 @@ import java.net.URI
 // file id per host, each id then resolves through that host own pipeline
 object MMIqsmart {
 
+    private const val TAG = "MM_Iqsmart"
     private const val API = "https://streams.iqsmartgames.com"
     private const val PLAYER = "https://pro.iqsmartgames.com"
 
@@ -30,7 +32,7 @@ object MMIqsmart {
     }
 
     private suspend fun fetchFiles(embedUrl: String): List<FileEntry> {
-        val html = MMNet.get(embedUrl, referer = "https://multimovies.garden/") ?: return emptyList()
+        val html = MMNet.get(embedUrl, referer = MMSite.referer) ?: return emptyList()
 
         val varValue = { name: String ->
             Regex("let\\s+$name\\s*=\\s*\"([^\"]*)\"").find(html)?.groupValues?.get(1).orEmpty()
@@ -52,7 +54,8 @@ object MMIqsmart {
         val body = MMNet.get(apiPath, referer = "$API/") ?: return emptyList()
         val data = try {
             JSONObject(body).optJSONArray("data")
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "files json: ${e.message}")
             null
         } ?: return emptyList()
 
@@ -79,13 +82,15 @@ object MMIqsmart {
 
         val root = try {
             JSONObject(body)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "mirrors json: ${e.message}")
             return emptyList()
         }
         val sources = root.optJSONObject("sources") ?: return emptyList()
         val codes = try {
             JSONObject(String(MMCrypto.b64urlDecode(root.optString("mresult")), Charsets.UTF_8))
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "mirror codes: ${e.message}")
             return emptyList()
         }
 
@@ -134,15 +139,17 @@ object MMIqsmart {
         for ((index, file) in files.withIndex()) {
             val mirrors = try {
                 fetchMirrors(file.slug)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "mirrors ${file.slug}: ${e.message}")
                 emptyList()
             }
             val fileLabel = shortLabel(file.name).ifBlank { "File ${index + 1}" }
             for (mirror in mirrors) {
                 try {
                     any = dispatchMirror(mirror, "$labelPrefix $fileLabel", callback) || any
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     // single dead mirror is expected, keep the rest
+                    Log.e(TAG, "mirror ${mirror.friendlyName}: ${e.message}")
                 }
             }
         }
@@ -159,7 +166,7 @@ object MMIqsmart {
         val code = embedUrl.trimEnd('/').substringAfterLast('/')
         if (code.isBlank()) return false
 
-        val page = MMNet.get(embedUrl, referer = "https://multimovies.garden/")
+        val page = MMNet.get(embedUrl, referer = MMSite.referer)
         val sid = if (page != null) {
             Regex("id=\"gdmrfid\"\\s+value=\"([^\"]+)\"").find(page)?.groupValues?.get(1)
                 ?: Regex("let\\s+FinalID\\s*=\\s*\"([^\"]+)\"").find(page)?.groupValues?.get(1)
@@ -168,15 +175,17 @@ object MMIqsmart {
 
         val mirrors = try {
             fetchMirrors(sid)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "mirrors $sid: ${e.message}")
             emptyList()
         }
         var any = false
         for (mirror in mirrors) {
             try {
                 any = dispatchMirror(mirror, "$labelPrefix $sid", callback) || any
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 // keep going on a single dead mirror
+                Log.e(TAG, "mirror ${mirror.friendlyName}: ${e.message}")
             }
         }
         return any
@@ -186,11 +195,14 @@ object MMIqsmart {
 // xvidstyle frontends expose their playlist through a dean edwards packed jw setup
 object MMXvidStyle {
 
+    private const val TAG = "MM_XvidStyle"
+
     private val knownHosts = setOf(
         "hanerix.com",
         "morencius.com",
         "vibuxer.com",
         "n1mwq.org",
+        "minochinos.com",
     )
 
     fun isXvidStyle(host: String): Boolean = host in knownHosts
@@ -218,7 +230,8 @@ object MMXvidStyle {
         val base = try {
             val uri = URI(pageUrl)
             "${uri.scheme}://${uri.host}"
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "bad mirror url: ${e.message}")
             return false
         }
         val html = MMNet.get(pageUrl, referer = "https://pro.iqsmartgames.com/") ?: return false

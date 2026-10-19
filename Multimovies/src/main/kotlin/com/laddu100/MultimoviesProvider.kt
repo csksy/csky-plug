@@ -1,5 +1,6 @@
 package com.laddu100
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -25,9 +26,16 @@ import kotlinx.coroutines.coroutineScope
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import java.net.URI
+import java.util.concurrent.ConcurrentHashMap
+
+private const val TAG = "Multimovies"
+
+// how often the live domain is re-validated, the check is one homepage fetch
+private const val DOMAIN_CHECK_TTL_MS = 5L * 60 * 1000
 
 class MultimoviesProvider : MainAPI() {
-    override var mainUrl = "https://multimovies.garden"
+    override var mainUrl = "https://m1.multimovies.courses"
     override var name = "Multimovies"
     override var lang = "en"
     override val hasMainPage = true
@@ -53,32 +61,85 @@ class MultimoviesProvider : MainAPI() {
         "Accept-Language" to "en-US,en;q=0.9",
     )
 
+    // the live domain first, then whatever the firebase registry says, then the
+    // historical ones; garden is kept last because it is challenge walled today
+    private val domainFallbacks = listOf(
+        "https://m1.multimovies.courses",
+        "https://multimovies.garden",
+    )
+
+    // hosts the site lived on before, watchlist entries still carry them
+    private val legacyHosts = setOf(
+        "multimovies.garden", "www.multimovies.garden",
+        "multimovies.wtf", "www.multimovies.wtf",
+        "multimovies.courses", "www.multimovies.courses",
+    )
+
     private var validatedDomain: String? = null
 
-    // the firebase list can lag behind migrations, only switch when the reply
-    // really looks like the current app shell
-    private suspend fun refreshDomain() {
+    @Volatile private var domainCheckAt = 0L
+
+    // every catalog page renders poster-card rows, the old player.js probe hit a
+    // script that only detail pages load and blocked every domain switch
+    private suspend fun refreshDomain(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - domainCheckAt < DOMAIN_CHECK_TTL_MS) return
+        domainCheckAt = now
         try {
-            val remote = FirebaseDomainHelper.getDomain("multimovies") ?: return
-            if (remote == mainUrl || remote == validatedDomain) return
-            val ok = try {
-                val resp = mmGet("$remote/", headers = headers)
-                resp.isSuccessful && resp.text.contains("/assets/js/player.js")
-            } catch (_: Exception) {
-                false
+            val remote = FirebaseDomainHelper.getDomain("multimovies")
+                ?.takeIf { it.startsWith("http") }
+                ?.removeSuffix("/")
+            val candidates = buildList {
+                if (remote != null) add(remote)
+                domainFallbacks.filter { it != remote }.forEach { add(it) }
             }
-            validatedDomain = remote
-            if (ok) mainUrl = remote
-        } catch (_: Exception) {
+            for (candidate in candidates) {
+                val ok = try {
+                    val resp = mmGet("$candidate/", headers = headers)
+                    resp.isSuccessful && resp.text.contains("poster-card")
+                } catch (e: Exception) {
+                    Log.d(TAG, "domain check $candidate: ${e.message}")
+                    false
+                }
+                if (ok) {
+                    validatedDomain = candidate
+                    if (candidate != mainUrl) {
+                        mainUrl = candidate
+                        MMSite.baseUrl = candidate
+                    }
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "refreshDomain: ${e.message}")
             validatedDomain = null
         }
+    }
+
+    // watchlist and sync entries keep whatever host they were saved with; if
+    // that host is a dead mirror of the site, replay the same path on the live
+    // domain instead of walking into the cloudflare wall
+    private fun normalizeUrl(url: String): String = try {
+        val uri = URI(url)
+        val host = (uri.host ?: "").lowercase()
+        val live = MMNet.hostOf(mainUrl)
+        if (host != live && (host in legacyHosts || host.endsWith(".multimovies.courses"))) {
+            val path = uri.rawPath.orEmpty().ifBlank { "/" }
+            val query = uri.rawQuery?.let { "?$it" } ?: ""
+            mainUrl.trimEnd('/') + path + query
+        } else {
+            url
+        }
+    } catch (e: Exception) {
+        url
     }
 
     private fun cardJson(el: org.jsoup.nodes.Element): JSONObject? {
         val raw = el.selectFirst("[data-save-title]")?.attr("data-save-title") ?: return null
         return try {
             JSONObject(raw.replace("&quot;", "\""))
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "card json: ${e.message}")
             null
         }
     }
@@ -120,7 +181,8 @@ class MultimoviesProvider : MainAPI() {
             val items = doc.parseCards()
             val hasNext = doc.selectFirst("a[rel=next]") != null
             newHomePageResponse(request.name, items, hasNext = hasNext && items.isNotEmpty())
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "getMainPage: ${e.message}")
             newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
     }
@@ -134,7 +196,8 @@ class MultimoviesProvider : MainAPI() {
                 headers = headers,
             ).document
             doc.parseCards()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "search: ${e.message}")
             emptyList()
         }
     }
@@ -144,7 +207,8 @@ class MultimoviesProvider : MainAPI() {
     private fun parseWatchConfig(html: String): List<WatchServer> {
         val root = try {
             JSONObject(extractBracedObject(html, "const watchConfig = "))
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "watchConfig: ${e.message}")
             return emptyList()
         }
         val servers = root.optJSONArray("initialServers") ?: return emptyList()
@@ -192,7 +256,7 @@ class MultimoviesProvider : MainAPI() {
         val ldJson = doc.selectFirst("script[type=application/ld+json]")?.data().orEmpty()
         val ld = try {
             if (ldJson.isBlank()) null else JSONObject(ldJson)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             null
         }
         val resolvedTitle = title.ifBlank { ld?.optString("name").orEmpty() }
@@ -212,7 +276,7 @@ class MultimoviesProvider : MainAPI() {
             val obj = JSONObject(ld)
             val genre = obj.optJSONArray("genre") ?: return emptyList()
             (0 until genre.length()).map { genre.optString(it) }.filter { it.isNotBlank() }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             emptyList()
         }
     }
@@ -228,8 +292,25 @@ class MultimoviesProvider : MainAPI() {
     }
 
     private fun parseSeasons(doc: Document): List<Int> {
-        val select = doc.selectFirst("select.cinejoy-season-select") ?: return emptyList()
+        // the range select shares the cinejoy-season-select class, only the
+        // pill dropdown lists real seasons
+        val select = doc.selectFirst(".cinejoy-season-pill-dropdown select") ?: return emptyList()
         return select.select("option").mapNotNull { it.attr("value").toIntOrNull() }.sorted()
+    }
+
+    // seasons past 24 episodes come as ep_range pages, the selected range is
+    // the one already rendered on the page
+    private fun parseEpisodeRanges(doc: Document): List<Int> {
+        val select = doc.selectFirst("select.episode-range-select") ?: return emptyList()
+        return select.select("option")
+            .filterNot { it.hasAttr("selected") }
+            .mapNotNull { it.attr("value").toIntOrNull() }
+    }
+
+    private fun watchSeason(html: String): Int? = try {
+        JSONObject(extractBracedObject(html, "const watchConfig = ")).optInt("season").takeIf { it > 0 }
+    } catch (e: Exception) {
+        null
     }
 
     private fun parseEpisodes(doc: Document): List<Episode> {
@@ -256,45 +337,68 @@ class MultimoviesProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         refreshDomain()
+        val target = normalizeUrl(url)
         return try {
-            val doc = mmGet(url, headers = headers).document
+            val resp = mmGet(target, headers = headers)
+            val doc = resp.document
             val (title, plot, image) = parseMeta(doc)
             if (title.isBlank()) return null
             val genres = parseGenres(doc)
             val (year, duration, score) = parsePills(doc)
 
-            if (url.contains("/series/")) {
+            if (target.contains("/series/")) {
+                val seriesBase = target.substringBefore('?')
                 val seasons = parseSeasons(doc)
+                val current = watchSeason(resp.text) ?: seasons.firstOrNull() ?: 1
                 val episodes = mutableListOf<Episode>()
                 episodes.addAll(parseEpisodes(doc))
 
-                val remaining = seasons.drop(1)
+                for (range in parseEpisodeRanges(doc)) {
+                    try {
+                        episodes.addAll(
+                            parseEpisodes(mmGet("$seriesBase?season=$current&ep_range=$range", headers = headers).document)
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "episodes range $range: ${e.message}")
+                    }
+                }
+
+                val remaining = seasons.filter { it != current }
                 if (remaining.isNotEmpty()) {
                     coroutineScope {
                         remaining.map { season ->
                             async(Dispatchers.IO) {
                                 try {
-                                    mmGet(
-                                        "$url?season=$season",
-                                        headers = headers,
-                                    ).document
-                                } catch (_: Exception) {
-                                    null
+                                    val seasonDoc = mmGet("$seriesBase?season=$season", headers = headers).document
+                                    val eps = parseEpisodes(seasonDoc).toMutableList()
+                                    for (range in parseEpisodeRanges(seasonDoc)) {
+                                        try {
+                                            eps.addAll(
+                                                parseEpisodes(
+                                                    mmGet("$seriesBase?season=$season&ep_range=$range", headers = headers).document
+                                                )
+                                            )
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "episodes season $season range $range: ${e.message}")
+                                        }
+                                    }
+                                    eps
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "episodes season $season: ${e.message}")
+                                    emptyList()
                                 }
                             }
-                        }.map { deferred ->
-                            deferred.await()?.let { episodes.addAll(parseEpisodes(it)) }
-                        }
+                        }.forEach { episodes.addAll(it.await()) }
                     }
                 }
 
-                val tvType = if (genres.any { it.contains("anime", true) } || url.contains("anime")) {
+                val tvType = if (genres.any { it.contains("anime", true) } || target.contains("anime")) {
                     TvType.Anime
                 } else {
                     TvType.TvSeries
                 }
                 if (episodes.isEmpty()) return null
-                newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                newTvSeriesLoadResponse(title, target, tvType, episodes) {
                     this.posterUrl = image
                     this.backgroundPosterUrl = image
                     this.plot = plot
@@ -305,9 +409,9 @@ class MultimoviesProvider : MainAPI() {
             } else {
                 newMovieLoadResponse(
                     title,
-                    url,
-                    if (url.contains("anime")) TvType.Anime else TvType.Movie,
-                    url,
+                    target,
+                    if (target.contains("anime")) TvType.Anime else TvType.Movie,
+                    target,
                 ) {
                     this.posterUrl = image
                     this.backgroundPosterUrl = image
@@ -318,7 +422,8 @@ class MultimoviesProvider : MainAPI() {
                     this.duration = duration
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "load: ${e.message}")
             null
         }
     }
@@ -349,7 +454,7 @@ class MultimoviesProvider : MainAPI() {
         refreshDomain()
         var any = false
         try {
-            val html = mmGet(data, headers = headers).text
+            val html = mmGet(normalizeUrl(data), headers = headers).text
             val servers = parseWatchConfig(html)
             if (servers.isEmpty()) return false
 
@@ -361,12 +466,8 @@ class MultimoviesProvider : MainAPI() {
             val title = doc.selectFirst("h1")?.text()?.trim().orEmpty()
             val year = parsePills(doc).first?.toString()
 
-            val seenLinks = java.util.Collections.newSetFromMap(
-                java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-            )
-            val seenSubs = java.util.Collections.newSetFromMap(
-                java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-            )
+            val seenLinks = ConcurrentHashMap.newKeySet<String>()
+            val seenSubs = ConcurrentHashMap.newKeySet<String>()
             val linkCb: (ExtractorLink) -> Unit = { link ->
                 if (seenLinks.add(link.url)) callback(link)
             }
@@ -380,14 +481,16 @@ class MultimoviesProvider : MainAPI() {
                     async(Dispatchers.IO) {
                         try {
                             resolveServer(server, ids, isTv, season, episode, title, year, subCb, linkCb)
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            Log.e(TAG, "loadLinks ${server.name}: ${e.message}")
                             false
                         }
                     }
                 }
             }
             for (job in jobs) any = job.await() || any
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "loadLinks: ${e.message}")
             return any
         }
         return any
@@ -414,6 +517,9 @@ class MultimoviesProvider : MainAPI() {
 
             host.contains("filesforever.link") ->
                 MMIqsmart.resolveFilesforever(server.url, server.name, callback)
+
+            host.contains("vidrift.net") ->
+                MMVidrift.resolve(server.url, server.name, callback)
 
             host.contains("vidout.pages.dev") -> {
                 val tmdb = ids.tmdbId ?: return false
@@ -442,7 +548,7 @@ class MultimoviesProvider : MainAPI() {
             }
 
             else -> {
-                val html = MMNet.get(server.url, referer = "https://multimovies.garden/")
+                val html = MMNet.get(server.url, referer = MMSite.referer)
                 if (html != null) {
                     val urls = Regex("https?://[^\"'\\s\\\\]+\\.m3u8[^\"'\\s\\\\]*")
                         .findAll(html)

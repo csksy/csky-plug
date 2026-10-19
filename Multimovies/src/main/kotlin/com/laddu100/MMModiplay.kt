@@ -1,5 +1,6 @@
 package com.laddu100
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -7,10 +8,11 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONObject
 import org.jsoup.Jsoup
 
-// the rozgarlelo hub fronts several mirror platforms; some it resolves server side
-// into a relay player page, others it redirects to their own player domains
+// the rozgarlelo hub fronts several mirror platforms; newer dropdown entries
+// carry their own target url, older ones still resolve through the hub proxy
 object MMCineverse {
 
+    private const val TAG = "MM_Cineverse"
     private const val HUB = "https://rozgarlelo.modiplay.xyz"
 
     // hosts running the shared api v1 player with the static protocol derived cipher
@@ -24,19 +26,21 @@ object MMCineverse {
     private val APIV1_KEY = "kiemtienmua911ca".toByteArray(Charsets.UTF_8)
     private val APIV1_IV = "1234567890oiuytr".toByteArray(Charsets.UTF_8)
 
-    private data class SubServer(val platform: String, val name: String, val code: String)
+    private data class SubServer(val url: String, val platform: String, val name: String, val code: String)
 
     private fun decryptApiV1(hex: String): JSONObject? {
         val data = try {
             MMCrypto.hexToBytes(hex)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "api v1 hex: ${e.message}")
             return null
         }
         if (data.isEmpty() || data.size % 16 != 0) return null
         val plain = MMCrypto.aesCbcDecrypt(data, APIV1_KEY, APIV1_IV) ?: return null
         return try {
             JSONObject(String(plain, Charsets.UTF_8))
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "api v1 json: ${e.message}")
             null
         }
     }
@@ -47,17 +51,18 @@ object MMCineverse {
         label: String,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val info = MMNet.get(
+        MMNet.get(
             "https://$host/api/v1/info?id=$code",
             referer = "https://$host/",
         )?.let { decryptApiV1(it) }
-        val title = info?.optString("title").orEmpty()
 
         val videoHex = MMNet.get(
             "https://$host/api/v1/video?id=$code&w=1920&h=1080&r=$HUB",
             referer = "https://$host/",
         ) ?: return false
         val video = decryptApiV1(videoHex) ?: return false
+        // only the video payload carries the release name the quality is read from
+        val title = video.optString("title")
 
         var added = false
         val cfNative = video.optString("cfNative")
@@ -75,7 +80,7 @@ object MMCineverse {
                     .getJSONObject("adjust")
                     .getJSONObject("Tiktok")
                     .optString("domain")
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 ""
             }
             val ttVersion = try {
@@ -84,7 +89,7 @@ object MMCineverse {
                     .getJSONObject("Tiktok")
                     .getJSONObject("params")
                     .optString("v")
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 ""
             }
             val url = if (ttDomain.isNotBlank()) {
@@ -106,7 +111,7 @@ object MMCineverse {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val proxyUrl = "$HUB/proxy.php?p=${MMNet.urlEncode(platform)}&c=${MMNet.urlEncode(code)}" +
-            "&title=&site_ref=https%3A%2F%2Fmultimovies.garden%2F&noredirect=1"
+            "&title=&site_ref=${MMNet.urlEncode(MMSite.referer)}&noredirect=1"
 
         val resp = try {
             app.get(
@@ -118,7 +123,8 @@ object MMCineverse {
                 timeout = 30_000L,
                 allowRedirects = false,
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "proxy $platform: ${e.message}")
             return false
         }
 
@@ -137,21 +143,45 @@ object MMCineverse {
             return false
         }
 
-        val html = resp.text
+        return resolveProxyHtml(resp.text, "$labelPrefix $displayName", callback)
+    }
+
+    // the hub relay player either hands a var src playlist (relative to the hub)
+    // or proxies the target page over with direct links in it
+    private suspend fun resolveProxyHtml(html: String, label: String, callback: (ExtractorLink) -> Unit): Boolean {
         val src = Regex("var\\s+src=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
-        if (src.isNullOrBlank()) return false
-        val stream = MMNet.deEsc(src)
-        callback(
-            newExtractorLink(
-                "$labelPrefix $displayName",
-                "$labelPrefix $displayName",
-                stream,
-                type = ExtractorLinkType.M3U8,
-            ) {
-                this.headers = mapOf("Referer" to "$HUB/")
+        if (src != null) {
+            val stream = MMNet.abs(HUB, MMNet.deEsc(src))
+            if (stream.startsWith("http")) {
+                callback(
+                    newExtractorLink(
+                        label,
+                        label,
+                        stream,
+                        type = ExtractorLinkType.M3U8,
+                    ) {
+                        this.headers = mapOf("Referer" to "$HUB/")
+                    }
+                )
+                return true
             }
-        )
-        return true
+        }
+        val urls = Regex("https?://[^\"'\\s\\\\]+\\.m3u8[^\"'\\s\\\\]*")
+            .findAll(html)
+            .map { MMNet.deEsc(it.groupValues.first()) }
+            .filter { it.startsWith("http") }
+            .toSet()
+        for (u in urls) {
+            callback(
+                newExtractorLink(
+                    label,
+                    label,
+                    u,
+                    type = ExtractorLinkType.M3U8,
+                )
+            )
+        }
+        return urls.isNotEmpty()
     }
 
     suspend fun resolve(
@@ -159,15 +189,15 @@ object MMCineverse {
         labelPrefix: String,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val html = MMNet.get(embedUrl, referer = "https://multimovies.garden/") ?: return false
+        val html = MMNet.get(embedUrl, referer = MMSite.referer) ?: return false
         val doc = Jsoup.parse(html)
 
-        // switchServer(embedUrl, platform, displayName, fileCode, title, element)
+        // switchServer(url, platform, displayName, fileCode, title, element)
         val servers = doc.select(".srv-item").mapNotNull { el ->
             val onclick = el.attr("onclick")
             val m = Regex("switchServer\\('([^']*)','([^']*)','([^']*)','([^']*)'").find(onclick)
                 ?: return@mapNotNull null
-            SubServer(m.groupValues[2], m.groupValues[3], m.groupValues[4])
+            SubServer(MMNet.deEsc(m.groupValues[1]), m.groupValues[2], m.groupValues[3], m.groupValues[4])
         }.distinctBy { it.platform }
 
         // the default frame mirrors the first dropdown entry, keep the order stable
@@ -180,23 +210,55 @@ object MMCineverse {
         var any = false
         for (server in ordered) {
             try {
-                any = resolveProxyPage(
-                    server.platform,
-                    server.code,
-                    server.name,
-                    labelPrefix,
-                    callback,
-                ) || any
-            } catch (_: Exception) {
+                any = resolveMirror(server, labelPrefix, callback) || any
+            } catch (e: Exception) {
                 // a dead mirror must not take the rest down
+                Log.e(TAG, "server ${server.platform}: ${e.message}")
             }
         }
         return any
+    }
+
+    // a full url goes straight to the resolver that owns the host, everything
+    // else falls back to the hub proxy which still knows every platform
+    private suspend fun resolveMirror(
+        server: SubServer,
+        labelPrefix: String,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        if (server.url.startsWith("http")) {
+            val host = MMNet.hostOf(server.url)
+            val code = server.url.substringAfter("#", "").trim().ifBlank { server.code }
+            val apiV1Name = apiV1Hosts[host]
+            if (apiV1Name != null && code.isNotBlank()) {
+                return resolveApiV1(host, code, "$labelPrefix $apiV1Name", callback)
+            }
+            if (host == "bysetayico.com") {
+                return MMFilemoonBridge.resolveByse("$labelPrefix Filemoon", server.code, callback)
+            }
+            if (MMXvidStyle.isXvidStyle(host) &&
+                MMXvidStyle.resolve(server.url, "$labelPrefix ${server.name}", callback)
+            ) {
+                return true
+            }
+            if (MMXvidStyle.resolveGeneric(server.url, "$labelPrefix ${server.name}", callback)) {
+                return true
+            }
+        } else if (server.url.startsWith("/")) {
+            val page = MMNet.get(MMNet.abs(HUB, server.url), referer = "$HUB/")
+            if (page != null && resolveProxyHtml(page, "$labelPrefix ${server.name}", callback)) {
+                return true
+            }
+        }
+        return resolveProxyPage(server.platform, server.code, server.name, labelPrefix, callback)
     }
 }
 
 // translates bysetayico file links into the shared player domain before the heavy flow
 object MMFilemoonBridge {
+
+    private const val TAG = "MM_Filemoon"
+
     suspend fun resolveByse(
         label: String,
         code: String,
@@ -208,7 +270,8 @@ object MMFilemoonBridge {
         ) ?: return false
         val frameUrl = try {
             JSONObject(details).optString("embed_frame_url")
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "byse details: ${e.message}")
             ""
         }
         if (frameUrl.isBlank()) return false

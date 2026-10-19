@@ -1,5 +1,6 @@
 package com.laddu100
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import java.net.URI
 import java.net.URLEncoder
@@ -9,14 +10,18 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
+private const val TAG = "MM_Net"
+
+// the site migrates domains every few months and the embed origins check the
+// referer, so every hardcoded origin had to become the current live one
+object MMSite {
+    @Volatile var baseUrl: String = "https://m1.multimovies.courses"
+    val referer: String get() = "$baseUrl/"
+}
+
 object MMNet {
     const val UA =
         "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
-
-    val baseHeaders = mapOf(
-        "User-Agent" to UA,
-        "Accept-Language" to "en-US,en;q=0.9",
-    )
 
     // hosts that keep per-session cookies (the byse player binds its captcha to them)
     private val cookieJar = ConcurrentHashMap<String, MutableMap<String, String>>()
@@ -35,7 +40,7 @@ object MMNet {
 
     fun hostOf(url: String): String = try {
         URI(url).host?.lowercase() ?: ""
-    } catch (_: Exception) {
+    } catch (e: Exception) {
         ""
     }
 
@@ -59,31 +64,15 @@ object MMNet {
         url: String,
         referer: String? = null,
         headers: Map<String, String> = emptyMap(),
-        useCookies: Boolean = false,
     ): String? = try {
         val resp = app.get(
             url,
-            headers = base(headers, referer, if (useCookies) hostOf(url) else null),
+            headers = base(headers, referer, null),
             timeout = 30_000L,
         )
         if (resp.isSuccessful) resp.text else null
-    } catch (_: Exception) {
-        null
-    }
-
-    suspend fun getWithCookies(
-        url: String,
-        referer: String? = null,
-        extraHeaders: Map<String, String> = emptyMap(),
-    ): Pair<Int, String>? = try {
-        val resp = app.get(
-            url,
-            headers = base(extraHeaders, referer, hostOf(url)),
-            timeout = 30_000L,
-        )
-        storeSetCookies(hostOf(url), resp.headers.values("set-cookie"))
-        resp.code to resp.text
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.d(TAG, "get ${hostOf(url)}: ${e.message}")
         null
     }
 
@@ -102,7 +91,8 @@ object MMNet {
         )
         if (useCookies) storeSetCookies(hostOf(url), resp.headers.values("set-cookie"))
         resp.code to resp.text
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.d(TAG, "post ${hostOf(url)}: ${e.message}")
         null
     }
 
@@ -118,7 +108,8 @@ object MMNet {
             timeout = 30_000L,
         )
         if (resp.isSuccessful) resp.text else null
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.d(TAG, "post ${hostOf(url)}: ${e.message}")
         null
     }
 

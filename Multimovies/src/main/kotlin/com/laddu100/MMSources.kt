@@ -1,5 +1,6 @@
 package com.laddu100
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -9,15 +10,26 @@ import org.json.JSONObject
 // vidout is a thin wrapper over a github hosted index of direct hls links
 object MMVidout {
 
+    private const val TAG = "MM_Vidout"
+
     private const val RAW = "https://raw.githubusercontent.com/Watchout2025/api/refs/heads/main"
 
-    // the watchout cdn only serves its playlists to the vidout embed origin
-    private suspend fun addLink(url: String, label: String, callback: (ExtractorLink) -> Unit) {
+    // the index keeps pointing at cdn urls that expire without notice, so a link
+    // is only listed after the playlist itself answers; the probe runs on the
+    // same network the player will use which makes it an honest check
+    private suspend fun addLink(url: String, label: String, callback: (ExtractorLink) -> Unit): Boolean {
+        val alive = try {
+            MMNet.get(url, referer = "https://vidout.pages.dev/") != null
+        } catch (e: Exception) {
+            false
+        }
+        if (!alive) return false
         callback(
             newExtractorLink(label, label, url, type = ExtractorLinkType.M3U8) {
                 this.headers = mapOf("Referer" to "https://vidout.pages.dev/")
             }
         )
+        return true
     }
 
     suspend fun resolve(
@@ -34,8 +46,7 @@ object MMVidout {
             val url = MMNet.get("$RAW/hls/movie/$tmdbId", referer = "https://vidout.pages.dev/")
                 ?.trim()
             if (!url.isNullOrBlank() && url.startsWith("http")) {
-                addLink(url, "$labelPrefix Vidout", callback)
-                added = true
+                added = addLink(url, "$labelPrefix Vidout", callback) || added
             }
             val subsBody = MMNet.get("$RAW/sub/movie/$tmdbId/subtitles.json", referer = "https://vidout.pages.dev/")
             if (!subsBody.isNullOrBlank()) {
@@ -49,8 +60,9 @@ object MMVidout {
                             }
                         }
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     // subtitle metadata is optional
+                    Log.d(TAG, "subs: ${e.message}")
                 }
             }
         } else if (season != null) {
@@ -58,15 +70,15 @@ object MMVidout {
             if (!body.isNullOrBlank()) {
                 val map = try {
                     JSONObject(body)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    Log.d(TAG, "tv map: ${e.message}")
                     null
                 }
                 if (map != null) {
                     val key = episode?.toString()
                     val url = key?.let { map.optString(it) }
                     if (!url.isNullOrBlank() && url.startsWith("http")) {
-                        addLink(url, "$labelPrefix Vidout", callback)
-                        added = true
+                        added = addLink(url, "$labelPrefix Vidout", callback) || added
                     }
                 }
             }
@@ -82,7 +94,7 @@ object MMVidsync {
         label: String,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val html = MMNet.get(url, referer = "https://multimovies.garden/") ?: return false
+        val html = MMNet.get(url, referer = MMSite.referer) ?: return false
         val urls = Regex("https?://[^\"'\\s\\\\]+\\.m3u8[^\"'\\s\\\\]*")
             .findAll(html)
             .map { MMNet.deEsc(it.groupValues.first()) }
@@ -94,8 +106,126 @@ object MMVidsync {
     }
 }
 
+// vidrift embeds carry the whole source list inline, the orion playlist origin
+// answers 403 without the embed referer
+object MMVidrift {
+
+    private const val TAG = "MM_Vidrift"
+    private const val ORIGIN = "https://embed.vidrift.net"
+
+    private fun extractJsonObject(html: String, marker: String): String? {
+        val start = html.indexOf(marker)
+        if (start < 0) return null
+        val braceStart = html.indexOf('{', start)
+        if (braceStart < 0) return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in braceStart until html.length) {
+            val ch = html[i]
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            when {
+                ch == '\\' && inString -> escaped = true
+                ch == '"' -> inString = !inString
+                ch == '{' && !inString -> depth++
+                ch == '}' && !inString -> {
+                    depth--
+                    if (depth == 0) return html.substring(braceStart, i + 1)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun qualityOf(rungs: org.json.JSONArray?): String = try {
+        val heights = (0 until (rungs?.length() ?: 0))
+            .mapNotNull { rungs?.optJSONObject(it)?.optInt("height", 0) }
+            .filter { it > 0 }
+        if (heights.isNotEmpty()) "${heights.max()}p" else "HD"
+    } catch (e: Exception) {
+        "HD"
+    }
+
+    suspend fun resolve(
+        embedUrl: String,
+        labelPrefix: String,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        // the origin sits behind a fingerprint sensitive cloudflare wall, mmGet
+        // falls back to the in app solver when plain requests get challenged
+        val resp = try {
+            mmGet(
+                embedUrl,
+                headers = mapOf(
+                    "User-Agent" to MMNet.UA,
+                    "Referer" to MMSite.referer,
+                    "Accept-Language" to "en-US,en;q=0.9",
+                ),
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "embed: ${e.message}")
+            null
+        }
+        val html = if (resp != null && resp.isSuccessful) resp.text else return false
+        val raw = extractJsonObject(html, "embedMeta") ?: return false
+        val meta = try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            Log.d(TAG, "meta: ${e.message}")
+            return false
+        }
+
+        var added = false
+        val streams = meta.optJSONArray("orionStreams")
+        if (streams != null) {
+            for (i in 0 until streams.length()) {
+                val s = streams.optJSONObject(i) ?: continue
+                var url = s.optString("url").ifBlank { s.optString("proxyUrl") }
+                if (url.isBlank()) continue
+                if (url.startsWith("/")) url = "$ORIGIN$url"
+                if (!url.startsWith("http")) continue
+                val name = s.optString("name").ifBlank { "Orion" }
+                callback(
+                    newExtractorLink(
+                        "$labelPrefix Vidrift",
+                        "$labelPrefix Vidrift ${qualityOf(s.optJSONArray("rungs"))} $name",
+                        url,
+                        type = ExtractorLinkType.M3U8,
+                    ) {
+                        this.headers = mapOf("Referer" to "$ORIGIN/")
+                    }
+                )
+                added = true
+            }
+        }
+        // extra single stream slots the page fills for some titles
+        for (key in listOf("evionUrl", "vexonUrl", "selfhostUrl")) {
+            val url = meta.optString(key)
+            if (url.startsWith("http")) {
+                callback(
+                    newExtractorLink(
+                        "$labelPrefix Vidrift",
+                        "$labelPrefix Vidrift ${key.removeSuffix("Url").replaceFirstChar { it.uppercase() }}",
+                        url,
+                        type = ExtractorLinkType.M3U8,
+                    ) {
+                        this.headers = mapOf("Referer" to "$ORIGIN/")
+                    }
+                )
+                added = true
+            }
+        }
+        return added
+    }
+}
+
 // bingr fans a request out over its own fleet of named scrapers
 object MMBingr {
+
+    private const val TAG = "MM_Bingr"
 
     private data class Server(val id: String, val name: String)
 
@@ -129,7 +259,8 @@ object MMBingr {
             ) ?: return null
             return try {
                 JSONObject(body)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.d(TAG, "aphelion: ${e.message}")
                 null
             }
         }
@@ -151,7 +282,8 @@ object MMBingr {
         if (resp.first != 200) return null
         return try {
             JSONObject(resp.second)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "${server.id}: ${e.message}")
             null
         }
     }
@@ -186,7 +318,8 @@ object MMBingr {
         for (server in servers) {
             val root = try {
                 call(server, isTv, id, title, year, season, episode)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "${server.name}: ${e.message}")
                 null
             } ?: continue
             val sources = root.optJSONArray("sources") ?: continue
@@ -213,6 +346,8 @@ object MMBingr {
 
 // filmu exposes one singularity endpoint per media type with a plain source list
 object MMFilmu {
+
+    private const val TAG = "MM_Filmu"
 
     private const val HOST = "https://embed.filmu.in"
 
@@ -265,7 +400,8 @@ object MMFilmu {
         val body = MMNet.get(path, referer = referer) ?: return false
         val root = try {
             JSONObject(body)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "json: ${e.message}")
             return false
         }
 
@@ -313,6 +449,9 @@ object MMFilmu {
 // vidbolt mixes a movy mirror with its own scraper fleet
 object MMVidbolt {
 
+    private const val TAG = "MM_Vidbolt"
+
+    private const val HOST = "https://vidbolt.xyz"
     private const val MOVY_KEY = "0f461eaa465bb2a7acd037425217f2f209ef540a3171e1ac"
     private const val CURX_KEY = "streamrip_secret_2026"
     private const val SCRAPER = "https://scraper.vidbolt.xyz"
@@ -321,7 +460,8 @@ object MMVidbolt {
         val body = MMNet.get(url, referer = "https://vidbolt.xyz/") ?: return null
         return try {
             JSONObject(body)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.d(TAG, "json: ${e.message}")
             null
         }
     }
@@ -366,12 +506,42 @@ object MMVidbolt {
     ): Boolean {
         var any = false
 
-        if (!isTv) {
+        // the site player now resolves everything through one json endpoint per
+        // media type, it answers with a ready made source list
+        val resolveUrl = if (isTv) {
+            if (season == null || episode == null) null
+            else "$HOST/api/resolve?type=tv&id=$tmdbId&season=$season&episode=$episode"
+        } else {
+            "$HOST/api/resolve?type=movie&id=$tmdbId"
+        }
+        if (resolveUrl != null) {
+            val root = fetchJson(resolveUrl)
+            val sources = root?.optJSONObject("stream")?.optJSONArray("sources")
+            if (sources != null) {
+                for (i in 0 until sources.length()) {
+                    val src = sources.optJSONObject(i) ?: continue
+                    val url = src.optString("url")
+                    if (url.isBlank() || !url.startsWith("http")) continue
+                    val quality = src.optString("quality").ifBlank { "HD" }
+                    callback(
+                        newExtractorLink(
+                            "$labelPrefix Vidbolt",
+                            "$labelPrefix Vidbolt $quality",
+                            url,
+                            type = ExtractorLinkType.M3U8,
+                        )
+                    )
+                    any = true
+                }
+            }
+        }
+
+        if (!any && !isTv) {
             val movy = fetchJson(
                 "https://api.movy.lol/api/source/$tmdbId?api_key=$MOVY_KEY&apikey=$MOVY_KEY",
             )
             if (movy != null && addSources(movy, "$labelPrefix Orion", callback)) any = true
-        } else if (season != null && episode != null) {
+        } else if (!any && season != null && episode != null) {
             val curx = fetchJson(
                 "https://img.animecurx.tech/api/tv/$tmdbId/$season/$episode?api_key=$CURX_KEY&apikey=$CURX_KEY",
             )

@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONArray
 import org.json.JSONObject
 
 // byse powered file hosts: challenge, ecdsa attestation, proof of work, then an
@@ -34,14 +35,14 @@ object MMFilemoon {
             .put("platform_version", "19.0.0")
             .put("model", "")
             .put("ua_full_version", "131.0.0.0")
-            .put("brand_full_versions", org.json.JSONArray()
+            .put("brand_full_versions", JSONArray()
                 .put(JSONObject().put("brand", "Chromium").put("version", "131.0.0.0"))
                 .put(JSONObject().put("brand", "Not A(Brand").put("version", "99.0.0.0")))
             .put("pixel_ratio", 1)
             .put("screen_width", 1920)
             .put("screen_height", 1080)
             .put("color_depth", 24)
-            .put("languages", org.json.JSONArray().put("en-US"))
+            .put("languages", JSONArray().put("en-US"))
             .put("timezone", "Asia/Kolkata")
             .put("hardware_concurrency", 8)
             .put("device_memory", 8)

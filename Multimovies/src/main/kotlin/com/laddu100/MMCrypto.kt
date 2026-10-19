@@ -1,5 +1,6 @@
 package com.laddu100
 
+import com.lagradost.api.Log
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.SecureRandom
@@ -11,6 +12,8 @@ import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+
+private const val TAG = "MMCrypto"
 
 object MMCrypto {
 
@@ -39,7 +42,8 @@ object MMCrypto {
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         cipher.doFinal(data)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.e(TAG, "cbc decrypt: ${e.message}")
         null
     }
 
@@ -47,7 +51,8 @@ object MMCrypto {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
         cipher.doFinal(payload)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.e(TAG, "gcm decrypt: ${e.message}")
         null
     }
 
