@@ -1,5 +1,6 @@
 package com.laddu100
 
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
@@ -11,6 +12,9 @@ import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class MiruroVidWish(sourceName: String = "VidWish") : MiruroMegaPlay(sourceName) {
     override val mainUrl = "https://vidwish.live"
@@ -20,6 +24,11 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
     override val name = sourceName
     override val mainUrl = "https://megaplay.buzz"
     override val requiresReferer = false
+
+    // the player hands out its stream url as an aes blob instead of plain json,
+    // the key lives in the player bundle itself
+    private val encKey = "i?LMTAx0Q6,:}50U".toByteArray(Charsets.US_ASCII).copyOf(32)
+    private val encIv = "W0;27ToaUpl_P%'c".toByteArray(Charsets.US_ASCII).copyOf(16)
 
     override suspend fun getUrl(
         url: String,
@@ -34,26 +43,48 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
             "Referer" to "$mainUrl/"
         )
 
-        runCatching {
+        var emitted = false
+        try {
             val document = app.get(url, headers = headers).document
             val id = document.selectFirst("#megaplay-player")?.attr("data-id")?.takeIf { it.isNotBlank() }
                 ?: Regex("""data-id=["'](\d+)""").find(document.html())?.groupValues?.get(1)
                 ?: document.selectFirst("#megaplay-player")?.attr("data-realid")?.takeIf { it.isNotBlank() }
                 ?: Regex("""data-realid=["'](\d+)""").find(document.html())?.groupValues?.get(1)
                 ?: Regex("""/stream/s-\d+/(\d+)""").find(url)?.groupValues?.get(1)
-                ?: return@runCatching
 
-            val rawText = app.get("$mainUrl/stream/getSources?id=$id", headers = headers).text
-            val m3u8Url = extractM3u8FromResponse(rawText) ?: return@runCatching
-
-            generateM3u8(name, m3u8Url, mainUrl, headers = headers).forEach(callback)
-
-            Regex(""""file"\s*:\s*"([^"]+\.vtt[^"]*)"""").findAll(rawText).forEach { m ->
-                subtitleCallback(newSubtitleFile("English", m.groupValues[1]) {
-                    this.headers = mapOf("Referer" to "$mainUrl/")
-                })
+            val rawText = if (id != null) {
+                app.get("$mainUrl/stream/getSources?id=$id", headers = headers).text
+            } else {
+                null
             }
-        }.onFailure { error ->
+            val m3u8Url = rawText
+                ?.let { extractM3u8FromResponse(it) ?: decryptEncUrl(it) }
+
+            if (rawText != null) {
+                Regex(""""file"\s*:\s*"([^"]+\.vtt[^"]*)"""").findAll(rawText).forEach { m ->
+                    subtitleCallback(newSubtitleFile("English", m.groupValues[1]) {
+                        this.headers = mapOf("Referer" to "$mainUrl/")
+                    })
+                }
+            }
+
+            if (m3u8Url != null) {
+                generateM3u8(name, m3u8Url, mainUrl, headers = headers).forEach { link ->
+                    emitted = true
+                    callback(link)
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.d("Miruro", "megaplay direct failed for $url: ${e.message}")
+        }
+
+        if (emitted) return
+
+        // the payload layout keeps changing, the page player itself always
+        // finds the stream so let it do the work and grab the request
+        try {
             val resolver = WebViewResolver(
                 interceptUrl = Regex("""\.m3u8"""),
                 additionalUrls = listOf(Regex("""\.m3u8""")),
@@ -65,6 +96,37 @@ open class MiruroMegaPlay(private val sourceName: String = "MegaPlay") : Extract
             if (m3u8.contains(".m3u8")) {
                 generateM3u8(name, m3u8, mainUrl, headers = headers).forEach(callback)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.d("Miruro", "megaplay webview failed for $url: ${e.message}")
+        }
+    }
+
+    private fun decryptEncUrl(raw: String): String? {
+        val enc = Regex(""""enc"\s*:\s*"([^"]+)"""").find(raw)?.groupValues?.get(1)
+            ?: return null
+        val padded = enc.replace("-", "+").replace("_", "/")
+        val base = when (padded.length % 4) {
+            0 -> padded
+            2 -> "$padded=="
+            3 -> "$padded="
+            else -> return null
+        }
+        return try {
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                SecretKeySpec(encKey, "AES"),
+                IvParameterSpec(encIv)
+            )
+            val cipherBytes = android.util.Base64.decode(base, android.util.Base64.DEFAULT)
+            val plain = cipher.doFinal(cipherBytes).toString(Charsets.UTF_8)
+            Regex(""""file"\s*:\s*"([^"]+)"""").find(plain)?.groupValues?.get(1)
+                ?.takeIf { it.startsWith("http") }
+        } catch (e: Exception) {
+            Log.d("Miruro", "megaplay enc decode failed: ${e.message}")
+            null
         }
     }
 
