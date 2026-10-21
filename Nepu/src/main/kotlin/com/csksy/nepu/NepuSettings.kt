@@ -159,10 +159,17 @@ class NepuSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragme
             }
             layoutParams = LinearLayout.LayoutParams(-1, d(48))
             setOnClickListener {
-                NepuSession.clear()
-                wipeWebViewCookies("https://nepu.io")
-                renderStatus()
-                runVerification(reloadOnSuccess = true)
+                val act = activity
+                if (act == null) {
+                    runVerification()
+                    return@setOnClickListener
+                }
+                android.app.AlertDialog.Builder(act)
+                    .setTitle("Reset session?")
+                    .setMessage("All saved Cloudflare cookies are removed and the verification runs again from scratch.")
+                    .setPositiveButton("Reset") { _, _ -> runVerification() }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
         }
         root.addView(resetButton)
@@ -213,7 +220,7 @@ class NepuSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragme
     }
 
     @SuppressLint("SetTextI18n")
-    private fun runVerification(reloadOnSuccess: Boolean = false) {
+    private fun runVerification() {
         val button = verifyButton ?: return
         button.isEnabled = false
         button.alpha = 0.6f
@@ -221,20 +228,20 @@ class NepuSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragme
         resetButton?.isEnabled = false
         scope.launch {
             try {
-                NepuSession.clear()
-                wipeWebViewCookies("https://nepu.io")
+                // the full wipe is what brings the challenge back, without it
+                // the webview store keeps handing cloudflare the old clearance
+                wipeNepuBrowserState()
+                if (isAdded) renderStatus()
                 val success = solveNepuCloudflare("https://nepu.io/")
                 if (success && NepuSession.active()) {
                     if (isAdded) {
                         Toast.makeText(requireContext(), "Nepu is ready", Toast.LENGTH_SHORT).show()
-                        if (reloadOnSuccess) dismissAllowingStateLoss()
+                        dismissAllowingStateLoss()
                     }
-                    if (reloadOnSuccess) {
-                        try {
-                            MainActivity.reloadHomeEvent.invoke(true)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "reload home: ${e.message}")
-                        }
+                    try {
+                        MainActivity.reloadHomeEvent.invoke(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "reload home: ${e.message}")
                     }
                 } else if (isAdded) {
                     Toast.makeText(requireContext(), "Verification incomplete", Toast.LENGTH_SHORT).show()
