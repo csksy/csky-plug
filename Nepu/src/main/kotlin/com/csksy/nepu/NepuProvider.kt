@@ -8,10 +8,11 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-
+import com.raghav.donation.DonationManager
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import java.net.URLEncoder
 
 private const val TAG = "Nepu"
@@ -99,7 +100,7 @@ class Nepu : MainAPI() {
         }
     }
 
-    private fun parseCards(doc: org.jsoup.nodes.Document, request: MainPageRequest): List<SearchResponse> {
+    private fun parseCards(doc: Document, request: MainPageRequest): List<SearchResponse> {
         return doc.select("div.list-movie").mapNotNull { card ->
             val href = absolute(card.selectFirst("a[href]")?.attr("href") ?: "") ?: return@mapNotNull null
             if (!href.contains("/movie/") && !href.contains("/show/")) return@mapNotNull null
@@ -115,6 +116,7 @@ class Nepu : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         val (section, filter) = request.data.split("|", limit = 2)
         val response = try {
             nepuGet(listUrl(section, filter, page))
@@ -174,7 +176,7 @@ class Nepu : MainAPI() {
         }
     }
 
-    private fun attrText(doc: org.jsoup.nodes.Document, label: String): String? {
+    private fun attrText(doc: Document, label: String): String? {
         return doc.select(".detail-text .video-attr").firstOrNull { block ->
             block.selectFirst(".attr")?.text()?.trim()?.equals(label, ignoreCase = true) == true
         }?.selectFirst(".text")?.text()?.trim()?.takeIf { it.isNotBlank() }
@@ -318,7 +320,7 @@ class Nepu : MainAPI() {
     }
 
     private suspend fun loadCachedSubtitles(
-        doc: org.jsoup.nodes.Document,
+        doc: Document,
         videoId: String?,
         subtitleCallback: (SubtitleFile) -> Unit
     ) {

@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 android {
     buildFeatures {
@@ -12,10 +12,10 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "Movies, shows, cartoons and anime in HD with sub and dub tracks, streamed through Nepu's own HLS relay"
-    authors = listOf("csksy")
+    description = "Movies, shows, cartoons and anime in HD"
+    authors = listOf("KSHITIJ8473")
 
     status = 1
     tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie", "Cartoon")
-    iconUrl = "https://www.google.com/s2/favicons?domain=nepu.io&sz=%size%"
+    iconUrl = "https://play-lh.googleusercontent.com/RVADHx9LB0v5T0icvbhDrnVN32jrNMGG6MpDKWnHK6uPIQESx0yIIbQNQBCj_GcX42HqnQ6Bf1sfkTKDMSrnQQ=w240-h480-rw"
 }

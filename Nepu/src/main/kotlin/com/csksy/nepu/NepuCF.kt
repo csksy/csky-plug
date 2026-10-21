@@ -36,13 +36,19 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 private const val TAG = "Nepu_CF"
 
-internal const val SESSION_TTL_MS = 12L * 60 * 60 * 1000
 private const val SOLVER_TIMEOUT_MS = 120_000L
 private const val POLL_INTERVAL_MS = 1000L
+
+// a cancelled or timed out check blocks the auto solver for a minute so the
+// home page retry loop cannot throw the dialog at the user over and over
+private const val SOLVER_BACKOFF_MS = 60_000L
+
+@Volatile private var lastSolverFailureAt = 0L
 
 private const val ACCENT = 0xFF3DD598.toInt()
 private const val SHEET_BG = 0xFF17171B.toInt()
@@ -76,20 +82,14 @@ internal object NepuSession {
         }
     }
 
-    fun cookies(): String? {
-        val value = cookies ?: return null
-        if (System.currentTimeMillis() - savedAt > SESSION_TTL_MS) {
-            clear()
-            return null
-        }
-        return value
-    }
+    // kept until the site rejects it, cloudflare decides the lifetime
+    fun cookies(): String? = cookies
 
     fun userAgent(): String = userAgent ?: DEFAULT_UA
 
     fun savedAtMillis(): Long = savedAt
 
-    fun active(): Boolean = cookies() != null
+    fun active(): Boolean = cookies != null
 
     fun save(cookieString: String, ua: String) {
         cookies = cookieString
@@ -122,11 +122,7 @@ internal const val DEFAULT_UA =
     "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
 internal fun isNepuCloudflareBlocked(response: NiceResponse): Boolean {
-    val mitigated = try {
-        response.headers["cf-mitigated"]?.equals("challenge", ignoreCase = true)
-    } catch (e: Exception) {
-        null
-    }
+    val mitigated = response.headers["cf-mitigated"]?.equals("challenge", ignoreCase = true)
     if (mitigated == true) return true
     if (response.code != 403 && response.code != 503) return false
     if (mitigated == false) return false
@@ -142,11 +138,32 @@ internal fun isNepuCloudflareBlocked(response: NiceResponse): Boolean {
         body.contains("verify you are human")
 }
 
-internal fun wipeWebViewCookies(host: String) {
+internal fun wipeWebViewCookies(site: String) {
     try {
         val cm = CookieManager.getInstance()
-        listOf("cf_clearance", "cf_chl_rc_ni", "cf_chl_prog").forEach { name ->
-            cm.setCookie(host, "$name=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT")
+        val host = try {
+            Uri.parse(site).host ?: site
+        } catch (e: Exception) {
+            site
+        }
+        val names = mutableSetOf(
+            "cf_clearance", "__cf_bm", "cf_chl_rc_ni", "cf_chl_prog",
+            "cf_chl_1", "cf_chl_2", "cf_chl_3"
+        )
+        // the jar is the real source of names, the list above is just a floor
+        // for the state where nothing is stored yet
+        try {
+            cm.getCookie("https://$host/")?.split(";")?.forEach { pair ->
+                pair.substringBefore("=").trim().takeIf { it.isNotEmpty() }?.let(names::add)
+            }
+        } catch (_: Exception) {}
+        val expired = "; Path=/; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT"
+        names.forEach { name ->
+            // a cookie set with a Domain attribute does not fall to a host only
+            // expiry, all three forms have to go or the old clearance survives
+            cm.setCookie("https://$host/", "$name=$expired")
+            cm.setCookie("https://$host/", "$name=; Domain=$host$expired")
+            cm.setCookie("https://$host/", "$name=; Domain=.$host$expired")
         }
         cm.flush()
     } catch (e: Exception) {
@@ -174,8 +191,9 @@ private class NepuSolverDialog(
     private var webView: WebView? = null
     private var statusText: TextView? = null
     private val handler = Handler(Looper.getMainLooper())
-    private val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val resolved = AtomicBoolean(false)
     private var elapsedMs = 0L
+    private var challengePage = false
 
     private val targetHost: String = try {
         val uri = Uri.parse(targetUrl)
@@ -189,9 +207,11 @@ private class NepuSolverDialog(
         try {
             CookieManager.getInstance().flush()
             val cookieString = CookieManager.getInstance().getCookie(targetHost) ?: return
-            if (cookieString.contains("cf_clearance=")) {
-                finishWith(cookieString)
-            }
+            if (!cookieString.contains("cf_clearance=")) return
+            // the clearance lands while the check is still running and can be
+            // reissued a few times, only the page after it proves it is usable
+            if (challengePage) return
+            finishWith(cookieString)
         } catch (e: Exception) {
             Log.d(TAG, "clearance poll: ${e.message}")
         }
@@ -199,20 +219,22 @@ private class NepuSolverDialog(
 
     private fun finishWith(cookieString: String) {
         if (!resolved.compareAndSet(false, true)) return
+        lastSolverFailureAt = 0L
         handler.removeCallbacksAndMessages(null)
         val ua = webView?.settings?.userAgentString ?: DEFAULT_UA
         NepuSession.save(cookieString, ua)
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { dialog?.dismiss() } catch (e: Exception) {}
-        try { onFinished(true) } catch (e: Exception) {}
+        try { webView?.destroy() } catch (_: Exception) {}
+        try { dialog?.dismiss() } catch (_: Exception) {}
+        try { onFinished(true) } catch (_: Exception) {}
     }
 
     private fun finishCancelled() {
         if (!resolved.compareAndSet(false, true)) return
+        lastSolverFailureAt = System.currentTimeMillis()
         handler.removeCallbacksAndMessages(null)
-        try { webView?.destroy() } catch (e: Exception) {}
-        try { dialog?.dismiss() } catch (e: Exception) {}
-        try { onFinished(false) } catch (e: Exception) {}
+        try { webView?.destroy() } catch (_: Exception) {}
+        try { dialog?.dismiss() } catch (_: Exception) {}
+        try { onFinished(false) } catch (_: Exception) {}
     }
 
     private val pollRunnable = object : Runnable {
@@ -327,7 +349,6 @@ private class NepuSolverDialog(
         wipeWebViewCookies(targetHost)
         webView?.loadUrl(targetUrl)
         handler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
-        handler.postDelayed({ finishCancelled() }, SOLVER_TIMEOUT_MS)
     }
 
     private fun attachTvCursor(activity: AppCompatActivity, frame: FrameLayout) {
@@ -416,7 +437,8 @@ private class NepuSolverDialog(
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (resolved.get()) return
                     val title = view?.title ?: ""
-                    statusText?.text = if (isChallengeTitle(title)) {
+                    challengePage = isChallengeTitle(title)
+                    statusText?.text = if (challengePage) {
                         "Waiting for the browser check"
                     } else {
                         "Reading session"
@@ -429,9 +451,9 @@ private class NepuSolverDialog(
 
     fun dismiss() {
         handler.removeCallbacksAndMessages(null)
-        try { webView?.apply { stopLoading(); destroy() } } catch (e: Exception) {}
+        try { webView?.apply { stopLoading(); destroy() } } catch (_: Exception) {}
         webView = null
-        try { dialog?.dismiss() } catch (e: Exception) {}
+        try { dialog?.dismiss() } catch (_: Exception) {}
         dialog = null
     }
 }
@@ -455,6 +477,9 @@ internal suspend fun solveNepuCloudflare(url: String): Boolean = withContext(Dis
     }
 }
 
+private fun solverOnBackoff(): Boolean =
+    System.currentTimeMillis() - lastSolverFailureAt < SOLVER_BACKOFF_MS
+
 private fun sessionHeaders(extra: Map<String, String>, accept: String): Map<String, String> {
     val headers = extra.toMutableMap()
     if (!headers.containsKey("Accept")) headers["Accept"] = accept
@@ -463,27 +488,42 @@ private fun sessionHeaders(extra: Map<String, String>, accept: String): Map<Stri
     return headers
 }
 
-internal suspend fun nepuGet(
-    url: String,
-    headers: Map<String, String> = emptyMap()
+private suspend fun throughCloudflare(
+    first: NiceResponse,
+    retry: suspend () -> NiceResponse,
+    solve: suspend () -> Boolean
 ): NiceResponse {
-    var response = app.get(url, headers = sessionHeaders(headers, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"), timeout = 30_000L)
+    var response = first
     if (!isNepuCloudflareBlocked(response)) return response
 
     solverMutex.withLock {
         if (NepuSession.cookies() != null) {
-            response = app.get(url, headers = sessionHeaders(headers, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"), timeout = 30_000L)
+            response = retry()
             if (!isNepuCloudflareBlocked(response)) return response
         }
+        if (solverOnBackoff()) return response
         NepuSession.clear()
         wipeWebViewCookies("https://nepu.io")
-        if (!solveNepuCloudflare("https://nepu.io/")) return response
+        if (!solve()) return response
         repeat(2) {
-            response = app.get(url, headers = sessionHeaders(headers, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"), timeout = 30_000L)
+            response = retry()
             if (!isNepuCloudflareBlocked(response)) return response
         }
     }
     return response
+}
+
+internal suspend fun nepuGet(
+    url: String,
+    headers: Map<String, String> = emptyMap()
+): NiceResponse {
+    val accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    val first = app.get(url, headers = sessionHeaders(headers, accept), timeout = 30_000L)
+    return throughCloudflare(
+        first,
+        retry = { app.get(url, headers = sessionHeaders(headers, accept), timeout = 30_000L) },
+        solve = { solveNepuCloudflare("https://nepu.io/") }
+    )
 }
 
 internal suspend fun nepuPostForm(
@@ -491,21 +531,10 @@ internal suspend fun nepuPostForm(
     form: Map<String, String>,
     headers: Map<String, String> = emptyMap()
 ): NiceResponse {
-    var response = app.post(url, data = form, headers = sessionHeaders(headers, "*/*"), timeout = 30_000L)
-    if (!isNepuCloudflareBlocked(response)) return response
-
-    solverMutex.withLock {
-        if (NepuSession.cookies() != null) {
-            response = app.post(url, data = form, headers = sessionHeaders(headers, "*/*"), timeout = 30_000L)
-            if (!isNepuCloudflareBlocked(response)) return response
-        }
-        NepuSession.clear()
-        wipeWebViewCookies("https://nepu.io")
-        if (!solveNepuCloudflare("https://nepu.io/")) return response
-        repeat(2) {
-            response = app.post(url, data = form, headers = sessionHeaders(headers, "*/*"), timeout = 30_000L)
-            if (!isNepuCloudflareBlocked(response)) return response
-        }
-    }
-    return response
+    val first = app.post(url, data = form, headers = sessionHeaders(headers, "*/*"), timeout = 30_000L)
+    return throughCloudflare(
+        first,
+        retry = { app.post(url, data = form, headers = sessionHeaders(headers, "*/*"), timeout = 30_000L) },
+        solve = { solveNepuCloudflare("https://nepu.io/") }
+    )
 }

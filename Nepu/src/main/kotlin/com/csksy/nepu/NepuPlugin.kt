@@ -1,6 +1,7 @@
 package com.csksy.nepu
 
 import android.content.Context
+import androidx.appcompat.app.AppCompatActivity
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 
@@ -10,7 +11,7 @@ class NepuPlugin : Plugin() {
         NepuSession.init()
         registerMainAPI(Nepu())
         openSettings = { ctx ->
-            (ctx as? androidx.appcompat.app.AppCompatActivity)?.let { activity ->
+            (ctx as? AppCompatActivity)?.let { activity ->
                 NepuSettingsFragment(this).show(activity.supportFragmentManager, "NepuSettings")
             }
             kotlin.Unit
