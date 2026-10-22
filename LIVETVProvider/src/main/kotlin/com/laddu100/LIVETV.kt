@@ -171,7 +171,6 @@ class LIVETV(
         }
     }
 
-    // Fetch MPD manifest with custom headers
     private fun getMpdStream(url: String, customHeaders: Map<String, String>): String {
         val client = OkHttpClient.Builder()
             .addInterceptor(HeaderReplacementInterceptor(customHeaders))
@@ -197,7 +196,6 @@ class LIVETV(
                     )
                 )
             )
-            .addInterceptor(LoggingInterceptor())
             .build()
 
         val json = "{\"kids\":[\"$kid\"],\"type\":\"temporary\"}"
@@ -250,7 +248,6 @@ class LIVETV(
                     )
                     {
                         this.posterUrl = posterurl
-                        this.apiName
                         this.lang = channel.attributes["group-title"]
                     }
                 }
@@ -285,7 +282,6 @@ class LIVETV(
             )
             {
                 this.posterUrl = posterurl
-                this.apiName
                 this.lang = channel.attributes["group-title"]
             }
         }
@@ -518,18 +514,6 @@ class LIVETV(
             )
         }
         return true
-    }
-}
-
-class LoggingInterceptor : okhttp3.Interceptor {
-    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
-        val req = chain.request()
-
-        val bodyCopy = req.body
-        val buffer = okio.Buffer()
-        bodyCopy?.writeTo(buffer)
-        val bodyString = buffer.readUtf8()
-        return chain.proceed(req)
     }
 }
 

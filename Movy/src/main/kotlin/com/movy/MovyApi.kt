@@ -25,7 +25,7 @@ object MovyApi {
         "Origin" to MAIN_URL,
     )
 
-    /** playback requests also need the site referer, the cdn fronts check it */
+    // the cdn fronts check the site referer on playback requests
     val playHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to REFERER,
@@ -64,6 +64,7 @@ object MovyApi {
             res.code to res.text
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.e(TAG, "request failed: ${e.message}")
             -1 to null
         }
     }
@@ -130,14 +131,10 @@ object MovyApi {
         }
     }
 
-    /**
-     * Seeds are handed out per media id and live for roughly 30 seconds. The
-     * api fleet behind cloudflare does not always agree about which seeds are
-     * current, so a 401 usually just means the request landed on another
-     * node: retry with the same seed first, only grab a new one when it keeps
-     * failing. The seed endpoint also rate limits hard, so fetches are paced
-     * to at most one per second and back off on 429.
-     */
+    // seeds are per media id and live for roughly 30 seconds, and the api nodes
+    // behind cloudflare often disagree about which seed is current, so a stale
+    // one gets retried before a fresh one is pulled. the endpoint also rate
+    // limits hard, so fetches are paced to one per second.
     class SeedPool(private val mediaId: String) {
         @Volatile private var seed: String? = null
         private var expiresAt = 0L
@@ -181,7 +178,8 @@ object MovyApi {
                     res.code == 200 -> {
                         val reply = try {
                             parseJson<MovySeedReply>(res.text)
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            Log.e(TAG, "seed parse: ${e.message}")
                             null
                         }
                         val fresh = reply?.seed?.takeIf { it.isNotBlank() } ?: return null
@@ -213,11 +211,8 @@ object MovyApi {
         val germanTitle: String? = null,
     )
 
-    /**
-     * The site double encodes the title (their http client encodes an already
-     * encoded value), the extractors on the other side expect that leftover
-     * percent escaping, so the wire has to match it exactly.
-     */
+    // the site double encodes the title (their http client encodes an already
+    // encoded value) and the extractors expect the leftover percent escaping
     private fun titleOnWire(title: String): String {
         val once = java.net.URLEncoder.encode(title, "UTF-8").replace("+", "%20")
         return once.replace("%", "%25")
@@ -244,12 +239,9 @@ object MovyApi {
         return "$STREAM_BASE/${city.slug}/sources?$parts"
     }
 
-    /**
-     * One city attempt loop. A 401 is usually a wrong node, so the same seed
-     * gets two quick retries before a new one is pulled; a 429 asks for a
-     * cool down; one transport retry keeps slow extractors in play. Anything
-     * else means this city has nothing for the title right now.
-     */
+    // a 401 usually means the request landed on a node that knows a different
+    // seed, so the same seed gets a couple of retries before a new one is
+    // pulled, a 429 cools down, one transport retry covers slow extractors
     suspend fun citySources(
         city: City,
         request: SourcesRequest,
@@ -280,7 +272,7 @@ object MovyApi {
                 code == 200 && body != null -> {
                     val plain = MovyCrypto.decrypt(body, seed, request.tmdbId)
                     if (plain == null) {
-                        // marker mismatch, the node scrambled with another seed
+                        // marker mismatch, this node scrambled with another seed
                         staleSeedStrikes++
                         if (staleSeedStrikes >= 2) {
                             pool.drop()

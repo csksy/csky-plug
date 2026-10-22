@@ -35,8 +35,6 @@ object LIVETVFirebaseFetcher {
         val templateVersion: String? = null,
     )
 
-    // Fetches Firebase Remote Config and returns the entries map
-    // @return Map of config entries or null if fetch fails
     suspend fun fetchRemoteConfig(): Map<String, String>? {
         if (API_KEY.isBlank() || APP_ID.isBlank() || PROJECT_NUMBER.isBlank()) {
             return null
@@ -92,17 +90,10 @@ object LIVETVFirebaseFetcher {
         }
     }
 
-    // Gets the provider API URL from Firebase Remote Config
-    // Uses cric_api2 (secondary endpoint) with cric_api1 fallback
+    // cric_api2 is the working endpoint most of the time, cric_api1 is the spare
     suspend fun getProviderApiUrl(): String? {
         val entries = fetchRemoteConfig()
         return entries?.get("cric_api2") ?: entries?.get("cric_api1")
     }
 
-    // Gets all available API URLs from Firebase Remote Config
-    // @return Pair of (primary, secondary) URLs or null if fetch fails
-    suspend fun getApiUrls(): Pair<String?, String?>? {
-        val entries = fetchRemoteConfig() ?: return null
-        return Pair(entries["cric_api1"], entries["cric_api2"])
-    }
 }

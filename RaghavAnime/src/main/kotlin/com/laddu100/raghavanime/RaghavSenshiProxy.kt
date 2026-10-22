@@ -4,6 +4,7 @@ import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
@@ -55,7 +56,7 @@ object RaghavSenshiProxy {
     private fun ensureServerRunning(): Int {
         if (serverRunning && serverPort > 0) return serverPort
         try {
-            val socket = ServerSocket(0)
+            val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
             serverSocket = socket
             serverPort = socket.localPort
             serverRunning = true
@@ -91,15 +92,6 @@ object RaghavSenshiProxy {
             streams[id] = StreamEntry(id, masterUrl, masterContent, headers)
         }
         return "http://127.0.0.1:$port/$id"
-    }
-
-    private fun shortUrl(url: String): String {
-        return try {
-            val uri = URI(url)
-            "${uri.host}${uri.path}"
-        } catch (_: Exception) {
-            url.take(80)
-        }
     }
 
     private fun handleRequest(conn: Socket) {
@@ -351,8 +343,6 @@ object RaghavSenshiProxy {
     }
 
     private fun serveSegment(conn: Socket, entry: StreamEntry, target: String, range: String?) {
-        // cdn edges occasionally 403 a single request, the player is far less
-        // forgiving than a browser so one quick retry keeps playback smooth
         for (attempt in 0..1) {
             if (attempt > 0) {
                 try {
@@ -427,7 +417,6 @@ object RaghavSenshiProxy {
     }
 
     private fun fetchText(url: String, entry: StreamEntry): String? {
-        // cdn edges occasionally 403 on burst rendition fetches, one short retry helps
         for (attempt in 0..1) {
             try {
                 val text = client.newCall(buildUpstream(url, entry).build()).execute().use { resp ->

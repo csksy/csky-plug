@@ -215,8 +215,8 @@ class RaghavAnime : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // each poster costs one ani.zip lookup, resolve the row in parallel
-    // and fall back to the kitsu cover when the feature is off or fails
+    // every custom poster costs one ani.zip lookup, resolve the row in
+    // parallel and keep the kitsu cover when the feature is off or fails
     private suspend fun buildRowItems(mediaList: List<KitsuMedia>): List<SearchResponse> =
         coroutineScope {
             mediaList.map { item ->
@@ -356,11 +356,17 @@ class RaghavAnime : MainAPI() {
 
         prefetchSources(kitsuId, anilistId, title, jpTitle, year)
 
+        val clearLogo = TmdbArtwork.clearLogo(
+            animeMetaData?.mappings?.themoviedb_id,
+            subtype == "movie"
+        )
+
         val poster = CustomPosters.poster(anilistId, kitsuId, subtype == "movie", posterUrl, animeMetaData?.mappings)
 
         return newAnimeLoadResponse(title, url, tvType) {
             this.posterUrl = poster
             this.backgroundPosterUrl = bannerUrl
+            this.logoUrl = clearLogo
             this.year = year
             this.plot = plot
             this.tags = tags
@@ -462,14 +468,6 @@ class RaghavAnime : MainAPI() {
                     RaghavGoTaku().loadLinks(epData, false, subtitleCallback, callback)
                 }
             },
-            "Animo" to {
-                val epData = SourceCache.episodeData("Animo", animeKey, isDub, episode) {
-                    resolveAnimo(searchTitles, targetTitles, episode, isDub, linkData.year)
-                }
-                if (epData != null) {
-                    RaghavAnimo().loadLinks(epData, false, subtitleCallback, callback)
-                }
-            },
             "Anidap" to {
                 if (aniId > 0) {
                     val anidap = RaghavAnidap()
@@ -522,6 +520,12 @@ class RaghavAnime : MainAPI() {
                 if (aniId > 0) {
                     val reanime = RaghavReAnime()
                     reanime.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                }
+            },
+            "Anv" to {
+                if (aniId > 0) {
+                    val anv = RaghavAnv()
+                    anv.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
                 }
             },
         )
@@ -632,6 +636,9 @@ class RaghavAnime : MainAPI() {
         prefetchJob?.cancel()
         prefetchJob = prefetchScope.launch {
             delay(750)
+            launch {
+                try { RaghavSenshiVhost.warmup() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+            }
             for (isDub in listOf(false, true)) {
                 if (!isActive) return@launch
                 RaghavPerf.runLimitedAsync(RaghavPerf.prefetchConcurrency(), listOf(
@@ -639,9 +646,9 @@ class RaghavAnime : MainAPI() {
                     { warmSource("2DHive", animeKey, isDub) { resolveTwoDHive(titles, targets, null, isDub, year)?.episodes } },
                     { warmSource("AniKoto", animeKey, isDub) { resolveAniKoto(titles, targets, null, isDub, year)?.episodes } },
                     { warmSource("GoTaku", animeKey, isDub) { resolveGoTaku(titles, targets, null, isDub, year)?.episodes } },
-                    { warmSource("Animo", animeKey, isDub) { resolveAnimo(titles, targets, null, isDub, year)?.episodes } },
                     { if (aniId > 0) warmSource("AniNami", animeKey, isDub) { resolveAniNami(aniId, null, isDub)?.episodes } },
                     { warmSource("Xanime", animeKey, isDub) { resolveXanime(titles, targets, null, isDub, year)?.episodes } },
+                    { warmSource("Senshi", animeKey, isDub) { resolveSenshi(titles, targets, null, isDub, year)?.episodes } },
                     { if (aniId > 0) RaghavAniChan().warm() }
                 ))
             }
@@ -694,14 +701,6 @@ class RaghavAnime : MainAPI() {
             doSearch = { anikoto.search(it) },
             doLoad = { anikoto.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
             sourceTag = "AniKoto")
-    }
-
-    private suspend fun resolveAnimo(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {
-        val animo = RaghavAnimo()
-        return findEpisodeMap(titles, targets, episode, isDub, year,
-            doSearch = { animo.search(it) },
-            doLoad = { animo.load(it) as? com.lagradost.cloudstream3.AnimeLoadResponse },
-            sourceTag = "Animo")
     }
 
     private suspend fun resolveGoTaku(titles: List<String>, targets: List<String>, episode: Int?, isDub: Boolean, year: Int?): SourceCache.Match? {

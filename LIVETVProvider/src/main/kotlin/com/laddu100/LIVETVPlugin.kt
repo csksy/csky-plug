@@ -41,7 +41,7 @@ class LIVETVPlugin : Plugin() {
             if (type == null) {
                 type = "m3u"
             }
-            val displayTitle = "📺 $title"
+            val displayTitle = title
             if (type == "custom") {
                 registerMainAPI(LIVETVLiveEventsProvider(displayTitle, catLink))
             } else {

@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.Qualities
 
 class FastDlExtractor : ExtractorApi() {
     override val name = "G-Direct"
-    override val mainUrl = "https://fastdl.rest"
+    override val mainUrl = "https://fastdl.zip"
     override val requiresReferer = false
 
     override suspend fun getUrl(
@@ -18,26 +18,6 @@ class FastDlExtractor : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         for (s in TmfSources.resolveFastDl(url)) {
-            callback.invoke(
-                ExtractorLink(source = name, name = s.name, url = s.url, referer = mainUrl,
-                    quality = Qualities.Unknown.value, type = s.type, headers = s.headers)
-            )
-        }
-    }
-}
-
-class MCloudExtractor : ExtractorApi() {
-    override val name = "M-Cloud"
-    override val mainUrl = "https://mcloud.best"
-    override val requiresReferer = false
-
-    override suspend fun getUrl(
-        url: String,
-        referer: String?,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        for (s in TmfSources.resolveMCloud(url)) {
             callback.invoke(
                 ExtractorLink(source = name, name = s.name, url = s.url, referer = mainUrl,
                     quality = Qualities.Unknown.value, type = s.type, headers = s.headers)

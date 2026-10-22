@@ -61,7 +61,6 @@ data class LIVETVChannelWrapper(
 object LIVETVProviderManager {
     private const val DEFAULT_BASE_URL = "https://cfymarkscanjiostar80.top"
 
-    // Cached base URL from Firebase with expiry
     private val baseUrlValue = ExpiringRemoteValue()
 
     private val client = OkHttpClient.Builder()
@@ -137,13 +136,10 @@ object LIVETVProviderManager {
         mapOf("id" to 190, "title" to "FREE SPORTS", "image" to "https://media.unreel.me/prod/freelivesports/general/6496be67-a318-46c6-a25d-93c161f86845", "catLink" to "https://playlist-storage.pages.dev/PLAYLIST/freelivesports.m3u"),
     )
 
-    // Forces the next getBaseUrl call to re-fetch from Firebase
     fun refreshFromFirebase() {
         baseUrlValue.reset()
     }
 
-    // Gets the base URL from Firebase Remote Config with cache
-    // Falls back to default URL if Firebase fetch fails
     suspend fun getBaseUrl(): String {
         return baseUrlValue.get(
             fetch = {
@@ -155,14 +151,11 @@ object LIVETVProviderManager {
         )
     }
 
-    // Gets the providers URL by fetching from Firebase Remote Config first
-    // Falls back to default URL if Firebase fetch fails
     private suspend fun getProvidersUrl(): String {
         val baseUrl = getBaseUrl()
         return "$baseUrl/cats.txt"
     }
 
-    // Gets the live events URL
     private suspend fun getLiveEventsUrl(): String {
         val baseUrl = getBaseUrl()
         return "$baseUrl/categories/live-events.txt"
@@ -204,8 +197,6 @@ object LIVETVProviderManager {
         }
     }
 
-    // Fetches live events from the API
-    // Uses the same base URL as providers (from Firebase or fallback)
     suspend fun fetchLiveEvents(): List<LIVETVEventData> {
         return withContext(Dispatchers.IO) {
             try {
@@ -233,8 +224,7 @@ object LIVETVProviderManager {
         }
     }
 
-    // Fetches channel list for custom providers
-    // Content is an encrypted JSON list of channel wrappers
+    // custom playlists arrive as an encrypted list of channel wrappers
     suspend fun fetchCustomEvents(catLink: String): List<LIVETVEventData> {
         return withContext(Dispatchers.IO) {
             try {

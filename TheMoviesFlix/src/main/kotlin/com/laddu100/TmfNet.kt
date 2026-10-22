@@ -2,12 +2,8 @@ package com.laddu100
 
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.util.concurrent.ConcurrentHashMap
 
@@ -35,16 +31,11 @@ object TmfNet {
         return h
     }
 
-    // the live domain moves every few months, firebase is first and every
-    // known mirror is tried until one answers
     private val FALLBACK_DOMAINS = listOf(
-        "https://themoviesflix.garden",
-        "https://themoviesflix.forum",
-        "https://moviesflix.red",
+        "https://themoviesflixhq.com",
         "https://moviesflixhq.com",
         "https://themoviesflix.actor",
-        "https://moviesflixi.com",
-        "https://themoviesflixhq.com"
+        "https://moviesflixi.com"
     )
 
     private val domainMutex = Mutex()
@@ -77,29 +68,17 @@ object TmfNet {
     }
 
     suspend fun fetchPage(url: String, referer: String? = null): Document? {
-        val res = fetchWithRetry(url, referer) ?: return null
+        val res = try {
+            app.get(url, headers = browserHeaders(referer), timeout = 25L)
+        } catch (_: Exception) {
+            return null
+        }
         if (!res.isSuccessful) return null
         return try {
             res.document
         } catch (_: Exception) {
             null
         }
-    }
-
-    // the site has short bad moments behind cloudflare, one quick retry saves
-    // the whole load instead of surfacing an error
-    private suspend fun fetchWithRetry(url: String, referer: String?): NiceResponse? {
-        var last: NiceResponse? = null
-        repeat(2) {
-            val res = try {
-                app.get(url, headers = browserHeaders(referer), timeout = 15L)
-            } catch (_: Exception) {
-                null
-            }
-            if (res != null && res.code !in 500..599) return res
-            last = res
-        }
-        return last
     }
 
     class DrivePage(
@@ -113,8 +92,7 @@ object TmfNet {
     private class CachedDrivePage(val savedAt: Long, val page: DrivePage?)
 
     private val driveCache = ConcurrentHashMap<String, CachedDrivePage>()
-    private val driveLocks = ConcurrentHashMap<String, Mutex>()
-    private val driveSlots = Semaphore(6)
+    private val driveMutex = Mutex()
     private const val DRIVE_CACHE_MS = 5 * 60 * 1000L
 
     fun qualityOf(text: String): Int? =
@@ -127,46 +105,19 @@ object TmfNet {
             .filter { it.isNotBlank() && !it.equals("links", true) }
             .joinToString(" · ")
 
-    // links that belong to the drive page itself, the site's own bookmark
-    // promos and file lockers that have been dead for months
-    private val DRIVE_JUNK = listOf(
+    // links that belong to the drive page itself and never carry a file
+    private val DRIVE_SELF = listOf(
         "nexdrive", "mobilejsr", "vglist", "w.org", "wordpress", "gmpg",
         "googleapis", "googletagmanager", "font-awesome", "schema", "category/",
-        "t.me/+", "telegram", "moviesflix", "gofile.io",
-        "1fichier", "megaup", "vikingfile", "gdtot", "dropgalaxy"
+        "t.me/+", "telegram"
     )
 
-    private fun isDriveJunk(href: String): Boolean = DRIVE_JUNK.any { href.contains(it, true) }
+    private fun isDriveJunk(href: String): Boolean = DRIVE_SELF.any { href.contains(it, true) }
 
-    private val encodedRegex = Regex("""const\s+encoded\s*=\s*"((?:[A-Za-z0-9+/=]|\\/)+)"""")
-
-    // the drive page ships its whole body as a base64 string inside a script
-    // and injects it on click, the plain dom only holds a wait button
-    private fun decodeEmbeddedBody(html: String): Document? {
-        val encoded = encodedRegex.find(html)?.groupValues?.get(1)
-            ?.replace("\\", "") ?: return null
-        val decoded = try {
-            java.util.Base64.getDecoder().decode(encoded)
-        } catch (_: IllegalArgumentException) {
-            return null
-        }
-        return try {
-            Jsoup.parse(String(decoded, Charsets.UTF_8))
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun parseDrivePage(doc: Document, rawHtml: String): DrivePage {
-        val embedded = decodeEmbeddedBody(rawHtml)
+    private fun parseDrivePage(doc: Document): DrivePage {
         val title = doc.selectFirst("h1")?.text()?.trim()
             ?: doc.title().substringBefore(" – ").substringBefore(" - ").trim()
-
-        // the embedded body is pure content without the site's article
-        // wrapper, the plain dom fallback keeps the old page shape
-        val root = embedded?.body()
-            ?: doc.selectFirst("article")
-            ?: doc.selectFirst("div.entry-content")
+        val root = doc.selectFirst("article") ?: doc.selectFirst("div.entry-content")
             ?: return DrivePage(title, qualityOf(title), infoOf(title), emptyList(), emptyMap())
 
         val links = root.select("a[href]").mapNotNull { a ->
@@ -174,8 +125,8 @@ object TmfNet {
             if (href.startsWith("http") && !isDriveJunk(href)) href else null
         }.distinct()
 
-        // episode rows sit under an h4 header with the button set in the
-        // paragraph right below it
+        // episode pages put each episode under an h4 header with its button
+        // set in the paragraphs right below it
         val episodes = mutableMapOf<Int, MutableList<String>>()
         for (h4 in root.select("h4")) {
             val text = h4.text().trim()
@@ -203,65 +154,36 @@ object TmfNet {
         return DrivePage(title, qualityOf(title), infoOf(title), links, episodes)
     }
 
-    // the drive app answers on two domains that swap health by the hour, the
-    // old addresses only redirect so everything is normalized to the current
-    // pair before it hits the cache
-    private fun normalizeDriveUrl(url: String): String = when {
-        url.contains("nexdrive.fit") -> url.replace("nexdrive.fit", "nexdrive.beer")
-        url.contains("mobilejsr.rest") -> url.replace("mobilejsr.rest", "mobilejsr.best")
-        else -> url
-    }
-
-    private fun mirrorUrl(url: String): String = when {
-        url.contains("nexdrive.beer") -> url.replace("nexdrive.beer", "mobilejsr.best")
-        url.contains("mobilejsr.best") -> url.replace("mobilejsr.best", "nexdrive.beer")
-        else -> url
-    }
-
-    private fun challenged(code: Int, body: String): Boolean =
-        (code == 403 || code == 503) && run {
-            body.contains("challenge-platform") || body.contains("Just a moment", true)
-        }
-
-    private suspend fun driveFetchOnce(url: String): String? {
+    private suspend fun driveFetchOnce(url: String): NiceResponse? {
         val jar = mutableMapOf<String, String>()
         var current = url
         val seen = mutableSetOf<String>()
-        repeat(10) {
+        repeat(12) {
             if (!seen.add(current)) return null
-            var res = try {
+            val res = try {
                 app.get(
                     current,
-                    headers = browserHeaders("https://themoviesflix.garden/"),
+                    headers = browserHeaders("https://themoviesflixhq.com/"),
                     cookies = jar,
                     allowRedirects = false,
-                    timeout = 15L
+                    timeout = 20L
                 )
             } catch (_: Exception) {
-                null
-            } ?: return null
+                return null
+            }
             jar.putAll(res.cookies)
             val loc = res.headers["location"]?.trim().orEmpty()
             if (loc.isEmpty()) {
-                var body = try {
+                if (res.code != 200) return null
+                val body = try {
                     res.text
                 } catch (_: Exception) {
                     return null
                 }
-                if (challenged(res.code, body)) {
-                    // the hop wants a clearance, solving once keeps the chain open for later calls
-                    res = TmfCf.get(current, "https://themoviesflix.garden/", 20L) ?: return null
-                    body = try {
-                        res.text
-                    } catch (_: Exception) {
-                        return null
-                    }
-                }
-                if (res.code != 200) return null
                 if (body.contains("challenge-platform") || body.contains("Just a moment", true)) {
                     return null
                 }
-                return body
+                return res
             }
             current = when {
                 loc.startsWith("http") -> loc
@@ -272,45 +194,38 @@ object TmfNet {
         return null
     }
 
-    // the origin behind cloudflare drops requests with 520-525 several times
-    // in a row, a couple of spaced retries is the difference between a dead
-    // page and a loaded one
-    private suspend fun driveFetch(url: String): String? {
-        repeat(3) { attempt ->
-            val html = driveFetchOnce(url)
-            if (html != null) return html
-            if (attempt < 2) delay(700L)
-        }
-        return null
+    private fun mirrorUrl(url: String): String = when {
+        url.contains("nexdrive.fit") -> url.replace("nexdrive.fit", "mobilejsr.rest")
+        url.contains("mobilejsr.rest") -> url.replace("mobilejsr.rest", "nexdrive.fit")
+        else -> url
     }
 
-    // failures are not cached on purpose, the flaky origin recovers within
-    // seconds and a cached null would kill every retry for the next minutes
+    // nexdrive and mobilejsr serve the same drive app, when one has a bad day the other answers,
+    // zip pack pages are skipped because no player can open an archive
     suspend fun fetchDrivePage(url: String): DrivePage? {
-        val key = normalizeDriveUrl(url)
+        val key = url.replace("mobilejsr.rest", "nexdrive.fit")
         driveCache[key]?.let { cached ->
             if (System.currentTimeMillis() - cached.savedAt < DRIVE_CACHE_MS) return cached.page
             driveCache.remove(key)
         }
-        val lock = driveLocks.computeIfAbsent(key) { Mutex() }
-        return lock.withLock {
+        return driveMutex.withLock {
             driveCache[key]?.let { cached ->
                 if (System.currentTimeMillis() - cached.savedAt < DRIVE_CACHE_MS) return cached.page
                 driveCache.remove(key)
             }
-            val page = driveSlots.withPermit {
-                val html = driveFetch(key) ?: driveFetch(mirrorUrl(key)) ?: return@withPermit null
+            val res = driveFetchOnce(key) ?: driveFetchOnce(mirrorUrl(key))
+            val page = res?.let {
                 val doc = try {
-                    Jsoup.parse(html)
+                    it.document
                 } catch (_: Exception) {
                     null
-                } ?: return@withPermit null
-                val parsed = parseDrivePage(doc, html)
-                if (parsed.title.contains("zip", true)) null else parsed
+                }
+                doc?.let { d ->
+                    val parsed = parseDrivePage(d)
+                    if (parsed.title.contains("zip", true)) null else parsed
+                }
             }
-            if (page != null) {
-                driveCache[key] = CachedDrivePage(System.currentTimeMillis(), page)
-            }
+            driveCache[key] = CachedDrivePage(System.currentTimeMillis(), page)
             page
         }
     }

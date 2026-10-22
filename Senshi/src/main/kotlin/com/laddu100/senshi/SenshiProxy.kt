@@ -93,15 +93,6 @@ object SenshiProxy {
         return "http://127.0.0.1:$port/$id"
     }
 
-    private fun shortUrl(url: String): String {
-        return try {
-            val uri = URI(url)
-            "${uri.host}${uri.path}"
-        } catch (_: Exception) {
-            url.take(80)
-        }
-    }
-
     private fun handleRequest(conn: Socket) {
         try {
             conn.soTimeout = 20000
@@ -351,8 +342,6 @@ object SenshiProxy {
     }
 
     private fun serveSegment(conn: Socket, entry: StreamEntry, target: String, range: String?) {
-        // cdn edges occasionally 403 a single request, the player is far less
-        // forgiving than a browser so one quick retry keeps playback smooth
         for (attempt in 0..1) {
             if (attempt > 0) {
                 try {
@@ -427,7 +416,6 @@ object SenshiProxy {
     }
 
     private fun fetchText(url: String, entry: StreamEntry): String? {
-        // cdn edges occasionally 403 on burst rendition fetches, one short retry helps
         for (attempt in 0..1) {
             try {
                 val text = client.newCall(buildUpstream(url, entry).build()).execute().use { resp ->

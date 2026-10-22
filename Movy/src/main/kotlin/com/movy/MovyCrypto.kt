@@ -2,20 +2,9 @@ package com.movy
 
 import java.util.Base64
 
-/**
- * Stream payload decoder used by movy.sx (their enc=2 wire format).
- *
- * The payload is base64url text. After decoding, the first 4 bytes are the
- * literal "mvm1" marker, the rest is the UTF-8 json XORed with a keystream
- * that is derived from the seed string and the tmdb media id.
- *
- * Keystream generator, step by step (mirrors the site bundle):
- *  - fnv1a hash of the seed, avalanched through murmur fmix32
- *  - mixed with the media id and the 0x9e3779b9 constant, fmix32 again
- *  - 8 rounds fill slots of a 61 slot table; untouched slots read as 0 and
- *    take a different blend path than touched slots
- *  - every output word rotates the accumulator and rewrites the slot it read
- */
+// movy.sx enc=2 wire format: base64url payload that starts with the literal
+// "mvm1", followed by json XORed with a keystream derived from the seed and
+// the tmdb media id. ported from the site bundle.
 object MovyCrypto {
 
     // 0x9e3779b9 written as its int32 form, the hex literal would be a long
@@ -40,7 +29,7 @@ object MovyCrypto {
         return (value shl s) or (value ushr (32 - s))
     }
 
-    /** unsigned 32 bit remainder, js does this on a >>> 0 value */
+    // js computes this on a >>> 0 value
     private fun mod61(value: Int): Int = ((value.toLong() and 0xFFFFFFFFL) % 61L).toInt()
 
     private fun fnv1aMixed(text: String): Int {
@@ -53,7 +42,7 @@ object MovyCrypto {
         return fmix(hash)
     }
 
-    /** js ToUint32 applied to the media id string before it enters the mix */
+    // js ToUint32 applied to the media id string before it enters the mix
     private fun toUint32(text: String): Int {
         val parsed = text.trim().toDoubleOrNull() ?: return 0
         if (parsed.isNaN() || parsed.isInfinite()) return 0
@@ -115,10 +104,7 @@ object MovyCrypto {
         return Base64.getDecoder().decode(text)
     }
 
-    /**
-     * Returns the json text hidden inside an enc=2 response, or null when the
-     * payload does not carry the mvm1 marker (wrong seed or garbage input).
-     */
+    // null means the marker did not match, i.e. the seed was wrong
     fun decrypt(payload: String, seed: String, mediaId: String): String? {
         return try {
             val raw = decodeBase64Url(payload)
@@ -134,7 +120,7 @@ object MovyCrypto {
                 return null
             }
             String(plain, 4, plain.size - 4, Charsets.UTF_8)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             null
         }
     }

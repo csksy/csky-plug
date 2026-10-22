@@ -32,7 +32,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 class LIVETVLiveEventsProvider(
-    override var name: String = "⚡LIVE TV Live Events",
+    override var name: String = "LIVE TV Live Events",
     private val customCatLink: String? = null,
 ) : MainAPI() {
     companion object {
@@ -47,12 +47,10 @@ class LIVETVLiveEventsProvider(
         TvType.Live,
     )
 
-    private val client =
-    // Data classes for stream response from /channels/{slug}.txt
-        OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .build()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
 
     data class ChannelStreamResponse(
         val streamUrls: List<StreamUrl>?,
@@ -80,7 +78,6 @@ class LIVETVLiveEventsProvider(
     )
 
     private fun createDisplayTitle(event: LIVETVEventData): String {
-        // Create display title with match info
         val eventInfo = event.eventInfo
         return if (eventInfo != null &&
             !eventInfo.teamA.isNullOrBlank() &&
@@ -97,7 +94,6 @@ class LIVETVLiveEventsProvider(
     }
 
     private fun getEventStatus(event: LIVETVEventData): String {
-        // Get event status (Live, Upcoming, Ended)
         val eventInfo = event.eventInfo ?: return ""
         val now = System.currentTimeMillis()
 
@@ -107,9 +103,9 @@ class LIVETVLiveEventsProvider(
             val endTime = eventInfo.endTime?.let { dateFormat.parse(it)?.time }
 
             when {
-                endTime != null && now >= endTime -> "✅"
-                startTime != null && now >= startTime -> "🔴"
-                startTime != null && now < startTime -> "🔜"
+                endTime != null && now >= endTime -> "ENDED"
+                startTime != null && now >= startTime -> "LIVE"
+                startTime != null && now < startTime -> "UPCOMING"
                 else -> ""
             }
         } catch (_: Exception) {
@@ -118,7 +114,6 @@ class LIVETVLiveEventsProvider(
     }
 
     private fun isEventLive(event: LIVETVEventData): Boolean {
-        // Check if event is currently live
         val eventInfo = event.eventInfo ?: return false
         val now = System.currentTimeMillis()
 
@@ -139,7 +134,7 @@ class LIVETVLiveEventsProvider(
         }
     }
 
-    // Check if event has ended based on its end date/time
+    // ended events sink to the bottom of the row so live matches stay visible
     private fun isEventEnded(event: LIVETVEventData): Boolean {
         val eventInfo = event.eventInfo ?: return false
         val now = System.currentTimeMillis()
@@ -153,7 +148,6 @@ class LIVETVLiveEventsProvider(
         }
     }
 
-    // Generate a match card poster URL using the match card API
     private fun generateMatchCardUrl(event: LIVETVEventData): String {
         val eventInfo = event.eventInfo
 
@@ -203,32 +197,18 @@ class LIVETVLiveEventsProvider(
         }
 
         val groupedEvents = events.groupBy { it.eventInfo?.eventCat ?: it.cat ?: "Other" }
-        // Group events by eventCat
 
         val homePageLists =
             groupedEvents
                 .map { (category, categoryEvents) ->
-                    val icon =
-                        when (category.lowercase()) {
-                            "cricket" -> "🏏"
-                            "football" -> "⚽"
-                            "basketball" -> "🏀"
-                            "ice hockey" -> "🏒"
-                            "boxing" -> "🥊"
-                            "motorsport" -> "🏎️"
-                            "tennis" -> "🎾"
-                            else -> "📺"
-                        }
-
                     val searchResponses =
                         categoryEvents
                             .sortedWith(
                                 compareBy<LIVETVEventData> { event ->
-                                    val status = getEventStatus(event)
-                                    when {
-                                        status.contains("🔴") -> 0
-                                        status.contains("🔜") -> 1
-                                        status.contains("✅") -> 2
+                                    when (getEventStatus(event)) {
+                                        "LIVE" -> 0
+                                        "UPCOMING" -> 1
+                                        "ENDED" -> 2
                                         else -> 3
                                     }
                                 }.thenBy { event ->
@@ -277,7 +257,7 @@ class LIVETVLiveEventsProvider(
                             }
 
                     HomePageList(
-                        name = "$icon $category",
+                        name = category,
                         list = searchResponses,
                         isHorizontalImages = true,
                     )
@@ -347,21 +327,21 @@ class LIVETVLiveEventsProvider(
         val eventInfo = data.eventInfo
         val plot = buildString {
             eventInfo?.let { info ->
-                info.eventType?.let { append("📌 $it\n") }
-                info.eventName?.let { append("🏆 $it\n") }
+                info.eventType?.let { append("Event: $it\n") }
+                info.eventName?.let { append("Tournament: $it\n") }
                 info.startTime?.let {
                     try {
                         val dateFormat = SimpleDateFormat("yyyy/MM/dd HH:mm:ss Z", Locale.US)
                         val displayFormat = SimpleDateFormat("MMM dd, yyyy HH:mm 'UTC'", Locale.US)
                         displayFormat.timeZone = TimeZone.getTimeZone("UTC")
                         val date = dateFormat.parse(it)
-                        date?.let { d -> append("🕐 ${displayFormat.format(d)}\n") }
+                        date?.let { d -> append("Starts: ${displayFormat.format(d)}\n") }
                     } catch (_: Exception) {
-                        append("🕐 $it\n")
+                        append("Starts: $it\n")
                     }
                 }
             }
-            append("\n📡 Available Servers: ${data.formats.size}")
+            append("\nAvailable servers: ${data.formats.size}")
         }
 
         return newLiveStreamLoadResponse(name = data.title, url = url, dataUrl = url) {
@@ -500,7 +480,8 @@ class LIVETVLiveEventsProvider(
         return loadEmbedInWebView(url)
     }
 
-    // Load embed page in WebView and intercept streaming requests
+    // some servers only expose the stream from inside their player page, run
+    // it in a throwaway webview and grab the first media request it fires
     private suspend fun loadEmbedInWebView(embedUrl: String): String? {
         return withContext(Dispatchers.Main) {
             suspendCoroutine { continuation ->
@@ -621,7 +602,6 @@ class LIVETVLiveEventsProvider(
         }
     }
 
-    // Fetches stream URLs from /channels/{slug}.txt
     private suspend fun fetchChannelStreams(slug: String): ChannelStreamResponse? {
         return withContext(Dispatchers.IO) {
             try {
@@ -653,8 +633,7 @@ class LIVETVLiveEventsProvider(
         }
     }
 
-    // Parses stream link that may contain headers after | Format: url|Header1=value1&Header2=value2
-    // Returns Pair(url, headers map)
+    // links can carry per stream headers after a pipe, url|Referer=..&Origin=..
     private fun parseStreamLink(link: String): Pair<String, Map<String, String>> {
         val headers = mutableMapOf<String, String>()
 

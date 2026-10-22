@@ -28,8 +28,6 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-// the gateway rotates its handshake constants server side, so the site's own
-// player bundle runs in a hidden webview and talks to it for us
 object SenshiVhost {
 
     private const val TAG = "Senshi"
@@ -44,7 +42,6 @@ object SenshiVhost {
     private const val NATIVE_MUTE_MS = 5 * 60 * 1000L
     private const val OPEN_CACHE_TTL = 4 * 60 * 1000L
 
-    // only used when the system webview cannot be queried, real devices never hit this
     private const val FALLBACK_UA =
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
 
@@ -81,8 +78,6 @@ object SenshiVhost {
     private val openMutex = Mutex()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
-    // the gateway throttles how much one session may open, repeats are served
-    // from memory so a reloaded episode never touches it twice
     private class OpenCacheEntry(val sources: List<VidcloudSource>, val ts: Long)
     private val openCache = ConcurrentHashMap<Int, OpenCacheEntry>()
 
@@ -105,9 +100,6 @@ object SenshiVhost {
         }
     }
 
-    // the gateway rejects user agents it does not like and rotates those rules, so
-    // the webview's own user agent is used everywhere. it updates itself with the
-    // system webview and always matches the engine actually making the requests
     fun browserUa(): String {
         cachedUa?.let { return it }
         val ctx = appContext ?: return FALLBACK_UA
@@ -135,7 +127,6 @@ object SenshiVhost {
         "Referer" to "$origin/"
     )
 
-    // the bundle moves host occasionally, the live homepage is the source of truth
     private suspend fun discoverBundleUrl(fresh: Boolean): String? {
         val now = System.currentTimeMillis()
         if (!fresh && bundleUrl != null && now - bundleTs < BUNDLE_TTL) {
@@ -258,8 +249,6 @@ object SenshiVhost {
         }
     }
 
-    // the page only wires the open call through, the runtime and every gateway
-    // request stay inside the webview's own network stack with its real user agent
     private fun nativePage(bundle: String): String {
         return """<!DOCTYPE html><html><head>
 <script>
@@ -290,8 +279,6 @@ object SenshiVhost {
 </head><body></body></html>"""
     }
 
-    // relay variant for devices whose webview cannot reach the gateway itself,
-    // gateway calls are routed through okhttp with the webview's user agent
     private fun relayPage(bundle: String): String {
         return """<!DOCTYPE html><html><head>
 <script>
@@ -376,7 +363,6 @@ object SenshiVhost {
                     return WebResourceResponse("text/html", "utf-8", html.byteInputStream())
                 }
                 if (nativeMode) {
-                    // everything else, bundle included, goes through the webview itself
                     return null
                 }
                 if (url == bundle) {
@@ -399,7 +385,6 @@ object SenshiVhost {
                 view: WebView?,
                 detail: RenderProcessGoneDetail?
             ): Boolean {
-                // low memory devices reclaim the renderer, the waiters must not hang
                 pageUp = false
                 pending.values.forEach { it.complete("") }
                 mainHandler.post { destroyPage() }
@@ -459,8 +444,6 @@ object SenshiVhost {
         return ok
     }
 
-    // a quick runtime check before every open, dead pages fail here instead of
-    // burning the whole open timeout
     private suspend fun probeRuntime(): Boolean {
         val wv = webView ?: return false
         val deferred = CompletableDeferred<Boolean>()
@@ -482,8 +465,6 @@ object SenshiVhost {
         val e: String? = null
     )
 
-    // these mean the page itself cannot talk to the gateway, the relay takes over
-    // for a while. anything else is treated as transient and retried natively
     private val nativeFailureMarks = listOf(
         "failed to fetch",
         "bootstrap failed",
@@ -570,13 +551,10 @@ object SenshiVhost {
                 val err = (reply?.e ?: "").lowercase()
                 when {
                     nativeMode && nativeFailureMarks.any { err.contains(it) } -> {
-                        // the page cannot talk to the gateway at all, use the relay
                         nativeMutedUntil = System.currentTimeMillis() + NATIVE_MUTE_MS
                         nativeMode = false
                     }
                     err.contains("authorization failed") -> {
-                        // the session hit its budget, a fresh one starts clean,
-                        // but a second refusal means the transport itself is the problem
                         authFails++
                         if (authFails >= 2) nativeMode = !nativeMode
                     }
@@ -585,7 +563,6 @@ object SenshiVhost {
             } else {
                 nativeMode = !nativeMode
             }
-            // stale session or bundle, drop the page so the next attempt rebuilds
             bundleTs = 0L
             fresh = true
             mainHandler.post { destroyPage() }

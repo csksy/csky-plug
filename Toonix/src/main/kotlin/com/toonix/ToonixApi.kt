@@ -449,8 +449,6 @@ object ToonixApi {
         }
     }
 
-    // fetches a media playlist and returns its first segment url, used to
-    // check a server before advertising its links
     suspend fun firstSegmentOf(playlistUrl: String, referer: String): String? {
         return try {
             val res = app.get(playlistUrl, headers = mapOf("User-Agent" to UA, "Referer" to referer))

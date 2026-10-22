@@ -1,6 +1,7 @@
 package com.csksy.nepu
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -78,7 +79,7 @@ class NepuSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragme
             typeface = Typeface.DEFAULT_BOLD
         })
         root.addView(TextView(ctx).apply {
-            text = "Cloudflare access"
+            text = "Site access"
             textSize = 12.5f
             setTextColor(TEXT_SUBTLE)
             setPadding(0, d(2), 0, 0)
@@ -164,9 +165,9 @@ class NepuSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragme
                     runVerification()
                     return@setOnClickListener
                 }
-                android.app.AlertDialog.Builder(act)
+                AlertDialog.Builder(act)
                     .setTitle("Reset session?")
-                    .setMessage("All saved Cloudflare cookies are removed and the verification runs again from scratch.")
+                    .setMessage("All saved session cookies are removed and the verification runs again from scratch.")
                     .setPositiveButton("Reset") { _, _ -> runVerification() }
                     .setNegativeButton("Cancel", null)
                     .show()
@@ -212,7 +213,7 @@ class NepuSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragme
             else -> "No active session"
         }
         verifyButton?.apply {
-            text = if (active) "Verify again" else "Verify Cloudflare"
+            text = if (active) "Verify again" else "Verify access"
             isEnabled = true
             alpha = 1f
         }
@@ -229,10 +230,10 @@ class NepuSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragme
         scope.launch {
             try {
                 // the full wipe is what brings the challenge back, without it
-                // the webview store keeps handing cloudflare the old clearance
+                // the webview store keeps handing the site its old session
                 wipeNepuBrowserState()
                 if (isAdded) renderStatus()
-                val success = solveNepuCloudflare("https://nepu.io/")
+                val success = solveNepuGuard()
                 if (success && NepuSession.active()) {
                     if (isAdded) {
                         Toast.makeText(requireContext(), "Nepu is ready", Toast.LENGTH_SHORT).show()

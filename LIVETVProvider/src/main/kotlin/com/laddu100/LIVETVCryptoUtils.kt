@@ -26,7 +26,6 @@ object LIVETVCryptoUtils {
 
     private data class KeyInfo(val key: ByteArray, val iv: ByteArray)
 
-    // Convert hex string to byte array
     private fun hexStringToByteArray(hex: String): ByteArray {
         val len = hex.length
         val data = ByteArray(len / 2)

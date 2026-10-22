@@ -41,7 +41,6 @@ class SenshiProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // the site rotates user-agent rules, the webview's live agent never goes stale
     private val apiHeaders get() = mapOf(
         "User-Agent" to SenshiVhost.browserUa(),
         "Accept" to "application/json, text/plain, */*",
@@ -56,7 +55,6 @@ class SenshiProvider : MainAPI() {
         "Referer" to "$mainUrl/browse"
     )
 
-    // the waf rejects cross-origin player requests without the full browser header set
     private val cdnHeaders get() = mapOf(
         "User-Agent" to SenshiVhost.browserUa(),
         "Accept" to "*/*",
@@ -191,7 +189,6 @@ class SenshiProvider : MainAPI() {
         var hasSub = (anime.sub_count ?: 0) > 0
         var hasDub = (anime.dub_count ?: 0) > 0
         if (!hasSub && !hasDub && sorted.isNotEmpty()) {
-            // counts can be stale on fresh uploads, probe the first episode
             hasSub = true
             probeEmbeds(malId, sorted.first().ep_id!!)?.let { statuses ->
                 hasSub = statuses.any { it.isSub() }
@@ -220,7 +217,6 @@ class SenshiProvider : MainAPI() {
         }
     }
 
-    // dub_count can lag behind the episode list on ongoing shows, trailing episodes get probed
     private suspend fun buildDubEpisodes(
         malId: Int,
         episodes: List<SenshiEpisode>,
@@ -274,7 +270,6 @@ class SenshiProvider : MainAPI() {
         val matching = embeds.filter { if (wantDub) it.isDub() else it.isSub() }
             .ifEmpty { embeds }
 
-        // sub and dub entries usually share one multi-audio stream, hit each id once
         val sourceIds = matching.mapNotNull { it.remote_source_id }.distinct()
         if (sourceIds.isEmpty()) {
             return false
@@ -310,14 +305,12 @@ class SenshiProvider : MainAPI() {
         return found
     }
 
-    // masters arrive as plain hls, the proxy pins one resolution and audio track per link
     private suspend fun emitStreamLinks(
         master: String,
         modeLabel: String,
         wantDub: Boolean,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // cdn edges answer 403 on burst fetches, retry quietly a couple of times
         var masterText: String? = null
         for (attempt in 0..2) {
             if (attempt > 0) {
@@ -391,8 +384,6 @@ class SenshiProvider : MainAPI() {
         return qualities.sortedByDescending { it.first.dropLast(1).toIntOrNull() ?: 0 }
     }
 
-    // the vhost already walks its native and relay modes internally, one cheap
-    // retry covers a dropped page right after a rotation
     private suspend fun fetchVidcloud(sourceId: Int): List<VidcloudSource>? {
         for (attempt in 0..1) {
             if (attempt > 0) {
@@ -437,7 +428,6 @@ class SenshiProvider : MainAPI() {
         }
     }
 
-    // dual-audio movies are typed as anime so the sub/dub switcher stays reachable
     private fun SenshiAnime.tvType(dualAudio: Boolean = false): TvType = when (type?.uppercase()) {
         "MOVIE" -> if (dualAudio) TvType.Anime else TvType.AnimeMovie
         "OVA", "ONA", "SPECIAL", "MUSIC" -> TvType.OVA
@@ -470,7 +460,6 @@ class SenshiProvider : MainAPI() {
         return st == "sub" || st == "hardsub"
     }
 
-    // the runtime labels each stream sub, dub or both, keep the ones that fit the tab
     private fun VidcloudSource.filesFor(wantDub: Boolean): List<VidcloudFile> {
         val labeled = source.filter { !it.label.isNullOrBlank() }
         if (labeled.isEmpty()) return source
@@ -491,7 +480,6 @@ class SenshiProvider : MainAPI() {
         return null
     }
 
-    // dub mode keeps dub captions, sub mode the translation tracks, with fallback to the other set
     private fun VidcloudSource.subtitlesFor(wantDub: Boolean): List<VidcloudTrack> {
         val usable = tracks.filter { it.trackLabel() != null }
         val dub = usable.filter { it.isDubTrack() }

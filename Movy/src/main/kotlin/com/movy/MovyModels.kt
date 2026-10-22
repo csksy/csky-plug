@@ -5,7 +5,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class MovyTmdbPage(
-    @JsonProperty("page") val page: Int? = null,
     @JsonProperty("results") val results: List<MovyTmdbItem>? = null,
     @JsonProperty("total_pages") val totalPages: Int? = null,
 )
@@ -16,13 +15,9 @@ data class MovyTmdbItem(
     @JsonProperty("title") val title: String? = null,
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("poster_path") val posterPath: String? = null,
-    @JsonProperty("backdrop_path") val backdropPath: String? = null,
     @JsonProperty("media_type") val mediaType: String? = null,
     @JsonProperty("release_date") val releaseDate: String? = null,
     @JsonProperty("first_air_date") val firstAirDate: String? = null,
-    @JsonProperty("vote_average") val voteAverage: Double? = null,
-    @JsonProperty("genre_ids") val genreIds: List<Int>? = null,
-    @JsonProperty("overview") val overview: String? = null,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -55,7 +50,6 @@ data class MovyTranslations(
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class MovyMovieDetails(
-    @JsonProperty("id") val id: Int? = null,
     @JsonProperty("title") val title: String? = null,
     @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("poster_path") val posterPath: String? = null,
@@ -73,12 +67,10 @@ data class MovyMovieDetails(
 data class MovySeasonSummary(
     @JsonProperty("season_number") val seasonNumber: Int? = null,
     @JsonProperty("episode_count") val episodeCount: Int? = null,
-    @JsonProperty("name") val name: String? = null,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class MovyTvDetails(
-    @JsonProperty("id") val id: Int? = null,
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("poster_path") val posterPath: String? = null,
@@ -95,11 +87,9 @@ data class MovyTvDetails(
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class MovyEpisodeEntry(
     @JsonProperty("episode_number") val episodeNumber: Int? = null,
-    @JsonProperty("season") val season: Int? = null,
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("still_path") val stillPath: String? = null,
-    @JsonProperty("air_date") val airDate: String? = null,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)

@@ -11,7 +11,7 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
@@ -19,15 +19,17 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
-import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.raghav.donation.DonationManager
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "Movy"
 
@@ -61,9 +63,6 @@ class MovyProvider : MainAPI() {
     private fun itemTitle(item: MovyTmdbItem): String? =
         (item.title ?: item.name)?.takeIf { it.isNotBlank() }
 
-    private fun isAnimeItem(item: MovyTmdbItem): Boolean =
-        item.genreIds?.contains(16) == true
-
     private fun itemToSearch(item: MovyTmdbItem, fallbackType: String): SearchResponse? {
         val id = item.id ?: return null
         val title = itemTitle(item) ?: return null
@@ -84,6 +83,7 @@ class MovyProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         val data = MovyApi.tmdbPage(request.data, page)
             ?: return newHomePageResponse(request.name, emptyList(), hasNext = false)
         val fallbackType = if (request.data.startsWith("tv/") ||
@@ -232,7 +232,7 @@ class MovyProvider : MainAPI() {
     ): Boolean {
         val obj = try {
             JSONObject(data)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             return false
         }
         val kind = obj.optString("k")
@@ -253,21 +253,20 @@ class MovyProvider : MainAPI() {
         val seenLinks = ConcurrentHashMap.newKeySet<String>()
         val seenSubUrls = ConcurrentHashMap.newKeySet<String>()
         val seenSubLabels = ConcurrentHashMap.newKeySet<String>()
-        val anyLink = java.util.concurrent.atomic.AtomicBoolean(false)
+        val anyLink = AtomicBoolean(false)
 
         suspend fun emitSubtitles(city: MovyApi.City, reply: MovySourcesReply) {
             reply.subtitles.orEmpty().forEach { sub ->
                 val url = sub.url?.takeIf { it.startsWith("http") } ?: return@forEach
-                // healthy tracks carry a format tag, the raw relay links without
-                // one are dead placeholders on a couple of servers
+                // raw relay links without a format tag are dead placeholders on
+                // a couple of servers
                 val format = sub.type?.lowercase() ?: return@forEach
                 if (format != "vtt" && format != "srt") return@forEach
                 var label = sub.language?.takeIf { it.isNotBlank() } ?: sub.lang ?: return@forEach
                 // tampa style tracks hide behind bare two letter codes and point
-                // at dead relay tokens, every real track is a full language name
+                // at dead relay tokens, real tracks are full language names
                 // (chinese shows up as "CMN - [Cmn] 7", so check before trimming)
                 if (label.length < 4) return@forEach
-                // trim provider noise like "Bulgarian - [Bul] 7" down to "Bulgarian"
                 val cut = label.indexOf(" - [")
                 if (cut > 0) label = label.substring(0, cut).trim()
                 if (!seenSubUrls.add(url)) return@forEach
@@ -278,7 +277,9 @@ class MovyProvider : MainAPI() {
                     subtitleCallback.invoke(newSubtitleFile(label, url) {
                         headers = MovyApi.playHeaders
                     })
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.d(TAG, "subtitle emit: ${e.message}")
+                }
             }
         }
 
@@ -287,8 +288,8 @@ class MovyProvider : MainAPI() {
                 val url = source.url?.takeIf { it.startsWith("http") } ?: return@forEach
                 val qualityLabel = source.quality.orEmpty().trim()
                 if (qualityLabel.isEmpty()) return@forEach
-                // the site itself only keeps the english row from austin,
-                // delhi carries the rest of the indian languages
+                // austin only keeps the english row, delhi carries the rest of
+                // the indian languages
                 if (city.slug == "austin" && qualityLabel != "English") return@forEach
                 if (!seenLinks.add(url)) return@forEach
                 val label = buildString {
@@ -306,7 +307,9 @@ class MovyProvider : MainAPI() {
                         }
                     )
                     anyLink.set(true)
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.d(TAG, "link emit: ${e.message}")
+                }
             }
         }
 

@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.raghav.donation.DonationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -139,6 +140,7 @@ class HiCine : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        DonationManager.checkAndShow()
         val parts = request.data.split(":", limit = 2)
         if (parts.size < 2) return newHomePageResponse(request.name, emptyList())
 
@@ -283,8 +285,8 @@ class HiCine : MainAPI() {
         }
     }
 
-    // movie lines look like "URL, Link2, Link3, Link4, Link5, Link6, Link7, Quality name, 1.4GB"
-    // where only the first slot currently holds a real url, the rest are placeholders
+    // movie lines carry "URL, Link2..7, quality, size" where usually only the
+    // first slot holds a real url and the rest are placeholder labels
     private fun parseMovieLinks(raw: String?): List<FileEntry> {
         if (raw.isNullOrBlank()) return emptyList()
         return raw.lines().flatMap { line ->
@@ -309,8 +311,8 @@ class HiCine : MainAPI() {
         }
     }
 
-    // one entry inside an episode or season pack line, tokens are url, size
-    // and quality in varying order, sometimes with empty size slots
+    // entries inside an episode or season pack line hold url, size and
+    // quality in varying order, sometimes with empty size slots
     private fun parseEntry(raw: String): FileEntry? {
         val url = URL_RE.find(raw)?.value ?: return null
         val quality = QUALITY_RE.find(raw)?.value
@@ -390,8 +392,8 @@ class HiCine : MainAPI() {
 
     private val tokenCache = ConcurrentHashMap<String, Pair<Long, LinksResponse?>>()
 
-    // the signed tokens live roughly five minutes, keep them a bit shorter
-    // so a cached resolve never hands out an expired link
+    // the signed tokens live roughly five minutes, cache a bit shorter so a
+    // cached resolve never hands out an expired link
     private suspend fun serverTokens(base: String, vcloud: String): Map<String, ServerToken>? {
         val cached = tokenCache[vcloud]
         if (cached != null && System.currentTimeMillis() - cached.first < TOKEN_TTL) {
@@ -460,7 +462,7 @@ class HiCine : MainAPI() {
     }
 
     // 10Gbps hops through hubcloud and a workers proxy before landing on a
-    // link generator page that only carries the real url in its query
+    // generator page that only carries the real url in its query
     private fun resolveTen(goUrl: String): String? {
         val hubcloud = hopLocation(goUrl) ?: return null
         val workerHop = hopLocation(hubcloud) ?: return null
@@ -471,8 +473,8 @@ class HiCine : MainAPI() {
 
     private var gofileToken: String? = null
 
-    // gofile needs a guest account for the contents api, the website token
-    // gate is skipped by many uploaders so this only works for open folders
+    // gofile needs a guest account for the contents api, many uploaders
+    // skip the website token gate so this only works for open folders
     private suspend fun gofileDirect(pageUrl: String): String? {
         val contentId = pageUrl.trimEnd('/').substringAfterLast('/')
         if (contentId.length !in 5..20) return null

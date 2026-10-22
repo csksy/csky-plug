@@ -1066,20 +1066,14 @@ internal object MultimoviesSite {
             java.util.concurrent.ConcurrentHashMap<String, Boolean>()
         )
         val linkCb: (ExtractorLink) -> Unit = { link ->
-            // the same orion file reaches this callback twice, once with an api
-            // key in the query and once without, the key is not part of the
-            // resource so the dedupe has to look past it
-            if (seenLinks.add(PlayNet.dedupeKey(link.url))) {
+            if (seenLinks.add(link.url)) {
                 val name = "[Multimovies] - " + link.name.replace(Regex("\\s+"), " ").trim()
-                // multimovies servers rarely tag quality on the link and the
-                // apis inflate what the playlist really serves, a measured
-                // rung height beats both when hlsCheck produced one
-                val quality = PlayNet.hlsHeightFor(link.url)
-                    ?: if (link.quality != Qualities.Unknown.value) {
-                        link.quality
-                    } else {
-                        PlayNet.getIndexQuality(name)
-                    }
+                // multimovies servers rarely tag quality on the link, the label usually carries it
+                val quality = if (link.quality != Qualities.Unknown.value) {
+                    link.quality
+                } else {
+                    PlayNet.getIndexQuality(name)
+                }
                 callback(
                     ExtractorLink(
                         "Multimovies",

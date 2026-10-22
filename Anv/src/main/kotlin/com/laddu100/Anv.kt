@@ -258,13 +258,20 @@ class Anv : MainAPI() {
         class Pending(val variantLabel: String, val label: String, val url: String, val tracks: List<AnvTrack>)
 
         val pending = mutableListOf<Pending>()
+        val seenUrls = HashMap<String, Int>()
         for (variant in resp.variants.orEmpty()) {
             val vid = variant.id ?: continue
             if (vid !in wanted) continue
             val variantLabel = if (vid == "dub") "Dub" else "Sub"
             for (source in variant.sources.orEmpty()) {
-                val url = AnvApi.absolute(source.url) ?: continue
+                val stream = AnvApi.absolute(source.url) ?: continue
                 val label = source.label?.trim() ?: continue
+                // pear and banana share one stream and the player drops a
+                // link whose url was already handed in, so the repeats carry
+                // a marker the cdn ignores
+                val repeat = seenUrls[stream] ?: 0
+                val url = if (repeat == 0) stream else stream + (if ('?' in stream) "&" else "?") + "f=$repeat"
+                seenUrls[stream] = repeat + 1
                 pending.add(Pending(variantLabel, label, url, source.tracks.orEmpty()))
             }
         }
