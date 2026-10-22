@@ -17,12 +17,15 @@ import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class VegaLinkData(
@@ -97,7 +100,7 @@ class VegaMovies : MainAPI() {
         val score = detail.imdbScore?.let { Score.from10(it) }
 
         if (detail.isSeries && (detail.seasons.isNotEmpty() || looksSeries(url, detail.title))) {
-            val episodes = buildEpisodes(detail)
+            val episodes = buildEpisodes(detail, urlSeason(url))
             if (episodes.isNotEmpty()) {
                 return newTvSeriesLoadResponse(detail.title, url, TvType.TvSeries, episodes) {
                     this.posterUrl = detail.poster
@@ -127,11 +130,19 @@ class VegaMovies : MainAPI() {
         return url.contains("season", true) || VegaSites.looksLikeSeries(title)
     }
 
+    // single season pages fall back to one block, the url still knows the real number
+    private fun urlSeason(url: String): Int? {
+        return Regex("""(?i)season\s*-?\s*0*(\d{1,2})""").find(url)?.groupValues?.get(1)?.toIntOrNull()
+    }
+
     // episode lists only exist behind the nexdrive hop, one probe per season learns them
-    private suspend fun buildEpisodes(detail: VegaSites.Detail): List<com.lagradost.cloudstream3.Episode> {
+    private suspend fun buildEpisodes(
+        detail: VegaSites.Detail,
+        fallbackSeason: Int? = null
+    ): List<com.lagradost.cloudstream3.Episode> {
         val seasons = detail.seasons.ifEmpty {
             listOf(
-                VegaSites.SeasonBlock(detail.title, 1, detail.movieGroups.map {
+                VegaSites.SeasonBlock(detail.title, fallbackSeason ?: 1, detail.movieGroups.map {
                     VegaSites.QualityGroup(it.label, it.links.toMutableList())
                 }.toMutableList())
             )
@@ -179,6 +190,30 @@ class VegaMovies : MainAPI() {
         }
     }
 
+    private fun langTagOf(label: String): String =
+        if (Regex("""(?i)english with subtitles""").containsMatchIn(label)) "English" else ""
+
+    // dolby vision encodes break on most phone decoders so they only keep a tier when nothing else exists
+    private fun variantPenalty(label: String): Int {
+        var penalty = 0
+        if (dvEncode(label)) penalty += 4
+        if (Regex("""(?i)10\s*bit|10bit""").containsMatchIn(label)) penalty += 1
+        return penalty
+    }
+
+    private fun dvEncode(label: String): Boolean =
+        Regex("""(?i)\bDV\b|dolby|hybrid""").containsMatchIn(label)
+
+    private class Candidate(
+        val family: String,
+        val tier: Int,
+        val lang: String,
+        val penalty: Int,
+        val dv: Boolean,
+        val url: String
+    )
+
+    // one link per server, quality and language, so the picker shows every real option exactly once
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -190,32 +225,104 @@ class VegaMovies : MainAPI() {
         } catch (_: Exception) {
             return false
         }
-        VegaSources.resetSession()
         val groups = parsed.groups
         if (groups.isEmpty()) return false
+        VegaSources.resetSession()
+
+        val candidates = ConcurrentHashMap<String, Candidate>()
+
+        fun targetsOf(page: VegaSources.DrivePage): List<Pair<String, String>> {
+            return if (parsed.episode != null) {
+                page.episodes[parsed.episode]
+                    ?: page.servers.takeIf { page.episodes.isEmpty() }
+            } else {
+                page.servers
+            }.orEmpty()
+        }
+
+        fun offer(family: String, tier: Int, lang: String, candidate: Candidate) {
+            candidates.compute("$family|$tier|$lang") { _, old ->
+                if (old == null || candidate.penalty < old.penalty) candidate else old
+            }
+        }
 
         coroutineScope {
             val gate = Semaphore(3)
             groups.forEach { group ->
                 async(Dispatchers.IO) {
                     gate.withPermit {
-                        val quality = VegaNet.qualityOf(group.label)
-                        for (url in group.urls) {
-                            try {
-                                val page = VegaSources.fetchDrivePage(url) ?: continue
-                                val targets = if (parsed.episode != null) {
-                                    page.episodes[parsed.episode]
-                                        ?: page.servers.takeIf { page.episodes.isEmpty() }
-                                } else {
-                                    page.servers
-                                } ?: continue
-                                targets.forEach { (label, href) ->
-                                    val streams = VegaSources.resolveAll(label, href)
-                                    VegaSources.emit(name, quality, streams, callback)
-                                }
+                        val tier = VegaNet.qualityOf(group.label)
+                        val lang = langTagOf(group.label)
+                        val penalty = variantPenalty(group.label)
+                        for (url in group.urls.distinct()) {
+                            val page = try {
+                                VegaSources.fetchDrivePage(url)
                             } catch (_: Exception) {
+                                null
+                            } ?: continue
+                            val dv = dvEncode(group.label)
+                            for ((_label, href) in targetsOf(page)) {
+                                if (href.contains("nexdrive", true)) {
+                                    val nested = try {
+                                        VegaSources.fetchDrivePage(href)
+                                    } catch (_: Exception) {
+                                        null
+                                    } ?: continue
+                                    for ((_innerLabel, innerHref) in targetsOf(nested)) {
+                                        VegaSources.familyOf(innerHref)?.let { family ->
+                                            offer(
+                                                family, tier, lang,
+                                                Candidate(family, tier, lang, penalty, dv, innerHref)
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    VegaSources.familyOf(href)?.let { family ->
+                                        offer(
+                                            family, tier, lang,
+                                            Candidate(family, tier, lang, penalty, dv, href)
+                                        )
+                                    }
+                                }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        coroutineScope {
+            val gate = Semaphore(4)
+            candidates.values.forEach { candidate ->
+                async(Dispatchers.IO) {
+                    gate.withPermit {
+                        val mirrors = try {
+                            VegaSources.mirrorsFor(candidate.family, candidate.url)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        val mirror = mirrors.firstOrNull { VegaSources.alive(it.url, it.headers) }
+                            ?: return@withPermit
+                        val extras = buildString {
+                            if (candidate.lang.isNotBlank()) append(" [").append(candidate.lang).append("]")
+                            if (candidate.dv) append(" [DV]")
+                        }
+                        val linkName = if (candidate.tier > 0) {
+                            "${candidate.family} ${candidate.tier}p$extras"
+                        } else {
+                            candidate.family + extras
+                        }
+                        callback(
+                            newExtractorLink(
+                                source = name,
+                                name = linkName,
+                                url = mirror.url,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.quality = candidate.tier
+                                this.headers = mirror.headers
+                            }
+                        )
                     }
                 }
             }

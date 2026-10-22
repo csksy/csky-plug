@@ -109,4 +109,11 @@ internal object VegaNet {
             null
         }
     }
+
+    // poster u= params are single base64 while the drive tokens are double, take whichever decodes to a url
+    fun decodeParam(encoded: String): String? {
+        val once = runCatching { base64Decode(encoded.trim()) }.getOrNull() ?: return null
+        if (once.startsWith("http")) return once
+        return runCatching { base64Decode(once) }.getOrNull()?.takeIf { it.startsWith("http") }
+    }
 }

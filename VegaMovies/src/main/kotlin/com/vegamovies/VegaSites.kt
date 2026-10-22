@@ -145,7 +145,7 @@ internal object VegaSites {
             val poster = img?.attr("src")?.takeIf { it.startsWith("http") }
                 ?: img?.attr("data-src")?.takeIf { it.startsWith("http") }
             val qualityText = a.selectFirst(".poster-quality")?.text()?.trim()
-            toSearchResponse(api, site, title, href, poster, qualityText)?.let(out::add)
+            toSearchResponse(api, site, title, href, poster?.let(::posterFromUrl), qualityText)?.let(out::add)
         }
         return out.distinctBy { it.url }
     }
@@ -196,7 +196,7 @@ internal object VegaSites {
             val qualityText = d.optJSONArray("category")?.let { arr ->
                 (0 until arr.length()).mapNotNull { arr.optString(it) }.firstOrNull { searchQuality(it) != null }
             }
-            toSearchResponse(api, site, title, permalink, poster, qualityText)?.let(out::add)
+            toSearchResponse(api, site, title, permalink, poster?.let(::posterFromUrl), qualityText)?.let(out::add)
         }
         return out
     }
@@ -231,14 +231,19 @@ internal object VegaSites {
             .replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
     }
 
-    // the og:image proxy host does not resolve everywhere, the u= param carries the real poster
+    // the og:image proxy host does not resolve on most networks, the u= param carries the real poster
+    private fun posterFromUrl(raw: String): String? {
+        val unescaped = htmlUnescape(raw)
+        if (!unescaped.startsWith("http")) return null
+        Regex("""[?&]u=([A-Za-z0-9+/=]+)""").find(unescaped)?.groupValues?.get(1)?.let { enc ->
+            VegaNet.decodeParam(enc)?.let { return it }
+        }
+        return unescaped.takeUnless { Regex("""(?i)^https?://img\.""").containsMatchIn(it) }
+    }
+
     private fun posterFrom(doc: Document): String? {
         val og = doc.selectFirst("meta[property=og:image]")?.attr("content") ?: return null
-        val unescaped = htmlUnescape(og)
-        Regex("""[?&]u=([A-Za-z0-9+/=]+)""").find(unescaped)?.groupValues?.get(1)?.let { enc ->
-            VegaNet.decodeDoubleBase64(enc)?.takeIf { it.startsWith("http") }?.let { return it }
-        }
-        return unescaped.takeIf { it.startsWith("http") }
+        return posterFromUrl(htmlUnescape(og))
     }
 
     fun parseDetail(html: String, url: String): Detail? {
@@ -373,7 +378,7 @@ internal object VegaSites {
                 ?: a.text().replace(Regex("""\s+"""), " ").trim()
             if (label.isBlank()) continue
             if (Regex("""(?i)batch|zip\b|\.rar|\.7z""").containsMatchIn(label)) continue
-            if (VegaSources.knownServer(href, label)) {
+            if (VegaSources.isServerLink(href)) {
                 group.links.add(label to href)
             }
         }

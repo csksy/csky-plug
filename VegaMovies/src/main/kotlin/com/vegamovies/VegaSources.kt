@@ -1,39 +1,37 @@
 package com.vegamovies
 
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import com.lagradost.cloudstream3.base64Decode
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 import org.jsoup.Jsoup
-import java.net.URI
 import java.net.URLDecoder
 import java.util.concurrent.ConcurrentHashMap
 
 internal object VegaSources {
 
-    class Stream(val name: String, val url: String, val headers: Map<String, String> = emptyMap())
+    class Mirror(val url: String, val headers: Map<String, String> = emptyMap())
 
-    private val serverHosts = listOf(
-        "nexdrive", "vcloud", "vegadrive", "filebee", "filepress", "fpgo",
-        "fastdl", "gofile", "vikingfile", "vik1ngfile", "megaup", "hubcloud",
-        "pixeldrain", "buzzheavier", "bzzhr", "dotflix"
-    )
+    // megaup hands out an html page instead of the file and vikingfile sits behind a turnstile captcha
+    private val deadHosts = Regex("""(?i)megaup|viking|vik1ng|telegram|t\.me""")
 
-    fun knownServer(href: String, label: String): Boolean {
-        if (serverHosts.any { href.contains(it, true) }) return true
-        return Regex("""(?i)v-?cloud|v-?drive|filepress|g-?direct|gofile|viking|megaup""").containsMatchIn(label)
+    fun familyOf(href: String): String? {
+        if (!href.startsWith("http") || deadHosts.containsMatchIn(href)) return null
+        val h = href.lowercase()
+        return when {
+            h.contains("vcloud") -> "V-Cloud"
+            h.contains("vegadrive") -> "V-Drive"
+            h.contains("fastdl") -> "G-Direct"
+            h.contains("filebee") || h.contains("filepress") || h.contains("fpgo") -> "Filepress"
+            h.contains("gofile") -> "GoFile"
+            h.contains("hubcloud") -> "Hub-Cloud"
+            else -> null
+        }
     }
 
-    private fun hostOf(url: String): String = try {
-        URI(url).host?.lowercase() ?: ""
-    } catch (_: Exception) {
-        ""
+    fun isServerLink(href: String): Boolean {
+        return href.startsWith("http") &&
+            (href.contains("nexdrive", true) || familyOf(href) != null)
     }
 
     // the middle hop every button leads to, it carries servers or one section per episode
@@ -54,11 +52,10 @@ internal object VegaSources {
             val href = a.attr("href").trim()
             val label = a.selectFirst("button")?.text()?.replace(Regex("""\s+"""), " ")?.trim()
                 ?: a.text().replace(Regex("""\s+"""), " ").trim()
-            if (label.isBlank() || !href.startsWith("http")) continue
+            if (label.isBlank() || !isServerLink(href)) continue
             if (Regex("""(?i)batch|zip\b""").containsMatchIn(label)) continue
-            if (!knownServer(href, label)) continue
-            if (href.contains("vglist") || href.contains("telegram") || href.contains("t.me")) continue
-            servers.add(shortServerName(label) to href)
+            if (href.contains("vglist")) continue
+            servers.add(label to href)
         }
 
         val episodes = LinkedHashMap<Int, List<Pair<String, String>>>()
@@ -73,10 +70,9 @@ internal object VegaSources {
                     val href = a.attr("href").trim()
                     val label = a.selectFirst("button")?.text()?.replace(Regex("""\s+"""), " ")?.trim()
                         ?: a.text().replace(Regex("""\s+"""), " ").trim()
-                    if (label.isBlank() || !href.startsWith("http")) continue
+                    if (label.isBlank() || !isServerLink(href)) continue
                     if (Regex("""(?i)batch|zip\b""").containsMatchIn(label)) continue
-                    if (!knownServer(href, label)) continue
-                    links.add(shortServerName(label) to href)
+                    links.add(label to href)
                 }
                 sib = sib.nextElementSibling()
             }
@@ -87,102 +83,72 @@ internal object VegaSources {
         return DrivePage(servers.distinctBy { it.second }, episodes)
     }
 
-    private fun shortServerName(label: String): String {
-        val clean = label.replace("&#x26a1;", "").replace(Regex("""\s+"""), " ").trim()
-        return when {
-            clean.contains("V-Cloud", true) -> "V-Cloud"
-            clean.contains("V-Drive", true) || clean.contains("VegaDrive", true) -> "V-Drive"
-            clean.contains("Filepress", true) || clean.contains("FilePress", true) -> "Filepress"
-            clean.contains("G-Direct", true) -> "G-Direct"
-            clean.contains("GoFile", true) -> "GoFile"
-            clean.contains("Viking", true) -> "VikingFile"
-            clean.contains("MegaUp", true) -> "MegaUp"
-            clean.contains("Pixel", true) -> "PixelDrain"
-            else -> clean.take(24)
-        }
-    }
-
-    suspend fun resolveAll(label: String, url: String): List<Stream> {
-        val host = hostOf(url)
+    suspend fun mirrorsFor(family: String, url: String): List<Mirror> {
         return try {
-            when {
-                host.contains("vcloud") -> resolveVCloud(url)
-                host.contains("vegadrive") -> resolveVegaDrive(url)
-                host.contains("filebee") || host.contains("filepress") || host.contains("fpgo") ->
-                    resolveFilePress(url)
-                host.contains("fastdl") -> resolveFastDl(url)
-                host.contains("gofile") -> resolveGofile(url)
-                host.contains("nexdrive") -> {
-                    val page = fetchDrivePage(url) ?: return emptyList()
-                    page.servers.flatMap { (name, href) -> resolveAll(name, href) }
-                }
-                else -> resolveGeneric(label, url)
+            when (family) {
+                "V-Cloud" -> vcloudMirrors(url)
+                "V-Drive" -> vegadriveMirrors(url)
+                "G-Direct" -> fastdlMirrors(url)
+                "Filepress" -> filepressMirrors(url)
+                "GoFile" -> gofileMirrors(url)
+                "Hub-Cloud" -> hubcloudMirrors(url)
+                else -> emptyList()
             }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    private suspend fun resolveGeneric(label: String, url: String): List<Stream> {
-        if (Regex("""\.(mkv|mp4|avi|mov)(\?|$)""").containsMatchIn(url) ||
-            url.contains("googleusercontent") || url.contains(".r2.dev")
-        ) {
-            return listOf(Stream(label.ifBlank { "Direct" }, url))
-        }
-        val follow = try {
-            app.get(url, headers = VegaNet.browserHeaders(), allowRedirects = false, timeout = 15L)
-        } catch (_: Exception) {
-            return emptyList()
-        }
-        val loc = follow.headers["location"]
-        if (loc != null && loc.startsWith("http")) return resolveAll(label, loc)
-        return emptyList()
-    }
-
     private val vcloudTokenRegex = Regex("""var\s+url\s*=\s*atob\s*\(\s*atob\s*\(\s*['"]([^'"]+)['"]""")
     private val plainUrlRegex = Regex("""var\s+url\s*=\s*['"]([^'"]+)['"]""")
 
-    // the target hides in a double base64 variable, the token page carries the r2 links
-    private suspend fun resolveVCloud(url: String): List<Stream> {
-        val first = VegaNet.fetchWithCf(url, timeout = 25L) ?: return emptyList()
+    // the share page hides the token page in a double base64 variable, the token page carries the mirrors
+    private suspend fun vcloudTarget(url: String): String? {
+        val first = VegaNet.fetchWithCf(url, timeout = 25L) ?: return null
         val base = VegaNet.originOf(first.url)
-        var target: String? = vcloudTokenRegex.find(first.text)?.groupValues?.get(1)
+        var target = vcloudTokenRegex.find(first.text)?.groupValues?.get(1)
             ?.let { VegaNet.decodeDoubleBase64(it) }
+            ?: plainUrlRegex.find(first.text)?.groupValues?.get(1)?.takeIf { it.startsWith("http") }
         if (target == null) {
-            target = plainUrlRegex.find(first.text)?.groupValues?.get(1)?.takeIf { it.startsWith("http") }
+            val hop = Jsoup.parse(first.text).selectFirst("div.main h4 a")?.attr("href")?.trim() ?: return null
+            val hopUrl = if (hop.startsWith("http")) hop else base + hop
+            val hopRes = VegaNet.fetchWithCf(hopUrl, timeout = 25L) ?: return null
+            target = vcloudTokenRegex.find(hopRes.text)?.groupValues?.get(1)
+                ?.let { VegaNet.decodeDoubleBase64(it) }
         }
-        if (target == null) {
-            val hop = Jsoup.parse(first.text).selectFirst("div.main h4 a")?.attr("href")?.trim()
-            if (!hop.isNullOrBlank()) {
-                val hopUrl = if (hop.startsWith("http")) hop else base + hop
-                val hopRes = VegaNet.fetchWithCf(hopUrl, timeout = 25L)
-                if (hopRes != null) {
-                    target = vcloudTokenRegex.find(hopRes.text)?.groupValues?.get(1)
-                        ?.let { VegaNet.decodeDoubleBase64(it) }
-                }
-            }
-        }
-        val tokenUrl = target?.takeIf { it.startsWith("http") } ?: return emptyList()
+        return target?.takeIf { it.startsWith("http") }
+    }
 
-        val second = VegaNet.fetchWithCf(tokenUrl, timeout = 25L) ?: return emptyList()
-        val doc = Jsoup.parse(second.text)
-        val out = mutableListOf<Stream>()
-        for (a in doc.select("a[href]")) {
+    private suspend fun vcloudMirrors(url: String): List<Mirror> {
+        val target = vcloudTarget(url) ?: return emptyList()
+        val page = VegaNet.fetchWithCf(target, timeout = 25L) ?: return emptyList()
+        val r2dev = mutableListOf<String>()
+        val r2signed = mutableListOf<String>()
+        val generated = mutableListOf<String>()
+        var pixel: String? = null
+        for (a in Jsoup.parse(page.text).select("a[href]")) {
             val href = a.attr("href").trim()
-            val text = a.text().lowercase()
             when {
-                href.contains(".r2.cloudflarestorage.com") ->
-                    out.add(Stream("V-Cloud FSLv2", href))
-                href.contains(".r2.dev") -> out.add(Stream("V-Cloud FSL", href))
-                href.contains("gofile.io") -> out.addAll(resolveGofile(href))
-                href.contains("pixeldrain") -> {
-                    pixelFileUrl(second.text, href)?.let { out.add(Stream("V-Cloud PixelDrain", it)) }
-                }
-                text.contains("download") && href.startsWith("http") &&
-                    !href.contains("telegram") && !href.contains("t.me") &&
-                    !href.contains("vglist") -> out.add(Stream("V-Cloud", href))
+                href.contains(".r2.dev") -> r2dev.add(href)
+                href.contains(".r2.cloudflarestorage.com") -> r2signed.add(href)
+                href.contains("pixeldrain") -> pixel = pixelFileUrl(page.text, href)
+                href.contains("gofile.io") -> Unit
+                a.text().contains("download", true) && href.startsWith("http") -> generated.add(href)
             }
         }
+        val out = mutableListOf<Mirror>()
+        r2dev.forEach { out.add(Mirror(it)) }
+        r2signed.forEach { out.add(Mirror(it)) }
+        for (href in generated) {
+            if (Regex("""\.(mkv|mp4|avi|mov)(\?|$)""").containsMatchIn(href) ||
+                href.contains("googleusercontent")
+            ) {
+                out.add(Mirror(href))
+            } else {
+                gpdlDirect(href)?.let { out.add(Mirror(it)) }
+            }
+        }
+        pixel?.let { out.add(Mirror(it)) }
         return out.distinctBy { it.url }
     }
 
@@ -198,10 +164,32 @@ internal object VegaSources {
         return "${VegaNet.originOf(link)}/api/file/$id"
     }
 
-    // one bridge provider per host, prepare warms the mirror and download-link returns the url
-    private suspend fun resolveVegaDrive(url: String): List<Stream> {
+    // the gpdl button bounces through a worker and a generator page that only names the file in its query
+    private suspend fun gpdlDirect(url: String): String? {
+        var cur = url
+        try {
+            for (i in 0 until 5) {
+                val res = app.get(cur, headers = VegaNet.browserHeaders(), allowRedirects = false, timeout = 15L)
+                val loc = res.headers["location"]
+                if (loc.isNullOrBlank() || res.code !in 301..308) break
+                cur = if (loc.startsWith("http")) loc else VegaNet.originOf(cur) + loc
+            }
+        } catch (_: Exception) {
+            return null
+        }
+        for (pair in cur.substringAfter("?", "").split("&")) {
+            if (pair.substringBefore("=") != "link") continue
+            val value = pair.substringAfter("=")
+            val direct = if (value.contains("%")) URLDecoder.decode(value, "UTF-8") else value
+            return direct.takeIf { it.startsWith("http") }
+        }
+        return null
+    }
+
+    // vegadrive only answers skydrop on the json api and mints the google mirror asynchronously
+    private suspend fun vegadriveMirrors(url: String): List<Mirror> {
         val page = try {
-            app.get(url, headers = VegaNet.browserHeaders(), timeout = 20L)
+            app.get(url, headers = VegaNet.browserHeaders("https://nexdrive.beer/"), timeout = 20L)
         } catch (_: Exception) {
             return emptyList()
         }
@@ -209,95 +197,70 @@ internal object VegaSources {
         val token = url.substringAfter("/s/").substringBefore("?").substringBefore("#")
             .substringAfter("/d/").substringBefore("/")
         if (token.isBlank() || token == url) return emptyList()
-
-        val out = mutableListOf<Stream>()
-        for (provider in listOf("skydrop", "pixeldrain", "buzzheavier", "transferit")) {
-            val link = vegaProviderLink(base, token, provider) ?: continue
-            when {
-                provider == "skydrop" && link.contains("googleusercontent") ->
-                    out.add(Stream("V-Drive 10Gbps", link))
-                provider == "pixeldrain" && link.contains("pixeldrain") -> {
-                    val id = link.substringBefore("?").substringBefore("#").substringAfterLast("/")
-                    if (id.isNotBlank()) {
-                        out.add(Stream("V-Drive PixelDrain", "https://pixeldrain.com/api/file/$id"))
-                    }
-                }
-                provider == "buzzheavier" && (link.contains("bzzhr") || link.contains("buzzheavier")) ->
-                    out.add(Stream("V-Drive Buzzheavier", link))
-                provider == "transferit" && link.startsWith("http") ->
-                    out.add(Stream("V-Drive Transferit", link))
-            }
-        }
-        return out.distinctBy { it.url }
-    }
-
-    private suspend fun vegaProviderLink(base: String, token: String, provider: String): String? {
-        val headers = VegaNet.browserHeaders("$base/s/$token")
-        return try {
-            repeat(2) { attempt ->
-                val prep = app.get(
-                    "$base/__vega_bridge/prepare/$token?provider=$provider",
-                    headers = headers,
+        for (attempt in 0 until 3) {
+            val res = try {
+                app.get(
+                    "$base/download-link/$token/skydrop",
+                    headers = VegaNet.browserHeaders("$base/s/$token"),
                     timeout = 15L
                 )
-                val ready = try {
-                    JSONObject(prep.text).optBoolean("ready", false)
-                } catch (_: Exception) {
-                    false
-                }
-                if (ready) return@repeat
-                if (attempt == 0) delay(1200L)
+            } catch (_: Exception) {
+                return emptyList()
             }
-            val res = app.get(
-                "$base/download-link/$token/$provider",
-                headers = headers,
-                timeout = 15L
-            )
-            JSONObject(res.text).optString("download_url").takeIf { it.startsWith("http") }
+            val parsed = runCatching { JSONObject(res.text) }.getOrNull()
+            val link = parsed?.optString("download_url").orEmpty()
+            if (res.code == 200 && link.startsWith("http")) return listOf(Mirror(link))
+            if (res.code != 202) return emptyList()
+            delay((parsed?.optInt("retry_after_ms", 2500) ?: 2500).toLong().coerceAtMost(3000L))
+        }
+        return emptyList()
+    }
+
+    // the embed page wraps the google url in a redirect variable, the link= param is the file
+    private suspend fun fastdlMirrors(url: String): List<Mirror> {
+        return try {
+            val res = app.get(url, headers = VegaNet.browserHeaders(), timeout = 20L)
+            val reurl = Regex("""var\s+reurl\s*=\s*"([^"]+)"""").find(res.text)?.groupValues?.get(1)
+                ?: Regex("""'(https://fastdl[^']*dl\.php\?link=[^']+)'""").find(res.text)?.groupValues?.get(1)
+                ?: return emptyList()
+            val carrier = Regex("""[?&]r=([A-Za-z0-9+/=_-]+)""").find(reurl)?.groupValues?.get(1)?.let { wrapped ->
+                val padded = if (wrapped.length % 4 > 0) {
+                    wrapped + "=".repeat(4 - wrapped.length % 4)
+                } else wrapped
+                runCatching { base64Decode(padded) }.getOrNull()
+            } ?: reurl
+            val encoded = Regex("""link=(https?://[^&"']+)""").find(carrier)?.groupValues?.get(1)
+                ?: return emptyList()
+            val direct = URLDecoder.decode(encoded, "UTF-8")
+            if (direct.startsWith("http")) listOf(Mirror(direct)) else emptyList()
         } catch (_: Exception) {
-            null
+            emptyList()
         }
     }
 
     private val filePressId = Regex("""/file/([a-f0-9]{16,40})""")
 
-    // the whole api sits on the short domain, the react page only adds a turnstile
-    private suspend fun resolveFilePress(url: String): List<Stream> {
+    // the react page only adds a turnstile, the whole api sits on the short domain
+    private suspend fun filepressMirrors(url: String): List<Mirror> {
         val id = filePressId.find(url)?.groupValues?.get(1) ?: return emptyList()
         val base = "https://filebee.xyz"
-        val headers = VegaNet.browserHeaders("$base/")
+        val out = mutableListOf<Mirror>()
 
-        val info = try {
-            val res = app.get("$base/api/file/get/$id", headers = headers, timeout = 15L)
-            if (!res.isSuccessful) return emptyList()
-            JSONObject(res.text).optJSONObject("data") ?: return emptyList()
-        } catch (_: Exception) {
-            return emptyList()
-        }
-        if (Regex("""(?i)\.(zip|rar|7z)\s*$""").containsMatchIn(info.optString("name").trim())) {
-            return emptyList()
-        }
-
-        val out = mutableListOf<Stream>()
-
-        val dotflix = filePressDownload(id, "dotFlixDownlaod", base)
-        if (dotflix != null && dotflix.startsWith("http")) {
-            resolveDotFlix(dotflix)?.let { out.add(Stream("Filepress Instant", it)) }
-        }
-
-        val telegram = filePressDownload(id, "telegramDownload", base)
-        if (telegram != null && telegram.startsWith("http")) {
-            out.add(Stream("Filepress Telegram", telegram))
-        }
-
-        val task = filePressDownload(id, "indexDownlaod", base)
+        val task = filepressTask(id, "indexDownlaod", base)
         if (task != null && task.matches(Regex("[a-f0-9]{16,40}"))) {
-            filePressFinal(task, base)?.let { out.add(Stream("Filepress Direct", it)) }
+            filepressFinal(task, base)?.let { out.add(Mirror(it)) }
+        } else if (task != null && task.startsWith("http")) {
+            out.add(Mirror(task))
+        }
+
+        val share = filepressTask(id, "dotFlixDownlaod", base)
+        if (share != null && share.startsWith("http")) {
+            resolveDotFlix(share)?.let { out.add(Mirror(it)) }
         }
         return out.distinctBy { it.url }
     }
 
-    private suspend fun filePressDownload(id: String, method: String, base: String): String? {
+    private suspend fun filepressTask(id: String, method: String, base: String): String? {
         return try {
             val res = app.post(
                 "$base/api/file/downlaod/",
@@ -322,7 +285,7 @@ internal object VegaSources {
         }
     }
 
-    private suspend fun filePressFinal(taskId: String, base: String): String? {
+    private suspend fun filepressFinal(taskId: String, base: String): String? {
         return try {
             val res = app.post(
                 "$base/api/file/downlaod2/",
@@ -390,118 +353,92 @@ internal object VegaSources {
         }
     }
 
-    // the embed page wraps the google url in a redirect variable, the link= param is the file
-    private suspend fun resolveFastDl(url: String): List<Stream> {
-        return try {
-            val res = app.get(url, headers = VegaNet.browserHeaders(), timeout = 20L)
-            val text = res.text
-            val reurl = Regex("""var\s+reurl\s*=\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
-                ?: Regex("""'(https://fastdl[^']*dl\.php\?link=[^']+)'""").find(text)?.groupValues?.get(1)
-                ?: return emptyList()
-            val carrier = Regex("""[?&]r=([A-Za-z0-9+/=_-]+)""").find(reurl)?.groupValues?.get(1)?.let { wrapped ->
-                val padded = if (wrapped.length % 4 > 0) {
-                    wrapped + "=".repeat(4 - wrapped.length % 4)
-                } else wrapped
-                runCatching { com.lagradost.cloudstream3.base64Decode(padded) }.getOrNull()
-            } ?: reurl
-            val encoded = Regex("""link=(https?://[^&"']+)""").find(carrier)?.groupValues?.get(1)
-                ?: return emptyList()
-            val direct = URLDecoder.decode(encoded, "UTF-8")
-            if (!direct.startsWith("http")) return emptyList()
-            listOf(Stream("G-Direct", direct, mapOf("Referer" to "${VegaNet.originOf(url)}/")))
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    suspend fun resolveGofile(url: String): List<Stream> {
+    // gofile folders hold sample files next to the video, the biggest child is the movie
+    private suspend fun gofileMirrors(url: String): List<Mirror> {
         val code = url.substringAfterLast("/").substringBefore("#").substringBefore("?")
         if (code.isBlank()) return emptyList()
         return try {
             val api = "https://api.gofile.io"
-            val token = try {
-                JSONObject(app.post("$api/accounts", timeout = 15L).text)
-                    .getJSONObject("data").getString("token")
-            } catch (_: Exception) {
-                return emptyList()
-            }
-            val wt = try {
+            val token = JSONObject(app.post("$api/accounts", timeout = 15L).text)
+                .getJSONObject("data").getString("token")
+            val wt = runCatching {
                 Regex("""appdata\.wt\s*=\s*["']([^"']+)["']""").find(
                     app.get("$api/dist/js/global.js", timeout = 15L).text
                 )?.groupValues?.get(1)
-            } catch (_: Exception) {
-                null
-            }
+            }.getOrNull()
             val contentUrl = if (wt.isNullOrBlank()) "$api/contents/$code?wt=$token" else "$api/contents/$code?wt=$wt"
-            val data = try {
-                JSONObject(
-                    app.get(contentUrl, headers = mapOf("Authorization" to "Bearer $token"), timeout = 20L).text
-                ).getJSONObject("data")
-            } catch (_: Exception) {
-                return emptyList()
-            }
+            val data = JSONObject(
+                app.get(contentUrl, headers = mapOf("Authorization" to "Bearer $token"), timeout = 20L).text
+            ).getJSONObject("data")
             val children = data.optJSONObject("children") ?: return emptyList()
-            val out = mutableListOf<Stream>()
+            var best: String? = null
+            var bestSize = -1L
             for (key in children.keys()) {
                 val child = children.optJSONObject(key) ?: continue
-                val link = child.optString("link").takeIf { it.startsWith("http") } ?: continue
                 if (Regex("""(?i)\.(zip|rar|7z)\s*$""").containsMatchIn(child.optString("name"))) continue
-                val size = child.optLong("size", 0L)
-                val sizeText = if (size > 0) " ${size / 1024 / 1024}MB" else ""
-                out.add(Stream("GoFile$sizeText", link))
+                val link = child.optString("link").takeIf { it.startsWith("http") } ?: continue
+                if (child.optLong("size", 0L) > bestSize) {
+                    bestSize = child.optLong("size", 0L)
+                    best = link
+                }
             }
-            out
+            best?.let { listOf(Mirror(it)) } ?: emptyList()
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    private val emitted = ConcurrentHashMap.newKeySet<String>()
-
-    fun emit(
-        source: String,
-        quality: Int,
-        streams: List<Stream>,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        for (s in streams) {
-            if (!s.url.startsWith("http")) continue
-            if (!emitted.add(s.url)) continue
-            callback(
-                ExtractorLink(
-                    source = source,
-                    name = s.name,
-                    url = s.url,
-                    referer = "",
-                    quality = quality,
-                    type = ExtractorLinkType.VIDEO,
-                    headers = s.headers
-                )
-            )
+    // the drive page only exposes a generate link, the generated page carries the real mirrors
+    private suspend fun hubcloudMirrors(url: String): List<Mirror> {
+        val res = try {
+            app.get(url, headers = VegaNet.browserHeaders(), timeout = 20L)
+        } catch (_: Exception) {
+            return emptyList()
         }
-    }
-
-    fun resetSession() {
-        emitted.clear()
-    }
-
-    suspend fun resolveMany(
-        items: List<Pair<String, String>>,
-        source: String,
-        qualityOf: (String) -> Int,
-        callback: (ExtractorLink) -> Unit
-    ) = coroutineScope {
-        val gate = Semaphore(4)
-        items.distinctBy { it.second }.forEach { (label, url) ->
-            async(Dispatchers.IO) {
-                gate.withPermit {
-                    try {
-                        val streams = resolveAll(label, url)
-                        emit(source, qualityOf(label), streams, callback)
-                    } catch (_: Exception) {
-                    }
-                }
+        val doc = Jsoup.parse(res.text)
+        val header = doc.selectFirst("div.card-header")?.text()?.trim().orEmpty()
+        if (Regex("""(?i)\.(zip|rar|7z)\s*$""").containsMatchIn(header)) return emptyList()
+        val generate = doc.select("a.btn, a[download]")
+            .firstOrNull { it.text().contains("generate", true) }
+            ?.attr("href")?.trim() ?: return emptyList()
+        val genUrl = if (generate.startsWith("http")) generate else VegaNet.originOf(res.url) + generate
+        val genRes = try {
+            app.get(genUrl, headers = VegaNet.browserHeaders(res.url), timeout = 25L)
+        } catch (_: Exception) {
+            return emptyList()
+        }
+        val out = mutableListOf<Mirror>()
+        for (a in Jsoup.parse(genRes.text).select("a[href]")) {
+            val href = a.attr("href").trim()
+            if (!href.startsWith("http")) continue
+            if (Regex("""(?i)tinyurl|t\.me|telegram|one\.one\.one\.one""").containsMatchIn(href)) continue
+            when {
+                href.contains(".r2.cloudflarestorage.com") || href.contains(".r2.dev") -> out.add(Mirror(href))
+                href.contains("gpdl") -> gpdlDirect(href)?.let { out.add(Mirror(it)) }
             }
         }
+        return out.distinctBy { it.url }
+    }
+
+    private val verified = ConcurrentHashMap.newKeySet<String>()
+
+    fun resetSession() {
+        verified.clear()
+    }
+
+    // a link that answers a ranged get is a file the player can open, html pages and dead mirrors are not
+    suspend fun alive(url: String, headers: Map<String, String> = emptyMap()): Boolean {
+        if (!url.startsWith("http")) return false
+        if (url in verified) return true
+        val ok = try {
+            val h = VegaNet.browserHeaders().toMutableMap()
+            h.putAll(headers)
+            h["Range"] = "bytes=0-1023"
+            app.get(url, headers = h, timeout = 12L).code in 200..399
+        } catch (_: Exception) {
+            false
+        }
+        if (ok) verified.add(url)
+        return ok
     }
 }
