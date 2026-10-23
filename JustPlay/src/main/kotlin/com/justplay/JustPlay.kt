@@ -61,6 +61,7 @@ class JustPlay : MainAPI() {
         private const val KEY_CONCURRENCY = "JUSTPLAY_CONCURRENCY"
         private const val KEY_LIVE_SPORTS = "JUSTPLAY_LIVE_SPORTS"
         private const val KEY_LIVE_SPORTS_TOP = "JUSTPLAY_LIVE_SPORTS_TOP"
+        private const val KEY_HW_GUARD = "JUSTPLAY_HW_GUARD"
         private const val LIVE_ROW = "live_sports"
         // vegamovies alone offers one link per server, quality and encode, the cap only stops junk floods
         private const val LINKS_PER_SOURCE = 40
@@ -160,6 +161,18 @@ class JustPlay : MainAPI() {
         fun setStreamOnly(on: Boolean) {
             try {
                 CloudStreamApp.setKey(KEY_STREAM_ONLY, on)
+            } catch (_: Exception) {}
+        }
+
+        fun deviceGuardEnabled(): Boolean = try {
+            CloudStreamApp.getKey<Boolean>(KEY_HW_GUARD) ?: true
+        } catch (_: Exception) {
+            true
+        }
+
+        fun setDeviceGuard(on: Boolean) {
+            try {
+                CloudStreamApp.setKey(KEY_HW_GUARD, on)
             } catch (_: Exception) {}
         }
     }
@@ -568,15 +581,22 @@ class JustPlay : MainAPI() {
 
         val guardedCallback: (ExtractorLink) -> Unit = label@{ link ->
             val isDownload = PlaySourceFilter.isDownloadOnlyName(link.name)
-            val allowed = if (isDownload) dlOnly else streamOnly
+            // a file the chipset cannot decode in hardware plays through software decoding
+            // and switching away from that leaves the player surface broken until the
+            // title is reopened, so it is offered as a download where it can never
+            // touch the player
+            val hardwarePlayable = isDownload ||
+                DeviceCodecs.canHardwareStream(link.name, link.url, link.quality)
+            val treatAsDownload = isDownload || !hardwarePlayable
+            val allowed = if (treatAsDownload) dlOnly else streamOnly
             if (!allowed) return@label
             if (!seenUrls.add(link.url)) return@label
             val emitted = sourceCounts.computeIfAbsent(link.source) { AtomicInteger() }
             if (emitted.incrementAndGet() > LINKS_PER_SOURCE) return@label
-            val out = if (isDownload) PlaySourceFilter.taggedDownloadOnly(link) else link
+            val out = if (treatAsDownload) PlaySourceFilter.taggedDownloadOnly(link) else link
             // the app starts the highest ranked link on its own, a uhd remux takes ages
             // before the first frame so the rank stays at 1080p, the label keeps the truth
-            if (!isDownload && out.type == ExtractorLinkType.VIDEO && out.quality > Qualities.P1080.value) {
+            if (!treatAsDownload && out.type == ExtractorLinkType.VIDEO && out.quality > Qualities.P1080.value) {
                 out.quality = Qualities.Unknown.value
             }
             synchronized(heldLock) { held.add(out) }

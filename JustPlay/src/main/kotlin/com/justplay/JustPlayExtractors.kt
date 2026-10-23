@@ -58,7 +58,9 @@ class PlayHubCloud : ExtractorApi() {
             if (link.contains("download", true)) return link
             val id = link.substringBefore("?").substringBefore("#").substringAfterLast("/")
             if (id.isBlank()) return null
-            return "${PlayNet.getBaseUrl(link)}/api/file/$id?download"
+            // the bare file url serves identical bytes, the attachment form only
+            // invites players to treat the response oddly
+            return "${PlayNet.getBaseUrl(link)}/api/file/$id"
         }
 
         suspend fun emitHubServers(
@@ -944,7 +946,7 @@ open class PlayGDFlix : ExtractorApi() {
                     link.contains("pixeldrain") -> {
                         val pixelBase = PlayNet.getBaseUrl(link)
                         val final = if (link.contains("download", true)) link
-                        else "$pixelBase/api/file/${link.substringAfterLast("/")}?download"
+                        else "$pixelBase/api/file/${link.substringAfterLast("/")}"
                         emit(final, "Pixeldrain")
                     }
                     link.contains("gofile") ->
