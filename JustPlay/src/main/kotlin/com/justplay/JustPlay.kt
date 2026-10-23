@@ -5,12 +5,15 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import com.raghav.donation.DonationManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -59,10 +62,14 @@ class JustPlay : MainAPI() {
         private const val KEY_LIVE_SPORTS = "JUSTPLAY_LIVE_SPORTS"
         private const val KEY_LIVE_SPORTS_TOP = "JUSTPLAY_LIVE_SPORTS_TOP"
         private const val LIVE_ROW = "live_sports"
-        private const val LINKS_PER_SOURCE = 12
+        // vegamovies alone offers one link per server, quality and encode, the cap only stops junk floods
+        private const val LINKS_PER_SOURCE = 40
 
         // the app cancels loadLinks after 120s, every site gets cut off before that
         private const val SITE_BUDGET_MS = 90_000L
+
+        // one stuck site must not keep every other result off the screen
+        private const val FIRST_RELEASE_MS = 6_000L
 
         private fun widenClient() {
             try {
@@ -172,14 +179,12 @@ class JustPlay : MainAPI() {
         Pair("/discover/tv&with_genres=16&with_original_language=ja&sort_by=popularity.desc", "Anime Series")
     )
 
-    // the home page carries a lot of rows now, loading them one after another
-    // keeps low end devices from stalling on a burst of requests
+    // rows load one after another so low end devices don't stall on the burst
     override var sequentialMainPage = true
     override var sequentialMainPageDelay = 150L
     override var sequentialMainPageScrollDelay = 250L
 
-    // the live row follows the position picked in settings, the personal rows
-    // are read on every access so a restart is all it takes to refresh them
+    // rows are rebuilt on every access so settings changes only need a restart
     override val mainPage: List<MainPageData>
         get() {
             val rows = ArrayList<MainPageData>(48)
@@ -189,7 +194,6 @@ class JustPlay : MainAPI() {
             rows.add(MainPageData(tmdbRows[0].second, tmdbRows[0].first))
             rows.add(MainPageData("Surprise Me", PlayDiscovery.ROW_SURPRISE))
             rows.add(MainPageData(PlayDiscovery.recommendedRowName(), PlayDiscovery.ROW_RECOMMENDED))
-            PlayDiscovery.directorRow()?.let(rows::add)
             tmdbRows.drop(1).forEach { rows.add(MainPageData(it.second, it.first)) }
             PlayDiscovery.genreRows.forEach { (id, label) ->
                 rows.add(MainPageData(label, PlayDiscovery.genreData(id)))
@@ -197,7 +201,6 @@ class JustPlay : MainAPI() {
             PlayDiscovery.languageRows.forEach { langRow ->
                 rows.add(MainPageData(langRow.label, PlayDiscovery.languageData(langRow)))
             }
-            rows.add(MainPageData("Famous Actors", PlayDiscovery.ROW_ACTORS))
             if (liveSportsEnabled() && !liveSportsOnTop()) {
                 rows.add(MainPageData("Live Sports", LIVE_ROW))
             }
@@ -223,14 +226,8 @@ class JustPlay : MainAPI() {
         if (data == PlayDiscovery.ROW_RECOMMENDED) {
             return PlayDiscovery.recommendedPage(this, page, request.name)
         }
-        if (data == PlayDiscovery.ROW_ACTORS) {
-            return PlayDiscovery.actorsPage(this, page, request.name)
-        }
         if (data.startsWith(PlayDiscovery.ROW_GENRE)) {
             return PlayDiscovery.genrePage(this, page, data, request.name)
-        }
-        if (data.startsWith(PlayDiscovery.ROW_DIRECTOR)) {
-            return PlayDiscovery.directorPage(this, page, data, request.name)
         }
         val parts = data.split("&", limit = 2)
         val path = parts[0]
@@ -269,9 +266,7 @@ class JustPlay : MainAPI() {
         return items
     }
 
-    // official title artwork from the tmdb images endpoint, the app draws it
-    // instead of the plain text name on the info page, svg only as a last
-    // resort because the image loader cannot render it
+    // svg logos are a last resort, the app's image loader cannot render them
     private fun pickTmdbLogo(logos: org.json.JSONArray?): String? {
         if (logos == null || logos.length() == 0) return null
         fun urlOf(logo: org.json.JSONObject) =
@@ -312,8 +307,7 @@ class JustPlay : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         prefetchScope.launch { NetMirrorSite.prefetch() }
-        // live events and tmdb titles share this entry point, live payloads
-        // always carry a slug so they are told apart first
+        // live payloads always carry a slug, they are told apart from tmdb titles first
         val live = try {
             parseJson<LiveLoadData>(url)
         } catch (_: Exception) {
@@ -321,16 +315,6 @@ class JustPlay : MainAPI() {
         }
         if (live?.slug != null) {
             return LiveSports.buildLoadResponse(this, live, url)
-        }
-        // actor cards land here too, they open a profile page built from
-        // their tmdb credits instead of a normal title
-        val personId = try {
-            parseJson<PlayPersonData>(url).person
-        } catch (_: Exception) {
-            null
-        }
-        if (personId != null) {
-            return PlayDiscovery.personLoad(this, personId, url)
         }
         val data = try {
             parseJson<PlayTmdbData>(url)
@@ -351,8 +335,7 @@ class JustPlay : MainAPI() {
 
         val title = detail.optString("title").ifBlank { detail.optString("name") }
         if (title.isBlank()) return null
-        // the opened title feeds the recommended and favorite director rows,
-        // recorded in the background so it never slows this page down
+        // feeds the recommended row, recorded in the background so it never slows this page down
         prefetchScope.launch { PlayHistory.record(detail, type) }
         val orgTitle = detail.optString("original_title").ifBlank { detail.optString("original_name") }
         val releaseDate = detail.optString("release_date").ifBlank { detail.optString("first_air_date") }
@@ -527,14 +510,6 @@ class JustPlay : MainAPI() {
         if (live?.slug != null) {
             return LiveSports.resolveLinks(live, callback)
         }
-        // actor profile pages have nothing to stream, the app only reaches
-        // this when someone presses play on one anyway
-        val person = try {
-            parseJson<PlayPersonData>(data)
-        } catch (_: Exception) {
-            null
-        }
-        if (person?.person != null) return false
 
         val res = try {
             parseJson<PlayLinkData>(data)
@@ -572,6 +547,25 @@ class JustPlay : MainAPI() {
         val seenUrls = ConcurrentHashMap.newKeySet<String>()
         val sourceCounts = ConcurrentHashMap<String, AtomicInteger>()
 
+        // links go out in one batch, a stream of single links keeps the player rebuilding
+        // its source list while the first link is still starting and that churn is what
+        // breaks playback until the title is reopened
+        val held = mutableListOf<ExtractorLink>()
+        val heldLock = Any()
+
+        fun release() {
+            val batch = synchronized(heldLock) {
+                if (held.isEmpty()) return
+                val out = ArrayList(held)
+                held.clear()
+                out
+            }
+            // streams go first so the link the app starts on its own is one that
+            // shows a frame fast, direct files sit behind them at the same quality
+            batch.sortedWith(compareBy({ it.type == ExtractorLinkType.VIDEO }, { -it.quality }))
+                .forEach(callback)
+        }
+
         val guardedCallback: (ExtractorLink) -> Unit = label@{ link ->
             val isDownload = PlaySourceFilter.isDownloadOnlyName(link.name)
             val allowed = if (isDownload) dlOnly else streamOnly
@@ -579,12 +573,18 @@ class JustPlay : MainAPI() {
             if (!seenUrls.add(link.url)) return@label
             val emitted = sourceCounts.computeIfAbsent(link.source) { AtomicInteger() }
             if (emitted.incrementAndGet() > LINKS_PER_SOURCE) return@label
-            callback(if (isDownload) PlaySourceFilter.taggedDownloadOnly(link) else link)
+            val out = if (isDownload) PlaySourceFilter.taggedDownloadOnly(link) else link
+            // the app starts the highest ranked link on its own, a uhd remux takes ages
+            // before the first frame so the rank stays at 1080p, the label keeps the truth
+            if (!isDownload && out.type == ExtractorLinkType.VIDEO && out.quality > Qualities.P1080.value) {
+                out.quality = Qualities.Unknown.value
+            }
+            synchronized(heldLock) { held.add(out) }
         }
 
         coroutineScope {
             val gate = Semaphore(siteConcurrency())
-            active.forEach { site ->
+            val jobs = active.map { site ->
                 async(Dispatchers.IO) {
                     // the budget also covers the permit wait so a queued site never overruns the app's cancel
                     try {
@@ -596,7 +596,14 @@ class JustPlay : MainAPI() {
                     } catch (_: Exception) {}
                 }
             }
+            val timer = launch {
+                delay(FIRST_RELEASE_MS)
+                release()
+            }
+            jobs.forEach { runCatching { it.await() } }
+            timer.cancel()
         }
+        release()
         return true
     }
 }

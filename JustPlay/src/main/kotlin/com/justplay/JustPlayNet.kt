@@ -26,6 +26,14 @@ import java.util.concurrent.ConcurrentHashMap
 internal const val PLAY_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+// nicehttp keeps the response body open unless text is read, status and header
+// only lookups have to close it or the connection never goes back to the pool
+internal fun NiceResponse.close() {
+    try {
+        okhttpResponse.close()
+    } catch (_: Exception) {}
+}
+
 internal object PlayNet {
 
     private val cfKillers = ConcurrentHashMap<String, CloudflareKiller>()
@@ -85,7 +93,9 @@ internal object PlayNet {
             h.putAll(headers)
             h["Range"] = "bytes=0-1023"
             val res = app.get(url, headers = h, timeout = 12L)
-            res.code
+            val code = res.code
+            res.close()
+            code
         } catch (_: Exception) {
             null
         }
@@ -133,7 +143,11 @@ internal object PlayNet {
         if (!url.startsWith("http")) return false
         return try {
             val res = app.get(url, headers = headers, timeout = 12L)
-            res.code == 200 && res.text.trimStart().startsWith("#EXTM3U")
+            if (res.code != 200) {
+                res.close()
+                return false
+            }
+            res.text.trimStart().startsWith("#EXTM3U")
         } catch (_: Exception) {
             false
         }
@@ -260,7 +274,14 @@ internal object PlayNet {
             }
             jar.putAll(res.cookies)
             val loc = res.headers["location"]?.trim().orEmpty()
-            if (loc.isEmpty()) return res.takeIf { it.code == 200 }
+            if (loc.isEmpty()) {
+                if (res.code != 200) {
+                    res.close()
+                    return null
+                }
+                return res
+            }
+            res.close()
             current = absolute(loc, current)
         }
         return null
@@ -292,6 +313,7 @@ internal object PlayNet {
             null
         }
         if (plain != null && plain.code == 200 && !isCfChallenge(plain)) return plain
+        plain?.close()
 
         return lockFor(url).withLock {
             val killer = killerFor(url)
@@ -301,7 +323,12 @@ internal object PlayNet {
             } catch (_: Exception) {
                 null
             }
-            if (solved != null && solved.code == 200 && !isCfChallenge(solved)) solved else null
+            if (solved != null && solved.code == 200 && !isCfChallenge(solved)) {
+                solved
+            } else {
+                solved?.close()
+                null
+            }
         }
     }
 
@@ -322,6 +349,7 @@ internal object PlayNet {
                 return null
             }
             val loc = res.headers["location"]?.trim().orEmpty()
+            res.close()
             if (loc.isEmpty()) {
                 return current.takeIf { it.startsWith("http") }
             }
