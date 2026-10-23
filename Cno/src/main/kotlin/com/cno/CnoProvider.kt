@@ -269,13 +269,20 @@ class CnoProvider : MainAPI() {
             val src = sources[i]
             if (src.optString("kind") != "hls") continue
             val label = src.optString("label").takeIf { it.isNotBlank() } ?: "Server"
+            val audio = audioTag(src)
             val master = CnoApi.text(src.optString("url")) ?: continue
             if (!master.startsWith("#EXTM3U")) continue
             for (v in CnoApi.parseVariants(master, src.optString("url"))) {
+                val linkName = if (v.quality > 0) "$label · ${v.quality}p$audio" else "$label$audio"
                 callback(
-                    newExtractorLink(name, if (v.quality > 0) "$label · ${v.quality}p" else label, v.url) {
+                    newExtractorLink(name, linkName, v.url) {
                         type = ExtractorLinkType.M3U8
                         quality = v.quality
+                        // the in house servers proxy their playlists through
+                        // cno.to itself, those need the clearance cookie the
+                        // same as any other site request, the multi cdn ones
+                        // are on their own hosts and take none
+                        headers = CnoApi.streamHeaders(v.url) ?: emptyMap()
                     }
                 )
                 emitted++
@@ -291,6 +298,19 @@ class CnoProvider : MainAPI() {
             if (embed != null) emitted += resolveEmbed(embed.optString("url"), callback)
         }
         return emitted > 0
+    }
+
+    // the site splits its anime servers into audio channels, japanese audio
+    // with selectable subtitles, an english dub track, and one with the
+    // subtitles burned into the video
+    private fun audioTag(src: JSONObject): String {
+        val note = src.optString("note")
+        return when {
+            src.optString("channel") == "dub" -> " (Dub)"
+            note.contains("burned in", ignoreCase = true) -> " (Hardsub)"
+            src.optString("channel") == "sub" -> " (Sub)"
+            else -> ""
+        }
     }
 
     private fun sourceList(doc: JSONObject?): List<JSONObject> {
@@ -314,9 +334,13 @@ class CnoProvider : MainAPI() {
             val lang = f.optString("lang").takeIf { it.isNotBlank() } ?: continue
             if (!seen.add(lang)) continue
             val label = f.optString("label").takeIf { it.isNotBlank() } ?: lang
+            val subUrl = "${CnoApi.MAIN_URL}/api/subs/file/$filePath/${f.optString("id")}.vtt"
             callback(
                 newSubtitleFile(lang, label) {
-                    url = "${CnoApi.MAIN_URL}/api/subs/file/$filePath/${f.optString("id")}.vtt"
+                    url = subUrl
+                    // the files are served by the site itself, the player
+                    // fetches them directly so they carry the same headers
+                    headers = CnoApi.streamHeaders(subUrl)
                 }
             )
             sent++
