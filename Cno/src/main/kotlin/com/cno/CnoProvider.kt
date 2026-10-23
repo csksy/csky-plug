@@ -121,7 +121,7 @@ class CnoProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse>? {
         if (query.isBlank()) return null
         val q = android.net.Uri.encode(query.trim())
-        val doc = CnoApi.json("/api/search?q=$q") ?: return null
+        val doc = CnoApi.json("/api/search?q=$q&type=all") ?: return null
         val results = doc.optJSONArray("results") ?: return null
         val out = mutableListOf<SearchResponse>()
         for (i in 0 until results.length()) {
@@ -270,7 +270,7 @@ class CnoProvider : MainAPI() {
             if (src.optString("kind") != "hls") continue
             val label = src.optString("label").takeIf { it.isNotBlank() } ?: "Server"
             val audio = audioTag(src)
-            val master = CnoApi.text(src.optString("url")) ?: continue
+            val master = CnoApi.text(src.optString("url"), json = false) ?: continue
             if (!master.startsWith("#EXTM3U")) continue
             for (v in CnoApi.parseVariants(master, src.optString("url"))) {
                 val linkName = if (v.quality > 0) "$label · ${v.quality}p$audio" else "$label$audio"
@@ -278,10 +278,9 @@ class CnoProvider : MainAPI() {
                     newExtractorLink(name, linkName, v.url) {
                         type = ExtractorLinkType.M3U8
                         quality = v.quality
-                        // the in house servers proxy their playlists through
-                        // cno.to itself, those need the clearance cookie the
-                        // same as any other site request, the multi cdn ones
-                        // are on their own hosts and take none
+                        // the in house servers that still proxy through cno.to
+                        // carry the clearance, the multi cdn ones are on open
+                        // hosts and take nothing
                         headers = CnoApi.streamHeaders(v.url) ?: emptyMap()
                     }
                 )

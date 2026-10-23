@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class CnoPlugin : Plugin() {
     override fun load(context: Context) {
+        CnoWebView.init(context)
         registerMainAPI(CnoProvider())
     }
 }
