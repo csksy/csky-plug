@@ -1,4 +1,4 @@
-version = 3
+version = 4
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
@@ -7,7 +7,7 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "PW batches from Study Stark: lectures, class notes, DPP sheets and DPP quizzes, the same pages the site plays them with"
+    description = "PW batches from Study Stark: every lecture as an episode under its own topic season in the cloudstream player, with class notes, DPP sheets and DPP quizzes one row away"
     authors = listOf("KSHITIJ8473")
     status = 1
     tvTypes = listOf(

@@ -18,18 +18,26 @@ import android.util.Base64
  *  topics      vidcloud.eu.org/api/v2/batches/<id>/subject/<sid>/topics
  *  contents    vidcloud.eu.org/api/v2/batches/<study batch>/subject/<sid>/contents
  *              the study batch is a fixed id the site uses for every batch and
- *              subject, the page batch does not carry the study material
+ *              subject, the page batch does not carry the study material; the
+ *              tag query narrows it to one topic while a call without the tag
+ *              walks the whole subject page by page, and every item carries
+ *              its topic inside tags[] so both shapes group the same way
  *  dpp tests   vidcloud.eu.org/api/v3/test-service/tests/new-dpp-list
  *
- * The site's edge refuses plain http clients on the api paths, so every api
- * read goes three deep: plain, with the webview's harvested session, and
- * finally from inside the site's own page where the request rides the
- * webview's browser stack. Whatever happens, the real reason travels back
- * out - a blocked read is never an empty one.
+ * The site's edge refuses plain http clients on the api paths from whole
+ * network ranges while letting the same client through from others, so every
+ * api read goes three deep: plain, with a session the plugin mints the same
+ * way the site's own script mints one, and finally from inside the site's own
+ * page where the request rides the webview's browser stack. Whatever happens,
+ * the real reason travels back out - a blocked read is never an empty one.
  *
  * play.php encrypts the stream url and the drm fields into hidden inputs
  * before the page ships; the player script walks them back with a fixed
- * aes key so the same walk is mirrored here.
+ * aes key so the same walk is mirrored here. The stream behind it is a plain
+ * hls playlist the cdn hands out under a .docx name with the media segments
+ * under .pdf names, all pre-signed in the url itself, so the native player
+ * plays it directly; lectures that ship real clearkey fields ride the
+ * player's own drm link instead.
  */
 object VidCloudApi {
 
@@ -56,7 +64,7 @@ object VidCloudApi {
         class Fail(val reason: String) : SiteResult()
     }
 
-    private fun okJson(text: String): SiteResult? {
+    private fun okJson(text: String): SiteResult.Ok? {
         if (text.isBlank()) return null
         return try {
             SiteResult.Ok(JSONObject(text))
@@ -87,13 +95,26 @@ object VidCloudApi {
     @Volatile
     private var fastLane = 0
 
+    // every api answer is kept for a short window so a season rebuild, a
+    // sheet reopen or a second episode of the same topic never re-asks
+    private const val JSON_TTL = 10L * 60L * 1000L
+    private val jsonCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, SiteResult.Ok>>()
+
+    private fun cached(path: String): SiteResult.Ok? {
+        jsonCache[path]?.let { (at, ok) ->
+            if (System.currentTimeMillis() - at < JSON_TTL) return ok
+        }
+        return null
+    }
+
     /**
      * One api read, three transports deep. The note on a Fail carries what
      * each transport actually saw so the surface can show the real reason.
      */
     suspend fun siteJson(path: String): SiteResult {
+        cached(path)?.let { return it }
         val order = when (fastLane) {
-            3 -> listOf(3, 1, 2)
+            3 -> listOf(3, 2, 1)
             2 -> listOf(2, 1, 3)
             else -> listOf(1, 2, 3)
         }
@@ -104,7 +125,7 @@ object VidCloudApi {
                     try {
                         val resp = app.get(SITE + path, headers = apiHeaders(UA, "", ""), timeout = 10L)
                         if (resp.isSuccessful) {
-                            okJson(resp.textLarge)?.let { fastLane = 1; return it }
+                            okJson(resp.textLarge)?.let { fastLane = 1; return keep(path, it) }
                             findings.add("plain: not json")
                         } else findings.add("plain: ${resp.code}")
                     } catch (e: Exception) {
@@ -112,8 +133,8 @@ object VidCloudApi {
                     }
                 }
                 2 -> {
-                    val jar = VidCloudWebView.cookies()
-                    val ua = VidCloudWebView.userAgent() ?: UA
+                    val session = session()
+                    val jar = session?.first
                     if (jar.isNullOrBlank()) {
                         findings.add("session: none yet")
                         continue
@@ -121,11 +142,11 @@ object VidCloudApi {
                     try {
                         val resp = app.get(
                             SITE + path,
-                            headers = apiHeaders(ua, jar, VidCloudWebView.token() ?: ""),
+                            headers = apiHeaders(session?.second ?: UA, jar, session?.third ?: ""),
                             timeout = 10L
                         )
                         if (resp.isSuccessful) {
-                            okJson(resp.textLarge)?.let { fastLane = 2; return it }
+                            okJson(resp.textLarge)?.let { fastLane = 2; return keep(path, it) }
                             findings.add("session: not json")
                         } else findings.add("session: ${resp.code}")
                     } catch (e: Exception) {
@@ -140,7 +161,7 @@ object VidCloudApi {
                     }
                     val (status, body) = got
                     if (status in 200..299) {
-                        okJson(body)?.let { fastLane = 3; return it }
+                        okJson(body)?.let { fastLane = 3; return keep(path, it) }
                         findings.add("page: not json")
                     } else findings.add("page: $status")
                 }
@@ -148,6 +169,92 @@ object VidCloudApi {
         }
         if (fastLane != 0) fastLane = 0
         return SiteResult.Fail(findings.distinct().joinToString("; ").ifBlank { "no transport answered" })
+    }
+
+    private fun keep(path: String, ok: SiteResult.Ok): SiteResult.Ok {
+        jsonCache[path] = System.currentTimeMillis() to ok
+        return ok
+    }
+
+    // ------------------------------------------------------------- session
+
+    // a session minted the same way the site's own script mints one: the
+    // token page answers with the bearer in its body and the php session in
+    // its set-cookie headers, and both together ride every later call
+    private const val SESSION_TTL = 45L * 60L * 1000L
+
+    @Volatile
+    private var mintedCookies: String? = null
+
+    @Volatile
+    private var mintedToken: String? = null
+
+    @Volatile
+    private var mintedUa: String? = null
+
+    @Volatile
+    private var mintAt = 0L
+
+    @Volatile
+    private var mintFailedAt = 0L
+
+    /**
+     * The cookie jar, bearer and user agent every plain call should ride:
+     * the webview's own harvest when one exists, else a pair minted from
+     * the site's token page, null when neither could be built. A mint that
+     * just failed is not retried for a minute so a blocked network never
+     * turns every read into another token attempt.
+     */
+    suspend fun session(): Triple<String, String, String>? {
+        val now = System.currentTimeMillis()
+        val webviewJar = VidCloudWebView.cookies()
+        if (!webviewJar.isNullOrBlank()) {
+            mintedCookies = webviewJar
+            mintedToken = VidCloudWebView.token()
+            mintedUa = VidCloudWebView.userAgent()
+            mintAt = now
+            return Triple(webviewJar, mintedUa ?: UA, mintedToken ?: "")
+        }
+        if (!mintedCookies.isNullOrBlank() && now - mintAt < SESSION_TTL) {
+            return Triple(mintedCookies!!, mintedUa ?: UA, mintedToken ?: "")
+        }
+        if (now - mintFailedAt < 60_000L) return null
+        return try {
+            val resp = app.get(
+                "$SITE/generate_token.php",
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Accept" to "*/*",
+                    "Referer" to "$SITE/",
+                    "Origin" to SITE,
+                ),
+                timeout = 10L,
+            )
+            if (!resp.isSuccessful) {
+                mintFailedAt = now
+                return null
+            }
+            val token = try {
+                JSONObject(resp.textLarge).optString("access_token")
+            } catch (_: Exception) {
+                ""
+            }
+            val jar = resp.headers.values("Set-Cookie").mapNotNull { raw ->
+                raw.substringBefore(';').takeIf { it.contains('=') }
+            }.joinToString("; ").ifBlank { if (token.isNotBlank()) "auth_token=$token" else "" }
+            if (jar.isBlank() && token.isBlank()) {
+                mintFailedAt = now
+                return null
+            }
+            mintedCookies = jar
+            mintedToken = token
+            mintedUa = UA
+            mintAt = now
+            Triple(jar, UA, token)
+        } catch (_: Exception) {
+            mintFailedAt = now
+            null
+        }
     }
 
     // ------------------------------------------------------------- catalog
@@ -315,21 +422,8 @@ object VidCloudApi {
 
     // ------------------------------------------------------------- study api
 
-    private const val DETAILS_TTL = 10L * 60L * 1000L
-    private val detailsCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, SiteResult.Ok>>()
-
-    suspend fun details(id: String): SiteResult {
-        detailsCache[id]?.let { (at, ok) ->
-            if (System.currentTimeMillis() - at < DETAILS_TTL) return ok
-        }
-        return when (val r = siteJson("/api/v3/batches/$id/details?type=EXPLORE_LEAD")) {
-            is SiteResult.Ok -> {
-                detailsCache[id] = System.currentTimeMillis() to r
-                r
-            }
-            is SiteResult.Fail -> r
-        }
-    }
+    suspend fun details(id: String): SiteResult =
+        siteJson("/api/v3/batches/$id/details?type=EXPLORE_LEAD")
 
     suspend fun topics(batchId: String, subjectId: String): SiteResult =
         siteJson("/api/v2/batches/$batchId/subject/$subjectId/topics?page=1")
@@ -338,6 +432,17 @@ object VidCloudApi {
         siteJson(
             "/api/v2/batches/$STUDY_BATCH/subject/$subjectId/contents" +
                 "?tag=$topicId&contentType=$contentType&page=1"
+        )
+
+    /**
+     * The whole subject in one walk: the same contents route without the
+     * tag, page by page. Every item still carries its topic inside tags[],
+     * so the caller groups exactly the way the per topic calls would.
+     */
+    suspend fun subjectContents(subjectId: String, contentType: String, page: Int): SiteResult =
+        siteJson(
+            "/api/v2/batches/$STUDY_BATCH/subject/$subjectId/contents" +
+                "?contentType=$contentType&page=$page&limit=100"
         )
 
     suspend fun dppTests(batchId: String, subjectId: String, topicId: String): SiteResult =
@@ -367,6 +472,7 @@ object VidCloudApi {
         val name: String,
         val image: String,
         val duration: String,
+        val startedAt: Long,
     )
 
     fun toLecture(item: JSONObject): Lecture? {
@@ -381,7 +487,43 @@ object VidCloudApi {
                 ?: "Lecture",
             image = details?.optString("image")?.takeIf { it.startsWith("http") } ?: "",
             duration = details?.optString("duration")?.takeIf { it.isNotBlank() } ?: "",
+            startedAt = runCatching { isoTime(item.optString("startTime")) }.getOrDefault(0L),
         )
+    }
+
+    /**
+     * The api's 2026-02-08T04:30:00.000Z stamps read without java.time so the
+     * walk runs on every android the app itself runs on; anything the format
+     * does not match is simply no date at all.
+     */
+    private fun isoTime(value: String): Long {
+        val m = Regex("^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2}):(\\d{2})").find(value)
+            ?: return 0L
+        val (y, mo, d, h, mi, s) = m.destructured
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        cal.clear()
+        cal.set(y.toInt(), mo.toInt() - 1, d.toInt(), h.toInt(), mi.toInt(), s.toInt())
+        return cal.timeInMillis
+    }
+
+    /** The topic tag an item hangs under, the same key the per topic call filters on. */
+    fun tagOf(item: JSONObject): Pair<String, String>? {
+        val tag = item.optJSONArray("tags")?.optJSONObject(0) ?: return null
+        val id = tag.optString("_id").takeIf { it.isNotBlank() } ?: return null
+        return id to tag.optString("name").ifBlank { "Lectures" }
+    }
+
+    /**
+     * hh:mm:ss or mm:ss into plain minutes, null when there is nothing to read.
+     */
+    fun minutesOf(duration: String): Int? {
+        if (duration.isBlank()) return null
+        val parts = duration.split(":").mapNotNull { it.toIntOrNull() }
+        if (parts.isEmpty() || parts.size !in 2..3) return null
+        return when (parts.size) {
+            3 -> parts[0] * 60 + parts[1]
+            else -> parts[0]
+        }.takeIf { it > 0 }
     }
 
     /**
@@ -412,17 +554,25 @@ object VidCloudApi {
         val keyId: String,
         val keyValue: String,
         val licenseUrl: String,
-    )
+    ) {
+        val clearkey: Boolean
+            get() = drmType.equals("clearkey", true) && keyId.isNotBlank() && keyValue.isNotBlank()
+    }
 
     /**
-     * Walks play.php's hidden inputs back to plain values. The page encrypts
-     * each one with the same key the player script holds, empty fields stay
+     * Walks play.php's hidden inputs back to plain values. The page is asked
+     * twice: once over plain http riding the minted session, which is the
+     * way the site's own pages ask from a phone, and once from inside the
+     * site's own page when the first ask comes back empty. Empty fields stay
      * empty.
      */
     suspend fun resolvePlay(playUrl: String): PlayPayload? {
-        val got = VidCloudWebView.fetch(playUrl.removePrefix(SITE)) ?: return null
-        val (status, html) = got
-        if (status !in 200..299) return null
+        val html = fetchPlayHttp(playUrl)
+            ?: VidCloudWebView.fetch(playUrl.removePrefix(SITE))?.let { (status, body) ->
+                if (status in 200..299) body else null
+            }
+            ?: return null
+        if (!html.contains("enc_video_url")) return null
         fun field(id: String): String {
             val m = Regex("id=\"$id\"\\s+value=\"([^\"]*)\"").find(html) ?: return ""
             return fieldOf(m.groupValues[1])
@@ -436,6 +586,24 @@ object VidCloudApi {
             keyValue = field("enc_key_value"),
             licenseUrl = field("enc_license_url"),
         )
+    }
+
+    private suspend fun fetchPlayHttp(playUrl: String): String? {
+        val (jar, ua, token) = session() ?: return null
+        val headers = mutableMapOf(
+            "User-Agent" to ua,
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer" to "$SITE/",
+            "Origin" to SITE,
+            "Cookie" to jar,
+        )
+        if (token.isNotBlank()) headers["Authorization"] = "Bearer $token"
+        return try {
+            val resp = app.get(playUrl, headers = headers, timeout = 15L)
+            if (resp.isSuccessful) resp.textLarge else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun decryptField(b64: String): String {

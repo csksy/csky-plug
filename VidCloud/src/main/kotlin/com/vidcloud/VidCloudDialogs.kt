@@ -34,13 +34,13 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
- * The topic sheet: every material the site hangs under a topic - lectures,
- * class notes, dpp sheets and the dpp quizzes - listed the way the site's
- * topic page tabs do, one row per item.
+ * The topic sheet: the study material a topic carries - class notes, dpp
+ * sheets and the dpp quizzes - listed the way the site's topic page tabs do,
+ * one row per item. The lectures themselves are episodes of the topic's
+ * season in the main player, so only paper and quiz rows live here.
  *
- * Lectures open the site's own player page, pdfs open the site's pdf.js page
- * with a download button next to it, quizzes run in the site's quiz page,
- * all inside [WebDialogFragment].
+ * Pdfs open the site's pdf.js page with a download button next to it and
+ * quizzes run in the site's quiz page, both inside [WebDialogFragment].
  */
 class TopicDialogFragment : DialogFragment() {
 
@@ -171,20 +171,10 @@ class TopicDialogFragment : DialogFragment() {
         if (!loaded) {
             loaded = true
             lifecycleScope.launch(Dispatchers.IO) {
-                val lectures = mutableListOf<VidCloudApi.Lecture>()
                 val pdfs = mutableListOf<VidCloudApi.PdfRef>()
                 val tests = mutableListOf<JSONObject>()
                 val failures = mutableListOf<String>()
 
-                for (type in listOf("videos", "DppVideos")) {
-                    when (val r = VidCloudApi.contents(subjectId, topicId, type)) {
-                        is VidCloudApi.SiteResult.Fail -> failures.add(r.reason)
-                        is VidCloudApi.SiteResult.Ok ->
-                            VidCloudApi.dataArrayOf(r).forEach { item ->
-                                VidCloudApi.toLecture(item)?.let { lectures.add(it) }
-                            }
-                    }
-                }
                 for (type in listOf("notes", "DppNotes")) {
                     when (val r = VidCloudApi.contents(subjectId, topicId, type)) {
                         is VidCloudApi.SiteResult.Fail -> failures.add(r.reason)
@@ -204,7 +194,7 @@ class TopicDialogFragment : DialogFragment() {
                     if (!isAdded) return@withContext
                     buildRows(
                         topic, subject, batchId, subjectId, topicId,
-                        lectures, pdfs, tests,
+                        pdfs, tests,
                         failures.distinct().takeIf { it.isNotEmpty() }?.joinToString("\n"),
                     )
                 }
@@ -229,7 +219,6 @@ class TopicDialogFragment : DialogFragment() {
         batchId: String,
         subjectId: String,
         topicId: String,
-        lectures: List<VidCloudApi.Lecture>,
         pdfs: List<VidCloudApi.PdfRef>,
         tests: List<JSONObject>,
         failure: String? = null,
@@ -237,7 +226,7 @@ class TopicDialogFragment : DialogFragment() {
         list.removeAllViews()
         val activity = activity as? AppCompatActivity ?: return
 
-        if (lectures.isEmpty() && pdfs.isEmpty() && tests.isEmpty()) {
+        if (pdfs.isEmpty() && tests.isEmpty()) {
             list.addView(TextView(requireContext()).apply {
                 text = when {
                     failure != null -> "Couldn't reach the site.\n$failure"
@@ -250,23 +239,6 @@ class TopicDialogFragment : DialogFragment() {
             return
         }
 
-        if (lectures.isNotEmpty()) {
-            section("Lectures (${lectures.size})")
-            lectures.forEach { lecture ->
-                row(
-                    title = lecture.name,
-                    sub = listOf(lecture.duration, "Lecture").filter { it.isNotBlank() }.joinToString("  ·  "),
-                ) {
-                    WebDialogFragment.show(
-                        activity,
-                        lecture.name,
-                        VidCloudApi.playUrl(batchId, subjectId, topicId, lecture),
-                        bootstrap = true,
-                        download = null,
-                    )
-                }
-            }
-        }
         if (pdfs.isNotEmpty()) {
             section(if (pdfs.size == 1) "Notes & Sheets" else "Notes & Sheets (${pdfs.size})")
             pdfs.forEach { pdf ->

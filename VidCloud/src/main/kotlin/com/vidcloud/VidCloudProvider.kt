@@ -1,7 +1,10 @@
 package com.vidcloud
 
+import com.lagradost.cloudstream3.Prerelease
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.SeasonData
+import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.MainAPI
@@ -11,10 +14,16 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.utils.CLEARKEY_DRM_UUID
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newDrmExtractorLink
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 class VidCloudProvider : MainAPI() {
@@ -44,9 +53,6 @@ class VidCloudProvider : MainAPI() {
         // the site keeps every batch on one hash route, these ids ride the
         // same url shape so watch history and share links keep working
         fun batchUrl(id: String) = "${VidCloudApi.SITE}/#batch/$id"
-        fun topicUrl(batchId: String, subjectId: String, topicId: String, title: String = "") =
-            "${VidCloudApi.SITE}/#content/batch/$batchId/subject/$subjectId/topic/$topicId" +
-                if (title.isBlank()) "" else "?title=" + java.net.URLEncoder.encode(title, "UTF-8")
     }
 
     // the batch id out of any form that can reach load(): the site's own hash
@@ -89,6 +95,19 @@ class VidCloudProvider : MainAPI() {
             .mapNotNull(::toSearch)
     }
 
+    // one topic of one subject: the season all the topic's lectures and its
+    // material row live under, named the way the site names the topic
+    private class TopicRow(
+        val subjectId: String,
+        val subjectName: String,
+        val topicId: String,
+        val topicName: String,
+        val expectsVideos: Boolean,
+        val order: Int,
+    )
+
+    private class TaggedLecture(val lecture: VidCloudApi.Lecture, val dpp: Boolean)
+
     override suspend fun load(url: String): LoadResponse {
         val id = batchIdOf(url)
             ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Batch not found: $url")
@@ -106,64 +125,202 @@ class VidCloudProvider : MainAPI() {
         val photo = details.optJSONObject("previewImage")?.let {
             it.optString("baseUrl").takeIf { b -> b.isNotBlank() }?.let { b -> b + it.optString("key") }
         } ?: ""
+        val subjectsJson = details.optJSONArray("subjects")
 
-        val subjects = details.optJSONArray("subjects") ?: run {
+        if (subjectsJson == null || subjectsJson.length() == 0) {
             return newTvSeriesLoadResponse(title, batchUrl(id), TvType.TvSeries, emptyList()) {
                 posterUrl = photo.ifBlank { null }
                 plot = details.optString("byName").takeIf { it.isNotBlank() }
             }
         }
 
-        // one topics call per subject, throttled the way the other providers
-        // here fetch seasons in parallel; a transport that answers once keeps
-        // answering, so the first subject warms it for the rest
-        val episodes = mutableListOf<com.lagradost.cloudstream3.Episode>()
-        val topicFailures = java.util.concurrent.atomic.AtomicInteger(0)
-        kotlinx.coroutines.coroutineScope {
+        val subjects = (0 until subjectsJson.length())
+            .mapNotNull { subjectsJson.optJSONObject(it) }
+            .filter { it.optString("_id").isNotBlank() }
+            .sortedBy { it.optInt("displayOrder", 0) }
+
+        // the site's own order: subjects first, then each subject's topics
+        // in their display order, topics with nothing under them never get
+        // a season
+        val rows = mutableListOf<TopicRow>()
+        val topicsFailures = java.util.concurrent.atomic.AtomicInteger(0)
+        coroutineScope {
             val gate = Semaphore(6)
-            val jobs = (0 until subjects.length()).map { s ->
+            val jobs = subjects.map { subject ->
                 async(Dispatchers.IO) {
                     gate.withPermit {
-                        val subject = subjects.optJSONObject(s) ?: return@withPermit null
                         val subjectId = subject.optString("_id")
-                        if (subjectId.isBlank()) return@withPermit null
-                        val subjectTitle = subject.optString("subject")
-                        val list = mutableListOf<com.lagradost.cloudstream3.Episode>()
+                        val subjectName = subject.optString("subject")
                         when (val r = VidCloudApi.topics(id, subjectId)) {
                             is VidCloudApi.SiteResult.Fail -> {
-                                topicFailures.incrementAndGet()
-                                null
+                                topicsFailures.incrementAndGet()
+                                emptyList()
                             }
                             is VidCloudApi.SiteResult.Ok -> {
-                                var n = 0
-                                for (topic in VidCloudApi.dataArrayOf(r)) {
-                                    val topicId = topic.optString("_id")
-                                    val topicName = topic.optString("name")
-                                    if (topicId.isBlank() || topicName.isBlank()) continue
-                                    n++
-                                    list.add(
-                                        newEpisode(topicUrl(id, subjectId, topicId, topicName)) {
-                                            this.name = topicName
-                                            this.season = s + 1
-                                            this.episode = n
-                                            this.posterUrl = photo.ifBlank { null }
-                                            this.description = "$subjectTitle - $topicName"
-                                        }
+                                val listed = VidCloudApi.dataArrayOf(r).mapNotNull { t ->
+                                    val topicId = t.optString("_id")
+                                    val topicName = t.optString("name")
+                                    if (topicId.isBlank() || topicName.isBlank()) return@mapNotNull null
+                                    val videos = t.optInt("videos", 0) + t.optInt("lectureVideos", 0)
+                                    val papers = t.optInt("notes", 0) + t.optInt("exercises", 0)
+                                    if (videos <= 0 && papers <= 0) return@mapNotNull null
+                                    TopicRow(
+                                        subjectId, subjectName, topicId, topicName,
+                                        videos > 0, t.optInt("displayOrder", 0),
                                     )
                                 }
-                                list
+                                listed.sortedBy { it.order }
                             }
                         }
                     }
                 }
             }
             jobs.forEach { job ->
-                runCatching { episodes.addAll(job.await() ?: return@forEach) }
+                runCatching { rows.addAll(job.await()) }
             }
         }
-        if (topicFailures.get() > 0 && episodes.isEmpty() && subjects.length() > 0) {
-            throw com.lagradost.cloudstream3.ErrorLoadingException(
-                "Could not reach vidcloud.eu.org (topics: ${topicFailures.get()}/${subjects.length()} failed)"
+        if (rows.isEmpty()) {
+            if (topicsFailures.get() > 0 && subjects.isNotEmpty()) {
+                throw com.lagradost.cloudstream3.ErrorLoadingException(
+                    "Could not reach vidcloud.eu.org (topics: ${topicsFailures.get()}/${subjects.size} failed)"
+                )
+            }
+            return newTvSeriesLoadResponse(title, batchUrl(id), TvType.TvSeries, emptyList()) {
+                posterUrl = photo.ifBlank { null }
+                plot = details.optString("byName").takeIf { it.isNotBlank() }
+            }
+        }
+
+        // every lecture the batch carries, grouped under its own topic tag.
+        // the whole subject walk answers the same items the per topic calls
+        // do, so it is tried first and only the topics it leaves empty are
+        // asked one by one afterwards
+        val lecturesByTopic = java.util.concurrent.ConcurrentHashMap<String, MutableList<TaggedLecture>>()
+        coroutineScope {
+            val gate = Semaphore(4)
+            val jobs = subjects.map { subject ->
+                async(Dispatchers.IO) {
+                    gate.withPermit {
+                        val subjectId = subject.optString("_id")
+                        val known = rows.filter { it.subjectId == subjectId }
+                            .map { it.topicId }.toSet()
+                        if (known.isEmpty()) return@withPermit
+                        for ((type, dpp) in listOf("videos" to false, "DppVideos" to true)) {
+                            var page = 1
+                            while (page <= 40) {
+                                val items = when (val r = VidCloudApi.subjectContents(subjectId, type, page)) {
+                                    is VidCloudApi.SiteResult.Fail -> break
+                                    is VidCloudApi.SiteResult.Ok -> VidCloudApi.dataArrayOf(r)
+                                }
+                                if (items.isEmpty()) break
+                                for (item in items) {
+                                    val topicId = VidCloudApi.tagOf(item)?.first ?: continue
+                                    if (topicId !in known) continue
+                                    val lecture = VidCloudApi.toLecture(item) ?: continue
+                                    lecturesByTopic.getOrPut(topicId) { mutableListOf() }
+                                        .add(TaggedLecture(lecture, dpp))
+                                }
+                                if (items.size < 20) break
+                                page++
+                            }
+                        }
+                    }
+                }
+            }
+            jobs.forEach { job -> runCatching { job.await() } }
+        }
+
+        // topics the subject walk never answered are asked one by one, the
+        // exact call the site's own topic page makes, under one budget so a
+        // slow batch still opens with whatever already arrived
+        val missing = rows.filter { it.expectsVideos && lecturesByTopic[it.topicId].isNullOrEmpty() }
+        if (missing.isNotEmpty()) {
+            withTimeoutOrNull(25_000L) {
+                coroutineScope {
+                    val gate = Semaphore(10)
+                    val jobs = missing.map { row ->
+                        async(Dispatchers.IO) {
+                            gate.withPermit {
+                                runCatching {
+                                    when (val r = VidCloudApi.contents(row.subjectId, row.topicId, "videos")) {
+                                        is VidCloudApi.SiteResult.Ok ->
+                                            VidCloudApi.dataArrayOf(r).forEach { item ->
+                                                VidCloudApi.toLecture(item)?.let {
+                                                    lecturesByTopic.getOrPut(row.topicId) { mutableListOf() }
+                                                        .add(TaggedLecture(it, false))
+                                                }
+                                            }
+                                        else -> Unit
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    jobs.forEach { job -> runCatching { job.await() } }
+                }
+            }
+        }
+
+        // seasons are the topics themselves, named the way the site names
+        // them, in the site's own subject order; the lectures under each are
+        // the episodes and the material row sits right after the last one
+        val seasonList = mutableListOf<SeasonData>()
+        val episodes = mutableListOf<Episode>()
+        var season = 0
+        for (row in rows) {
+            val lectures = (lecturesByTopic[row.topicId] ?: emptyList())
+                .sortedWith(compareBy({ it.dpp }, { it.lecture.startedAt }))
+            season++
+            seasonList.add(SeasonData(season, row.topicName, season))
+            var n = 0
+            for (tagged in lectures) {
+                n++
+                val lecture = tagged.lecture
+                episodes.add(
+                    newEpisode(
+                        JSONObject()
+                            .put("k", "v")
+                            .put("b", id)
+                            .put("s", row.subjectId)
+                            .put("t", row.topicId)
+                            .put("sn", row.subjectName)
+                            .put("tn", row.topicName)
+                            .put("vid", lecture.videoId)
+                            .put("tid", lecture.typeId)
+                            .put("vu", lecture.url)
+                            .put("n", lecture.name)
+                            .put("img", lecture.image)
+                            .toString()
+                    ) {
+                        this.name = if (tagged.dpp) "DPP - ${lecture.name}" else lecture.name
+                        this.season = season
+                        this.episode = n
+                        this.posterUrl = lecture.image.ifBlank { photo }.ifBlank { null }
+                        this.description =
+                            listOf(row.subjectName, row.topicName).filter { it.isNotBlank() }
+                                .joinToString(" - ")
+                        this.runTime = VidCloudApi.minutesOf(lecture.duration)
+                        if (lecture.startedAt > 0L) this.date = lecture.startedAt
+                    }
+                )
+            }
+            episodes.add(
+                newEpisode(
+                    JSONObject()
+                        .put("k", "m")
+                        .put("b", id)
+                        .put("s", row.subjectId)
+                        .put("t", row.topicId)
+                        .put("sn", row.subjectName)
+                        .put("tn", row.topicName)
+                        .toString()
+                ) {
+                    this.name = "Notes & DPP Quiz"
+                    this.season = season
+                    this.episode = n + 1
+                    this.posterUrl = photo.ifBlank { null }
+                    this.description = "Class notes, DPP sheets and the DPP quiz for ${row.topicName}"
+                }
             )
         }
 
@@ -171,43 +328,92 @@ class VidCloudProvider : MainAPI() {
             posterUrl = photo.ifBlank { null }
             plot = details.optString("byName").takeIf { it.isNotBlank() }
             year = details.optString("startDate").takeIf { it.length >= 4 }?.substring(0, 4)?.toIntOrNull()
+            seasonNames = seasonList
         }
     }
 
-    // the episode data is a topic url; every material the topic carries -
-    // lectures, notes, dpp sheets, dpp quizzes - opens from its sheet
+    // a lecture row hands its stream to the cloudstream player itself: the
+    // player page is walked back to the playlist url and the drm fields it
+    // ships, and the playlist rides the native player - a clearkey lecture
+    // rides the player's own drm link with its kid and key. the material row
+    // opens the sheet that carries the topic's notes, sheets and quiz
+    @OptIn(Prerelease::class)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (com.lagradost.cloudstream3.SubtitleFile) -> Unit,
         callback: (com.lagradost.cloudstream3.utils.ExtractorLink) -> Unit
     ): Boolean {
-        val s = data.trim()
-        val m = Regex("/#content/batch/([0-9a-f]{24})/subject/([0-9a-f]{24})/topic/([0-9a-f]{24})").find(s)
-            ?: return false
-        val (batchId, subjectId, topicId) = m.destructured
-        val subjectName = when (val r = VidCloudApi.details(batchId)) {
-            is VidCloudApi.SiteResult.Ok -> r.json.optJSONObject("data")?.optJSONArray("subjects")
-                ?.let { subs ->
-                    (0 until subs.length())
-                        .mapNotNull { subs.optJSONObject(it) }
-                        .firstOrNull { it.optString("_id") == subjectId }
-                        ?.optString("subject")
-                }
-            is VidCloudApi.SiteResult.Fail -> null
-        } ?: ""
-        val topicName = episodesTopicName(s) ?: "Topic"
-
-        val activity = com.lagradost.cloudstream3.CommonActivity.activity
-            as? androidx.appcompat.app.AppCompatActivity ?: return false
-        if (activity.isFinishing || activity.isDestroyed) return false
-        activity.runOnUiThread {
-            TopicDialogFragment.show(activity, topicName, subjectName, batchId, subjectId, topicId)
+        val j = try {
+            JSONObject(data.trim())
+        } catch (_: Exception) {
+            return false
         }
-        return true
-    }
+        val batchId = j.optString("b")
+        val subjectId = j.optString("s")
+        val topicId = j.optString("t")
+        if (batchId.isBlank() || subjectId.isBlank() || topicId.isBlank()) return false
+        val subjectName = j.optString("sn")
+        val topicName = j.optString("tn").ifBlank { "Topic" }
 
-    private fun episodesTopicName(data: String): String? =
-        Regex("topic/[0-9a-f]{24}\\?title=([^&]+)").find(data)?.groupValues?.get(1)
-            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+        when (j.optString("k")) {
+            "m" -> {
+                val activity = com.lagradost.cloudstream3.CommonActivity.activity
+                    as? androidx.appcompat.app.AppCompatActivity ?: return false
+                if (activity.isFinishing || activity.isDestroyed) return false
+                activity.runOnUiThread {
+                    TopicDialogFragment.show(activity, topicName, subjectName, batchId, subjectId, topicId)
+                }
+                return true
+            }
+
+            "v" -> {
+                val lecture = VidCloudApi.Lecture(
+                    videoId = j.optString("vid"),
+                    typeId = j.optString("tid"),
+                    url = j.optString("vu"),
+                    name = j.optString("n").ifBlank { "Lecture" },
+                    image = j.optString("img"),
+                    duration = "",
+                    startedAt = 0L,
+                )
+                val playUrl = VidCloudApi.playUrl(batchId, subjectId, topicId, lecture)
+                val payload = VidCloudApi.resolvePlay(playUrl)
+                    ?: throw com.lagradost.cloudstream3.ErrorLoadingException(
+                        "Could not open the player page for ${lecture.name} - the site may be busy, try again"
+                    )
+                if (payload.clearkey) {
+                    callback(
+                        newDrmExtractorLink(
+                            name,
+                            lecture.name,
+                            payload.url,
+                            ExtractorLinkType.M3U8,
+                            CLEARKEY_DRM_UUID,
+                        ) {
+                            this.kid = payload.keyId
+                            this.key = payload.keyValue
+                            this.referer = "${VidCloudApi.SITE}/"
+                            this.headers = mapOf("User-Agent" to VidCloudApi.UA)
+                        }
+                    )
+                } else {
+                    callback(
+                        newExtractorLink(
+                            name,
+                            lecture.name,
+                            payload.url,
+                            type = ExtractorLinkType.M3U8,
+                        ) {
+                            this.referer = "${VidCloudApi.SITE}/"
+                            this.headers = mapOf("User-Agent" to VidCloudApi.UA)
+                        }
+                    )
+                }
+                return true
+            }
+
+            else -> return false
+        }
+    }
 }
