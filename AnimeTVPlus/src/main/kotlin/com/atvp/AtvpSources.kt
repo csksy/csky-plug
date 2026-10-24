@@ -47,7 +47,7 @@ object AtvpSources {
             .maxOrNull() ?: 0
     }
 
-    private fun emitSubtitle(
+    private suspend fun emitSubtitle(
         label: String,
         url: String,
         headers: Map<String, String>,

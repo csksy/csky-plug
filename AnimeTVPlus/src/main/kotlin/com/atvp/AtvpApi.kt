@@ -50,7 +50,7 @@ object AtvpApi {
         "Referer" to "https://megaplay.buzz/"
     )
 
-    private fun getJson(url: String, headers: Map<String, String> = catalogHeaders): JSONObject? {
+    private suspend fun getJson(url: String, headers: Map<String, String> = catalogHeaders): JSONObject? {
         return try {
             val text = app.get(url, headers = headers, timeout = 15L).text
             if (text.isBlank()) null else JSONObject(text)
@@ -60,7 +60,7 @@ object AtvpApi {
     }
 
     /** /api/search?q=... - returns the site's canonical entries. */
-    fun search(query: String, page: Int, limit: Int = 40): List<JSONObject> {
+    suspend fun search(query: String, page: Int, limit: Int = 40): List<JSONObject> {
         val url = "$CATALOG/api/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}" +
             "&limit=$limit&page=$page"
         val items = getJson(url)?.optJSONArray("items") ?: return emptyList()
@@ -68,7 +68,7 @@ object AtvpApi {
     }
 
     /** Catalog rows the home page mirrors. */
-    fun row(path: String, page: Int, limit: Int = 40): List<JSONObject> {
+    suspend fun row(path: String, page: Int, limit: Int = 40): List<JSONObject> {
         val url = "$CATALOG/api/anime/$path?limit=$limit&page=$page"
         val items = getJson(url)?.optJSONArray("items") ?: return emptyList()
         return (0 until items.length()).mapNotNull { items.optJSONObject(it) }
@@ -78,7 +78,7 @@ object AtvpApi {
      * New-uploads feed from the edge index (today / yesterday / earlier buckets),
      * item shape differs from the catalog rows so callers map it separately.
      */
-    fun latestUploads(limit: Int = 24): List<JSONObject> {
+    suspend fun latestUploads(limit: Int = 24): List<JSONObject> {
         val root = getJson("$IDX/idx/latest?limit=$limit&kind=releases") ?: return emptyList()
         val out = mutableListOf<JSONObject>()
         for (bucket in listOf("today", "yesterday", "earlier")) {
@@ -91,13 +91,13 @@ object AtvpApi {
     }
 
     /** /api/anime/by-id/{mal} - canonical metadata for one title. */
-    fun byId(mal: String): JSONObject? = getJson("$CATALOG/api/anime/by-id/$mal")?.optJSONObject("item")
+    suspend fun byId(mal: String): JSONObject? = getJson("$CATALOG/api/anime/by-id/$mal")?.optJSONObject("item")
 
     /**
      * /api/cr/card/{mal} - season map + synopsis. Seasons carry owner_mal +
      * cr_season_id; every episode is addressed by (owner_mal, absolute stream_ep).
      */
-    fun crCard(mal: String): JSONObject? =
+    suspend fun crCard(mal: String): JSONObject? =
         getJson("$CATALOG/api/cr/card/$mal?v=$CARD_VERSION&full=1")
 
     /**
@@ -105,7 +105,7 @@ object AtvpApi {
      *  - plain mode (v2-cache-guard): one flat list, ep 0 specials included
      *  - season mode: cr_season_id -> that season's episodes, numbered absolutely
      */
-    fun episodes(mal: String, crSeasonId: String? = null, page: Int = 1): JSONObject {
+    suspend fun episodes(mal: String, crSeasonId: String? = null, page: Int = 1): JSONObject {
         val url = buildString {
             append("$CATALOG/api/episodes/$mal?v=")
             append(if (crSeasonId == null) EPISODES_VERSION else CARD_VERSION)
@@ -116,7 +116,7 @@ object AtvpApi {
     }
 
     /** Walks every page of an episode listing (the API caps at 100 per page). */
-    fun allEpisodes(mal: String, crSeasonId: String? = null): List<JSONObject> {
+    suspend fun allEpisodes(mal: String, crSeasonId: String? = null): List<JSONObject> {
         val out = mutableListOf<JSONObject>()
         var page = 1
         var seen = 0
@@ -143,7 +143,7 @@ object AtvpApi {
      * embed.animetvplus.site/hls3/uq/{mal}?episode={n} - the site's own storage.
      * Returns {m3u8, meta, storyboard, subtitles[]} or an error body when absent.
      */
-    fun hls3uq(mal: String, episode: Int): JSONObject? {
+    suspend fun hls3uq(mal: String, episode: Int): JSONObject? {
         return try {
             val text = app.get(
                 "$EMBED/hls3/uq/$mal?episode=$episode",

@@ -261,7 +261,7 @@ class AnimeTVPlusProvider : MainAPI() {
 
         // ---- response ---------------------------------------------------------
         return if (isMovie || episodes.isEmpty()) {
-            val data = episodes.firstOrNull()?.url ?: episodeData(mal, 1)
+            val data = episodes.firstOrNull()?.data ?: episodeData(mal, 1)
             newMovieLoadResponse(title, mal, type, data) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
