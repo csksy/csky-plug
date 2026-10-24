@@ -181,7 +181,13 @@ class AnimeTVPlusProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val mal = url.substringAfterLast('|').ifBlank { url }
         val item = AtvpApi.byId(mal)
-            ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Title not found")
+            ?: throw com.lagradost.cloudstream3.ErrorLoadingException(
+                // the real transport failure, not a blanket "not found" - a
+                // blocked catalog reads "HTTP 403 ..." and a dead network reads
+                // "UnknownHostException ..." so the logcat says which
+                AtvpApi.lastCatalogError?.let { "Catalog unreachable: $it" }
+                    ?: "Title not found in catalog (mal $mal)"
+            )
         val card = runCatching { AtvpApi.crCard(mal) }.getOrNull()
         val title = titleOf(item) ?: "Anime $mal"
         val format = item.optString("format").uppercase()
@@ -316,6 +322,9 @@ class AnimeTVPlusProvider : MainAPI() {
                 },
                 async(Dispatchers.IO) {
                     runCatching { AtvpSources.vidFlow(mal, episode, callback) }.getOrDefault(false)
+                },
+                async(Dispatchers.IO) {
+                    runCatching { AtvpSources.nodeServers(mal, episode, callback) }.getOrDefault(false)
                 }
             )
             jobs.forEach { job -> found = job.await() || found }

@@ -16,20 +16,22 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Every stream server animetvplus.xyz offers, resolved exactly the way the site's
- * own player does. All flows were captured in the user's HAR (2026-10-24) and the
- * crypto was verified byte-for-byte against it:
+ * Every stream server animetvplus.xyz offers, resolved exactly the way the
+ * site's own player does. All flows were captured in the user's HAR
+ * (2026-10-24) and the crypto was verified byte-for-byte against it:
  *
  *  Multi Audio  embed hls3/uq -> edge.animetvplus.xyz master.txt (up to 7 audio
- *              tracks), subtitles from meta.json
- *  Dub          megaplay.buzz /stream/mal/{mal}/{ep}/dub -> getSources -> enc
- *              (AES-256-CBC, key/iv seeded) -> master.m3u8 + HMAC token, 7-language subs
+ *              tracks), subtitles from meta.json and the resolver's own list
+ *  Dub          megaplay.buzz /stream/mal/{mal}/{ep}/dub -> getSources (with
+ *              the getSourcesNew rotation the player falls back to) -> enc
+ *              (AES-256-CBC, key/iv seeded) -> master.m3u8 + HMAC cdn token,
+ *              one link per quality and a subtitle set in 6+ languages
  *  Hardsub      sv1.animetvplus.site server list -> edge3 hls3/p {sources:[...]}
  *              (offline at build time, wired up so it plays the day it returns)
- *  Kamuri       the site's stream proxy worker /api/stream (mewstream) + subs
+ *  Kamuri       the site's stream proxy worker (HD1) + subs
  *  Vidmoly      edge.animetvplus.site/lookup file_code -> vidmoly embed (resolved
  *              on the viewer's own network because the CDN signs URLs per ASN)
- *  VidFlow      direct m3u8 probe, sub and dub
+ *  VidFlow      direct m3u8 probe, sub and english-audio variant
  */
 object AtvpSources {
 
@@ -74,7 +76,8 @@ object AtvpSources {
      * The site's own storage. One master playlist carries every audio track
      * (e.g. My Hero Academia: ja/en/kn/ml/te/ta/hi) and every quality, so the
      * master itself is handed to the player - track and quality switching then
-     * works natively. Subtitles come from the sidecar meta.json.
+     * works natively. Subtitles come from the sidecar meta.json and from the
+     * resolver's own subtitles list.
      */
     suspend fun multiAudio(
         mal: String,
@@ -84,6 +87,23 @@ object AtvpSources {
     ): Boolean {
         val info = AtvpApi.hls3uq(mal, episode) ?: return false
         val m3u8 = info.optString("m3u8").takeIf { it.startsWith("http") } ?: return false
+        val seenSubs = HashSet<String>()
+
+        // the resolver itself can list subtitle files next to the playlist
+        val inline = info.optJSONArray("subtitles")
+        if (inline != null) {
+            for (i in 0 until inline.length()) {
+                val s = inline.optJSONObject(i) ?: continue
+                val file = s.optString("file").takeIf { it.startsWith("http") } ?: continue
+                if (!seenSubs.add(file)) continue
+                emitSubtitle(
+                    s.optString("label").ifBlank { "English" },
+                    file,
+                    AtvpApi.edgeMediaHeaders,
+                    subtitleCallback
+                )
+            }
+        }
 
         // meta.json sits next to the playlist and lists subtitle files + audio map;
         // for muxed single-rendition streams it also carries the video height
@@ -99,9 +119,11 @@ object AtvpSources {
                 for (i in 0 until subs.length()) {
                     val s = subs.optJSONObject(i) ?: continue
                     val file = s.optString("file").takeIf { it.isNotBlank() } ?: continue
+                    val full = absolute(file, base)
+                    if (!seenSubs.add(full)) continue
                     emitSubtitle(
                         s.optString("label").ifBlank { "English" },
-                        absolute(file, base),
+                        full,
                         AtvpApi.edgeMediaHeaders,
                         subtitleCallback
                     )
@@ -131,23 +153,39 @@ object AtvpSources {
     private const val MEGAPLAY_TOKEN_LIFETIME = 7L * 24L * 60L * 60L
 
     /** AES-256-CBC decrypt of the getSources "enc" blob (seed-padded key/iv, base64url). */
-    private fun decryptEnc(enc: String): String? {
+    private fun decryptEnc(enc: String, keySeed: String = MEGAPLAY_KEY_SEED, ivSeed: String = MEGAPLAY_IV_SEED): String? {
         return runCatching {
             var b64 = enc.replace('-', '+').replace('_', '/')
             while (b64.length % 4 != 0) b64 += "="
             val cipherBytes = Base64.decode(b64, Base64.DEFAULT)
 
+            val kb = keySeed.toByteArray(Charsets.UTF_8)
             val keyBytes = ByteArray(32)
-            val kb = MEGAPLAY_KEY_SEED.toByteArray(Charsets.UTF_8)
             System.arraycopy(kb, 0, keyBytes, 0, minOf(32, kb.size))
+            val ivb = ivSeed.toByteArray(Charsets.UTF_8)
             val ivBytes = ByteArray(16)
-            val ivb = MEGAPLAY_IV_SEED.toByteArray(Charsets.UTF_8)
             System.arraycopy(ivb, 0, ivBytes, 0, minOf(16, ivb.size))
 
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
         }.getOrNull()
+    }
+
+    /** The key material rotates in newclient.min.js; the pinned pair is the fallback. */
+    private suspend fun encSeeds(): List<Pair<String, String>> {
+        val pinned = Pair(MEGAPLAY_KEY_SEED, MEGAPLAY_IV_SEED)
+        return try {
+            val js = app.get(
+                "https://megaplay.buzz/lib/newclient.min.js",
+                headers = AtvpApi.megaplayHeaders,
+                timeout = 15L
+            ).text
+            val m = Regex("[A-Za-z]\\w*=\"([^\"]{16})\",[A-Za-z]\\w*=\"([^\"]{16})\"").find(js)
+            if (m != null) listOf(Pair(m.groupValues[1], m.groupValues[2]), pinned) else listOf(pinned)
+        } catch (_: Exception) {
+            listOf(pinned)
+        }
     }
 
     /**
@@ -172,7 +210,8 @@ object AtvpSources {
 
     /**
      * Megaplay's dub stream. The site embeds megaplay.buzz/stream/mal/{mal}/{ep}/dub;
-     * that page carries the file id, getSources returns the encrypted playlist plus a
+     * that page carries the file id, getSources (rotating to getSourcesNew the
+     * way the player's own client does) returns the encrypted playlist plus a
      * full set of translated subtitle tracks (ara/eng/ger/por/spa/tur...).
      */
     suspend fun dub(
@@ -195,25 +234,37 @@ object AtvpSources {
         }.getOrNull() ?: return false
 
         val fileId = Regex("data-id=\"(\\d+)\"").find(page)?.groupValues?.get(1)
-            ?: Regex("""/stream/s-\d+/(\d+)/""").find(pageUrl)?.groupValues?.get(1)
+            ?: Regex("File (\\d+) - MegaPlay").find(page)?.groupValues?.get(1)
             ?: return false
 
-        val srcUrl = "https://megaplay.buzz/stream/getSources?id=$fileId&platform=OTHER"
-        val srcText = runCatching {
-            app.get(
-                srcUrl,
-                headers = AtvpApi.megaplayHeaders + mapOf(
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Accept" to "application/json, text/javascript, */*; q=0.01",
-                    "Referer" to pageUrl
-                ),
-                timeout = 15L
-            ).text
-        }.getOrNull() ?: return false
+        val seeds = encSeeds()
+        var root: JSONObject? = null
+        for (endpoint in listOf("getSources", "getSourcesNew")) {
+            val srcUrl = "https://megaplay.buzz/stream/$endpoint?id=$fileId&platform=OTHER"
+            val srcText = runCatching {
+                app.get(
+                    srcUrl,
+                    headers = AtvpApi.megaplayHeaders + mapOf(
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Accept" to "application/json, text/javascript, */*; q=0.01",
+                        "Referer" to pageUrl
+                    ),
+                    timeout = 15L
+                ).text
+            }.getOrNull() ?: continue
+            val parsed = runCatching { JSONObject(srcText) }.getOrNull() ?: continue
+            // a response without any usable payload keeps rotating endpoints
+            val hasSources = parsed.opt("sources").let { it is JSONArray && it.length() > 0 || it is JSONObject }
+            val hasEnc = parsed.optString("enc").isNotBlank()
+            if (hasSources || hasEnc) {
+                root = parsed
+                break
+            }
+        }
+        root ?: return false
 
-        val root = runCatching { JSONObject(srcText) }.getOrNull() ?: return false
-
-        // subtitle tracks - one file per language the server hosts
+        // subtitle tracks - one file per language the server hosts; the cdn
+        // refuses the files without the megaplay referer so headers are load bearing
         val tracks = root.optJSONArray("tracks")
         if (tracks != null) {
             for (i in 0 until tracks.length()) {
@@ -236,17 +287,59 @@ object AtvpSources {
         }
         if (master == null) {
             val enc = root.optString("enc").takeIf { it.isNotBlank() } ?: return false
-            master = runCatching {
-                JSONObject(decryptEnc(enc) ?: return false).optString("file")
-                    .takeIf { it.startsWith("http") }
-            }.getOrNull() ?: return false
+            for ((keySeed, ivSeed) in seeds) {
+                val plain = decryptEnc(enc, keySeed, ivSeed) ?: continue
+                master = runCatching { JSONObject(plain).optString("file") }.getOrNull()
+                    ?.takeIf { it.startsWith("http") }
+                if (master != null) break
+            }
+            master ?: return false
         }
 
         val signed = signUrl(master)
-        val height = runCatching {
-            extractBestHeight(app.get(signed, headers = AtvpApi.megaplayHeaders, timeout = 15L).text)
-        }.getOrDefault(0)
+        val masterText = runCatching {
+            app.get(signed, headers = AtvpApi.megaplayHeaders, timeout = 15L).text
+        }.getOrNull()
 
+        // one link per quality variant when the master lists them
+        if (masterText != null) {
+            val base = master!!.substringBefore('?').substringBeforeLast('/') + "/"
+            val lines = masterText.lines()
+            var i = 0
+            var emitted = false
+            while (i < lines.size) {
+                val line = lines[i].trim()
+                if (line.startsWith("#EXT-X-STREAM-INF:")) {
+                    val quality = Regex("RESOLUTION=(\\d+)x(\\d+)").find(line)?.groupValues?.get(2)?.toIntOrNull()
+                    var j = i + 1
+                    while (j < lines.size && (lines[j].isBlank() || lines[j].startsWith("#"))) j++
+                    if (j < lines.size) {
+                        val uri = lines[j].trim()
+                        if (uri.isNotEmpty()) {
+                            val variant = if (uri.startsWith("http")) uri else base + uri
+                            callback(
+                                newExtractorLink(
+                                    SRC,
+                                    if (quality != null) "Dub ${quality}p" else "Dub",
+                                    signUrl(variant),
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = "https://megaplay.buzz/"
+                                    this.headers = AtvpApi.megaplayHeaders
+                                    if (quality != null) this.quality = quality
+                                }
+                            )
+                            emitted = true
+                        }
+                        i = j
+                    }
+                }
+                i++
+            }
+            if (emitted) return true
+        }
+
+        val height = masterText?.let { extractBestHeight(it) } ?: 0
         callback(
             newExtractorLink(SRC, "Dub", signed, type = ExtractorLinkType.M3U8) {
                 this.referer = "https://megaplay.buzz/"
@@ -341,18 +434,32 @@ object AtvpSources {
         )
         for (base in bases) {
             val seenUrls = HashSet<String>()
+            val labels = mapOf("sub" to "Kamuri", "dub" to "Kamuri (English audio)")
             for (type in listOf("sub", "dub")) {
-                val body = runCatching {
-                    app.get(
-                        "$base/api/stream/$mal/$episode?type=$type&embed=false",
-                        headers = mapOf("User-Agent" to AtvpApi.UA, "Accept" to "application/json"),
-                        timeout = 20L
-                    ).text
-                }.getOrNull() ?: continue
+                var body: String? = null
+                // one retry: the cold worker occasionally trips on the first hit
+                for (attempt in 0 until 2) {
+                    body = runCatching {
+                        app.get(
+                            "$base/api/stream/$mal/$episode?type=$type&embed=false",
+                            headers = mapOf("User-Agent" to AtvpApi.UA, "Accept" to "application/json"),
+                            timeout = 20L
+                        ).text
+                    }.getOrNull()
+                    if (body != null) break
+                }
+                body ?: continue
                 val stream = runCatching { JSONObject(body).optJSONObject("stream") }.getOrNull()
                     ?: continue
                 val m3u8 = stream.optString("m3u8_url").takeIf { it.startsWith("http") } ?: continue
                 if (!seenUrls.add(m3u8)) continue
+
+                // the worker hands out cached mewstream links whose upstream token
+                // can be long dead (a stale cache answers the api call fine while
+                // the cdn behind it 403s), so the playlist is probed once and the
+                // whole source is dropped when it does not answer - a dead link
+                // never reaches the player
+                if (!probeHttp(m3u8)) continue
 
                 // subtitles arrive either as a JSON array or as a JSON-encoded string
                 val subsRaw = stream.opt("subtitles")
@@ -373,11 +480,8 @@ object AtvpSources {
                     }
                 }
 
-                // the playlist is adaptive and served through the worker proxy;
-                // it is emitted straight away (no pre-fetch) so the link appears fast
-                val label = if (type == "dub") "Kamuri (Dub)" else "Kamuri"
                 callback(
-                    newExtractorLink(SRC, label, m3u8, type = ExtractorLinkType.M3U8) {
+                    newExtractorLink(SRC, labels[type] ?: "Kamuri", m3u8, type = ExtractorLinkType.M3U8) {
                         this.referer = "$base/"
                     }
                 )
@@ -385,6 +489,70 @@ object AtvpSources {
             if (seenUrls.isNotEmpty()) return true
         }
         return false
+    }
+
+    // ------------------------------------------------------------------ Node server 2
+
+    /**
+     * The node player's second storage: edge3 (fastest for India) and edge2
+     * (rest of the world) answer a per-audio source list. Both have been
+     * offline for a while (the user's own browser session saw 500/521 on them
+     * too) - they are wired exactly like the site wires them, so they light up
+     * in the link list the day the edges return. Each source carries its own
+     * height so every quality is a link of its own.
+     */
+    suspend fun nodeServers(
+        mal: String,
+        episode: Int,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val edges = listOf(
+            "https://edge3.animetvplus.xyz" to "Node (India)",
+            "https://edge2.animetvplus.xyz" to "Node (Global)"
+        )
+        var emitted = false
+        for ((edge, name) in edges) {
+            val body = runCatching {
+                app.get(
+                    "$edge/hls3/p/${java.net.URLEncoder.encode(mal, "UTF-8")}?episode=$episode",
+                    headers = AtvpApi.edgeMediaHeaders,
+                    timeout = 12L
+                ).text
+            }.getOrNull() ?: continue
+            val sources = runCatching { JSONObject(body).optJSONArray("sources") }.getOrNull()
+                ?: continue
+            for (i in 0 until sources.length()) {
+                val s = sources.optJSONObject(i) ?: continue
+                val url = s.optString("m3u8").takeIf { it.startsWith("http") } ?: continue
+                val english = s.optString("audio") == "eng"
+                val height = s.optInt("height", 0)
+                val label = buildString {
+                    append(name)
+                    if (english) append(" (English audio)")
+                    if (height > 0) append(" ").append(height).append("p")
+                }
+                callback(
+                    newExtractorLink(SRC, label, url, type = ExtractorLinkType.M3U8) {
+                        this.headers = AtvpApi.edgeMediaHeaders
+                        if (height > 0) this.quality = height
+                    }
+                )
+                emitted = true
+            }
+        }
+        return emitted
+    }
+
+    /** A one-kilobyte ranged GET; true only when the url answers with 2xx. */
+    private suspend fun probeHttp(url: String): Boolean {
+        return runCatching {
+            val res = app.get(
+                url,
+                headers = mapOf("User-Agent" to AtvpApi.UA, "Range" to "bytes=0-1023"),
+                timeout = 12L
+            )
+            res.code in 200..299
+        }.getOrDefault(false)
     }
 
     // ------------------------------------------------------------------ Vidmoly
@@ -489,6 +657,7 @@ object AtvpSources {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var emitted = false
+        val labels = mapOf("sub" to "VidFlow", "dub" to "VidFlow (English audio)")
         for (type in listOf("sub", "dub")) {
             val url =
                 "https://vidflow.animetvplus.com/watch.m3u8?mal=$mal&episode=$episode&type=$type&quality=1080p"
@@ -506,9 +675,8 @@ object AtvpSources {
                 if (resp.isSuccessful) (resp.url.takeIf { it.isNotBlank() } ?: url) else null
             }.getOrNull() ?: continue
 
-            val label = if (type == "dub") "VidFlow (Dub)" else "VidFlow"
             callback(
-                newExtractorLink(SRC, label, finalUrl, type = ExtractorLinkType.M3U8) {
+                newExtractorLink(SRC, labels[type] ?: "VidFlow", finalUrl, type = ExtractorLinkType.M3U8) {
                     this.referer = "${AtvpApi.SITE}/"
                 }
             )

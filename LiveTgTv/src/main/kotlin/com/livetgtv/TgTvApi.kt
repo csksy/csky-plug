@@ -1,0 +1,298 @@
+package com.livetgtv
+
+import com.lagradost.cloudstream3.app
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Network layer for livetgtv.lovable.app ("TG TV") and its two data mirrors,
+ * every endpoint and response shape captured from the site's own traffic and
+ * re-verified live:
+ *
+ *  channels   jjtvxweb.pages.dev/jstr4web.json     - the full channel list with
+ *             per channel DRM keys and the fallback stream urls
+ *  stream cfg livetgtv.lovable.app/_serverFn/<hash> - the site's own player
+ *             config: fresh CDN tokens, clear keys and backup servers
+ *  cookies    allinonereborn2.online                - the rotating JioTV CDN
+ *             tokens the embedded player uses (global + per Star channel)
+ */
+object TgTvApi {
+
+    const val SITE = "https://livetgtv.lovable.app"
+    const val CHANNELS_URL = "https://jjtvxweb.pages.dev/jstr4web.json"
+    const val COOKIE_PRIMARY = "https://allinonereborn2.online/jstrweb2/cookies.json"
+    const val COOKIE_STAR = "https://allinonereborn2.online/jtv-fetch/jstarcookie/cookie.json"
+
+    /** Function id baked into the bundle the site ships today. */
+    private const val KNOWN_FN = "211ba18c9fcbaf4e68e5bb262905070b60b7ed4ffe802d16fbbed00150f1c024"
+
+    const val UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+
+    /** Headers the site's own player sends to its edge and the JioTV CDNs. */
+    val siteHeaders = mapOf(
+        "User-Agent" to UA,
+        "Accept" to "*/*",
+        "Origin" to SITE,
+        "Referer" to "$SITE/"
+    )
+
+    /** Headers the embedded fallback player (jjtvxweb) sends to the CDNs. */
+    val playerHeaders = mapOf(
+        "User-Agent" to "plaYtv/7.1.5",
+        "Accept" to "*/*",
+        "Referer" to "https://www.jiotv.com/"
+    )
+
+    // ---------------------------------------------------------------- channel list
+
+    private const val CHANNELS_TTL = 10L * 60L * 1000L
+
+    @Volatile
+    private var channelsCache: List<JSONObject> = emptyList()
+
+    @Volatile
+    private var channelsAt = 0L
+
+    /**
+     * The shared channel list. The raw file is a JSON array (the site wraps it
+     * when it is not), entries without id and name are dropped the same way
+     * the site's own loader drops them.
+     */
+    suspend fun channels(): List<JSONObject> {
+        val now = System.currentTimeMillis()
+        if (channelsCache.isNotEmpty() && now - channelsAt < CHANNELS_TTL) return channelsCache
+        return try {
+            val text = app.get(CHANNELS_URL, headers = mapOf("User-Agent" to UA), timeout = 20L).text
+            val trimmed = text.trim()
+            val arr = if (trimmed.startsWith("[")) JSONArray(trimmed) else JSONArray("[$trimmed]")
+            val out = mutableListOf<JSONObject>()
+            for (i in 0 until arr.length()) {
+                val c = arr.optJSONObject(i) ?: continue
+                if (c.optString("id").isBlank() || c.optString("name").isBlank()) continue
+                out.add(c)
+            }
+            channelsCache = out
+            channelsAt = now
+            out
+        } catch (_: Exception) {
+            channelsCache
+        }
+    }
+
+    fun channelById(id: String): JSONObject? = channelsCache.firstOrNull { it.optString("id") == id }
+
+    // ---------------------------------------------------------------- serverFn
+
+    @Volatile
+    private var fnHash: String? = null
+
+    /**
+     * The stream config endpoint. The function id rotates when the site
+     * redeploys: the known id is used first and when it stops answering the
+     * live bundle is walked (index html -> entry js -> servers js) to read
+     * the current id out of it, the same chain the browser follows.
+     */
+    suspend fun serverFn(id: String): JSONObject? {
+        val first = fnHash ?: KNOWN_FN
+        fetchServerFn(first, id)?.let { return it }
+        val discovered = discoverFnHash() ?: return null
+        if (discovered == first) return null
+        fnHash = discovered
+        return fetchServerFn(discovered, id)
+    }
+
+    private suspend fun fetchServerFn(hash: String, id: String): JSONObject? {
+        return try {
+            val text = app.get(
+                "$SITE/_serverFn/$hash?payload=${buildPayload(id)}",
+                headers = siteHeaders + mapOf("Referer" to "$SITE/watch/$id"),
+                timeout = 15L
+            ).text
+            if (text.isBlank()) null else decodeEnvelope(text)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * The serialized argument envelope the site's client sends, url-encoded
+     * into the payload query parameter.
+     */
+    private fun buildPayload(id: String): String {
+        val inner = JSONObject().put("t", 1).put("s", id)
+        val arg = JSONObject()
+            .put("t", 10)
+            .put("i", 1)
+            .put(
+                "p",
+                JSONObject()
+                    .put("k", JSONArray().put("id"))
+                    .put("v", JSONArray().put(inner))
+            )
+            .put("o", 0)
+        val envelope = JSONObject()
+            .put("t", 10)
+            .put("i", 0)
+            .put(
+                "p",
+                JSONObject()
+                    .put("k", JSONArray().put("data"))
+                    .put("v", JSONArray().put(arg))
+            )
+            .put("o", 0)
+        val root = JSONObject()
+            .put("t", envelope)
+            .put("f", 127)
+            .put("m", JSONArray())
+        return java.net.URLEncoder.encode(root.toString(), "UTF-8")
+    }
+
+    /** Decodes the response envelope and returns its "result" object. */
+    private fun decodeEnvelope(text: String): JSONObject? {
+        return try {
+            val decoded = decodeNode(JSONObject(text))
+            (decoded as? JSONObject)?.optJSONObject("result")
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Decodes the tagged-value tree the server function answers with:
+     * t 1 string, t 2 number, t 9 array, t 10 object, t 11 null.
+     */
+    private fun decodeNode(node: Any?): Any? {
+        return when (node) {
+            is JSONObject -> when (node.optInt("t", -1)) {
+                1 -> node.optString("s")
+                2 -> node.opt("s") ?: JSONObject.NULL
+                9 -> {
+                    val out = JSONArray()
+                    val a = node.optJSONArray("a")
+                    if (a != null) for (i in 0 until a.length()) out.put(decodeNode(a.opt(i)) ?: JSONObject.NULL)
+                    out
+                }
+                10 -> {
+                    val p = node.optJSONObject("p") ?: return JSONObject.NULL
+                    val out = JSONObject()
+                    val keys = p.optJSONArray("k")
+                    val values = p.optJSONArray("v")
+                    if (keys != null && values != null) {
+                        for (i in 0 until keys.length()) {
+                            if (i >= values.length()) break
+                            out.put(keys.optString(i), decodeNode(values.opt(i)) ?: JSONObject.NULL)
+                        }
+                    }
+                    out
+                }
+                11 -> JSONObject.NULL
+                else -> JSONObject.NULL
+            }
+            else -> JSONObject.NULL
+        }
+    }
+
+    private suspend fun discoverFnHash(): String? {
+        return try {
+            val html = app.get(SITE, headers = mapOf("User-Agent" to UA), timeout = 15L).text
+            val entryJs = Regex("""(/assets/index-[A-Za-z0-9._-]+\.js)""").find(html)?.groupValues?.get(1)
+                ?: return null
+            val entry = app.get("$SITE$entryJs", headers = mapOf("User-Agent" to UA), timeout = 15L).text
+            val serversJs = Regex("""(/assets/servers-[A-Za-z0-9._-]+\.js)""").find(entry)?.groupValues?.get(1)
+                ?: return null
+            val servers = app.get("$SITE$serversJs", headers = mapOf("User-Agent" to UA), timeout = 15L).text
+            Regex("[0-9a-f]{64}").find(servers)?.value
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ---------------------------------------------------------------- CDN cookies
+
+    private val cookieCache = ConcurrentHashMap<String, Pair<String, Long>>()
+    private const val COOKIE_TTL = 4L * 60L * 1000L
+
+    /**
+     * The global jiotvmblive token. The endpoint answers an array whose first
+     * entry with a cookie field carries the live token; from some networks it
+     * serves an interstitial page instead, which simply means no cookie.
+     */
+    suspend fun primaryCookie(): String {
+        val cached = cookieCache["primary"]
+        val now = System.currentTimeMillis()
+        if (cached != null && now - cached.second < COOKIE_TTL) return cached.first
+        val token = try {
+            val text = app.get(
+                COOKIE_PRIMARY,
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Accept" to "application/json",
+                    "Referer" to "https://jjtvxweb.pages.dev/"
+                ),
+                timeout = 12L
+            ).text
+            val arr = JSONArray(text.trim())
+            var out = ""
+            for (i in 0 until arr.length()) {
+                val e = arr.optJSONObject(i) ?: continue
+                val c = e.optString("cookie")
+                if (c.isNotBlank()) {
+                    out = c
+                    break
+                }
+            }
+            out
+        } catch (_: Exception) {
+            ""
+        }
+        if (token.isNotBlank()) cookieCache["primary"] = token to now
+        return token
+    }
+
+    /**
+     * The per channel token the Star (jiotvpllive) streams need. Both result
+     * buckets can carry the final url with the token in it, matching the
+     * embedded player's own extraction.
+     */
+    suspend fun starCookie(id: String): String {
+        val cached = cookieCache["star-$id"]
+        val now = System.currentTimeMillis()
+        if (cached != null && now - cached.second < COOKIE_TTL) return cached.first
+        val token = try {
+            val text = app.get(
+                COOKIE_STAR,
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Accept" to "application/json",
+                    "Referer" to "https://jjtvxweb.pages.dev/"
+                ),
+                timeout = 12L
+            ).text
+            val root = JSONObject(text.trim())
+            var out = ""
+            val buckets = listOf(root.optJSONArray("successful_results"), root.optJSONArray("failed_results"))
+            outer@ for (bucket in buckets) {
+                if (bucket == null) continue
+                for (i in 0 until bucket.length()) {
+                    val e = bucket.optJSONObject(i) ?: continue
+                    if (e.optString("channel_id") != id) continue
+                    val details = e.optJSONObject("error_details")
+                    val finalUrl = e.optString("final_url").ifBlank { details?.optString("final_url") ?: "" }
+                    val m = Regex("[?&]__hdnea__=([^&]+)").find(finalUrl)
+                        ?: Regex("__hdnea__=([^&]+)").find(finalUrl)
+                    if (m != null) {
+                        out = "__hdnea__=" + m.groupValues[1]
+                        break@outer
+                    }
+                }
+            }
+            out
+        } catch (_: Exception) {
+            ""
+        }
+        if (token.isNotBlank()) cookieCache["star-$id"] = token to now
+        return token
+    }
+}
