@@ -63,18 +63,16 @@ class VidCloudProvider : MainAPI() {
         return s.takeIf { it.length == 24 && it.matches(Regex("[0-9a-f]{24}")) }
     }
 
-    private fun toSearch(b: JSONObject): SearchResponse? {
-        val id = b.optString("batch_id")
-        val name = b.optString("name")
-        if (id.isBlank() || name.isBlank()) return null
-        return newMovieSearchResponse(name, batchUrl(id), TvType.TvSeries) {
-            posterUrl = b.optString("photo").takeIf { it.startsWith("http") }
+    private fun toSearch(b: VidCloudApi.BatchEntry): SearchResponse? {
+        if (b.id.isBlank() || b.name.isBlank()) return null
+        return newMovieSearchResponse(b.name, batchUrl(b.id), TvType.TvSeries) {
+            posterUrl = b.photo.takeIf { it.startsWith("http") }
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val all = VidCloudApi.batches()
-        val filtered = if (request.data == "all") all else all.filter { it.optString("exam") == request.data }
+        val filtered = if (request.data == "all") all else all.filter { it.exam == request.data }
         val from = (page - 1) * PAGE_SIZE
         val slice = if (from >= filtered.size) emptyList()
         else filtered.subList(from, minOf(from + PAGE_SIZE, filtered.size))
@@ -86,7 +84,7 @@ class VidCloudProvider : MainAPI() {
         val q = query.trim().lowercase()
         if (q.isBlank()) return emptyList()
         return VidCloudApi.batches()
-            .filter { it.optString("name").lowercase().contains(q) }
+            .filter { it.name.lowercase().contains(q) }
             .take(50)
             .mapNotNull(::toSearch)
     }

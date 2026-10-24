@@ -104,7 +104,7 @@ object VidCloudApi {
                     try {
                         val resp = app.get(SITE + path, headers = apiHeaders(UA, "", ""), timeout = 10L)
                         if (resp.isSuccessful) {
-                            okJson(resp.text)?.let { fastLane = 1; return it }
+                            okJson(resp.textLarge)?.let { fastLane = 1; return it }
                             findings.add("plain: not json")
                         } else findings.add("plain: ${resp.code}")
                     } catch (e: Exception) {
@@ -125,7 +125,7 @@ object VidCloudApi {
                             timeout = 10L
                         )
                         if (resp.isSuccessful) {
-                            okJson(resp.text)?.let { fastLane = 2; return it }
+                            okJson(resp.textLarge)?.let { fastLane = 2; return it }
                             findings.add("session: not json")
                         } else findings.add("session: ${resp.code}")
                     } catch (e: Exception) {
@@ -154,38 +154,161 @@ object VidCloudApi {
 
     private const val BATCHES_TTL = 30L * 60L * 1000L
 
+    /**
+     * The four catalog fields anything downstream ever reads; the mirror
+     * carries seventeen thousand entries, so keeping whole json objects for
+     * all of them would hold tens of megabytes on the heap for nothing.
+     */
+    class BatchEntry(val id: String, val name: String, val exam: String, val photo: String)
+
     @Volatile
-    private var batchesCache: List<JSONObject> = emptyList()
+    private var batchesCache: List<BatchEntry> = emptyList()
 
     @Volatile
     private var batchesAt = 0L
 
+    // the mirror ships an etag, so a refresh after the ttl revalidates for
+    // the price of an empty 304 instead of the whole file again
+    @Volatile
+    private var batchesEtag: String? = null
+
     /**
-     * The catalog mirror is a plain static file, so a failure here is a real
-     * failure and travels out instead of an empty page.
+     * The catalog mirror is a plain static file - several megabytes, which
+     * is over what the plain .text accessor allows by design, so the body is
+     * read with .textLarge and walked one element at a time instead of ever
+     * holding the whole thing as json. A failure here is a real failure and
+     * travels out instead of an empty page.
      */
-    suspend fun batches(): List<JSONObject> {
+    suspend fun batches(): List<BatchEntry> {
         val now = System.currentTimeMillis()
         if (batchesCache.isNotEmpty() && now - batchesAt < BATCHES_TTL) return batchesCache
-        val text = try {
-            app.get(BATCHES_URL, headers = mapOf("User-Agent" to UA), timeout = 30L).text
+        val headers = mutableMapOf("User-Agent" to UA)
+        batchesEtag?.let { headers["If-None-Match"] = it }
+        val resp = try {
+            app.get(BATCHES_URL, headers = headers, timeout = 60L)
         } catch (e: Exception) {
             throw SiteException("catalog unreachable: ${e.message ?: e.javaClass.simpleName}")
         }
-        val arr = try {
-            JSONObject(text).optJSONArray("data")
-        } catch (_: Exception) {
-            null
-        } ?: throw SiteException("catalog unreadable")
-        val out = mutableListOf<JSONObject>()
-        for (i in 0 until arr.length()) {
-            val b = arr.optJSONObject(i) ?: continue
-            if (b.optString("batch_id").isBlank() || b.optString("name").isBlank()) continue
-            out.add(b)
+        if (resp.code == 304 && batchesCache.isNotEmpty()) {
+            batchesAt = now
+            return batchesCache
         }
+        if (!resp.isSuccessful) {
+            throw SiteException("catalog unreachable: HTTP ${resp.code}")
+        }
+        val text = try {
+            resp.textLarge
+        } catch (e: Exception) {
+            throw SiteException("catalog unreadable: ${e.message ?: e.javaClass.simpleName}")
+        }
+        val out = parseBatches(text)
+        if (out.isEmpty()) throw SiteException("catalog unreadable")
+        resp.headers["etag"]?.let { batchesEtag = it }
         batchesCache = out
         batchesAt = now
         return out
+    }
+
+    /**
+     * Walks the data array straight off the raw text: one element at a time,
+     * each closed by its own brace balance, so only the four kept fields ever
+     * reach the heap. The data key is only honored where it sits at the top
+     * level outside every string, and an element's fields are unescaped by
+     * the json parser itself because some of the site's values carry escaped
+     * quotes in them.
+     */
+    private fun parseBatches(text: String): List<BatchEntry> {
+        val out = mutableListOf<BatchEntry>()
+        val n = text.length
+        var i = 0
+        if (n > 0 && text[0] == '\uFEFF') i = 1
+
+        // find the top level data array: a "data" key seen at depth one,
+        // outside every string, followed by its value opening bracket
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var dataStart = -1
+        var searchKey = true
+        while (i < n && dataStart < 0) {
+            val c = text[i]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+            } else when (c) {
+                '"' -> {
+                    inString = true
+                    if (depth == 1 && searchKey && text.startsWith("\"data\"", i)) {
+                        var j = i + 6
+                        while (j < n && text[j].isWhitespace()) j++
+                        if (j < n && text[j] == ':') {
+                            j++
+                            while (j < n && text[j].isWhitespace()) j++
+                            if (j < n && text[j] == '[') dataStart = j + 1
+                        }
+                    }
+                }
+
+                '{' -> depth++
+                '}' -> depth--
+                ':' -> searchKey = false
+                ',' -> searchKey = true
+            }
+            i++
+        }
+        if (dataStart < 0) return out
+
+        // one brace-balanced element at a time
+        i = dataStart
+        while (i < n) {
+            val c = text[i]
+            if (c == ']') return out
+            if (c != '{') {
+                i++
+                continue
+            }
+            var brace = 0
+            var j = i
+            var str = false
+            var esc = false
+            while (j < n) {
+                val d = text[j]
+                if (str) {
+                    when {
+                        esc -> esc = false
+                        d == '\\' -> esc = true
+                        d == '"' -> str = false
+                    }
+                } else when (d) {
+                    '"' -> str = true
+                    '{' -> brace++
+                    '}' -> {
+                        brace--
+                        if (brace == 0) break
+                    }
+                }
+                j++
+            }
+            if (brace != 0) return out
+            entryOf(text.substring(i, j + 1))?.let { out.add(it) }
+            i = j + 1
+        }
+        return out
+    }
+
+    private fun entryOf(element: String): BatchEntry? {
+        val o = try {
+            JSONObject(element)
+        } catch (_: Exception) {
+            return null
+        }
+        val id = o.optString("batch_id")
+        val name = o.optString("name")
+        if (id.isBlank() || name.isBlank()) return null
+        return BatchEntry(id, name, o.optString("exam"), o.optString("photo"))
     }
 
     class SiteException(message: String) : Exception(message)
