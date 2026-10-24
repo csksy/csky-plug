@@ -1,20 +1,19 @@
 package com.vidcloud
 
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
-import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 
@@ -95,8 +94,13 @@ class VidCloudProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val id = batchIdOf(url)
             ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Batch not found: $url")
-        val details = VidCloudApi.details(id)
-            ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Batch not found: $id")
+        val details = when (val r = VidCloudApi.details(id)) {
+            is VidCloudApi.SiteResult.Fail ->
+                throw com.lagradost.cloudstream3.ErrorLoadingException(
+                    "Could not reach vidcloud.eu.org (${r.reason})"
+                )
+            is VidCloudApi.SiteResult.Ok -> r.json.optJSONObject("data")
+        } ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Batch not found: $id")
 
         val title = details.optString("name").takeIf { it.isNotBlank() }
             ?: details.optString("batchName").takeIf { it.isNotBlank() }
@@ -113,10 +117,12 @@ class VidCloudProvider : MainAPI() {
         }
 
         // one topics call per subject, throttled the way the other providers
-        // here fetch seasons in parallel
+        // here fetch seasons in parallel; a transport that answers once keeps
+        // answering, so the first subject warms it for the rest
         val episodes = mutableListOf<com.lagradost.cloudstream3.Episode>()
+        val topicFailures = java.util.concurrent.atomic.AtomicInteger(0)
         kotlinx.coroutines.coroutineScope {
-            val gate = kotlinx.coroutines.sync.Semaphore(6)
+            val gate = Semaphore(6)
             val jobs = (0 until subjects.length()).map { s ->
                 async(Dispatchers.IO) {
                     gate.withPermit {
@@ -125,29 +131,42 @@ class VidCloudProvider : MainAPI() {
                         if (subjectId.isBlank()) return@withPermit null
                         val subjectTitle = subject.optString("subject")
                         val list = mutableListOf<com.lagradost.cloudstream3.Episode>()
-                        var n = 0
-                        for (topic in VidCloudApi.topics(id, subjectId)) {
-                            val topicId = topic.optString("_id")
-                            val topicName = topic.optString("name")
-                            if (topicId.isBlank() || topicName.isBlank()) continue
-                            n++
-                            list.add(
-                                newEpisode(topicUrl(id, subjectId, topicId, topicName)) {
-                                    this.name = topicName
-                                    this.season = s + 1
-                                    this.episode = n
-                                    this.posterUrl = photo.ifBlank { null }
-                                    this.description = "$subjectTitle - $topicName"
+                        when (val r = VidCloudApi.topics(id, subjectId)) {
+                            is VidCloudApi.SiteResult.Fail -> {
+                                topicFailures.incrementAndGet()
+                                null
+                            }
+                            is VidCloudApi.SiteResult.Ok -> {
+                                var n = 0
+                                for (topic in VidCloudApi.dataArrayOf(r)) {
+                                    val topicId = topic.optString("_id")
+                                    val topicName = topic.optString("name")
+                                    if (topicId.isBlank() || topicName.isBlank()) continue
+                                    n++
+                                    list.add(
+                                        newEpisode(topicUrl(id, subjectId, topicId, topicName)) {
+                                            this.name = topicName
+                                            this.season = s + 1
+                                            this.episode = n
+                                            this.posterUrl = photo.ifBlank { null }
+                                            this.description = "$subjectTitle - $topicName"
+                                        }
+                                    )
                                 }
-                            )
+                                list
+                            }
                         }
-                        list
                     }
                 }
             }
             jobs.forEach { job ->
                 runCatching { episodes.addAll(job.await() ?: return@forEach) }
             }
+        }
+        if (topicFailures.get() > 0 && episodes.isEmpty() && subjects.length() > 0) {
+            throw com.lagradost.cloudstream3.ErrorLoadingException(
+                "Could not reach vidcloud.eu.org (topics: ${topicFailures.get()}/${subjects.length()} failed)"
+            )
         }
 
         return newTvSeriesLoadResponse(title, batchUrl(id), TvType.TvSeries, episodes) {
@@ -162,19 +181,22 @@ class VidCloudProvider : MainAPI() {
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        subtitleCallback: (com.lagradost.cloudstream3.SubtitleFile) -> Unit,
+        callback: (com.lagradost.cloudstream3.utils.ExtractorLink) -> Unit
     ): Boolean {
         val s = data.trim()
         val m = Regex("/#content/batch/([0-9a-f]{24})/subject/([0-9a-f]{24})/topic/([0-9a-f]{24})").find(s)
             ?: return false
         val (batchId, subjectId, topicId) = m.destructured
-        val details = VidCloudApi.details(batchId)
-        val subjectName = details?.optJSONArray("subjects")?.let { subs ->
-            (0 until subs.length())
-                .mapNotNull { subs.optJSONObject(it) }
-                .firstOrNull { it.optString("_id") == subjectId }
-                ?.optString("subject")
+        val subjectName = when (val r = VidCloudApi.details(batchId)) {
+            is VidCloudApi.SiteResult.Ok -> r.json.optJSONObject("data")?.optJSONArray("subjects")
+                ?.let { subs ->
+                    (0 until subs.length())
+                        .mapNotNull { subs.optJSONObject(it) }
+                        .firstOrNull { it.optString("_id") == subjectId }
+                        ?.optString("subject")
+                }
+            is VidCloudApi.SiteResult.Fail -> null
         } ?: ""
         val topicName = episodesTopicName(s) ?: "Topic"
 

@@ -174,22 +174,39 @@ class TopicDialogFragment : DialogFragment() {
                 val lectures = mutableListOf<VidCloudApi.Lecture>()
                 val pdfs = mutableListOf<VidCloudApi.PdfRef>()
                 val tests = mutableListOf<JSONObject>()
+                val failures = mutableListOf<String>()
 
                 for (type in listOf("videos", "DppVideos")) {
-                    VidCloudApi.contents(subjectId, topicId, type).forEach { item ->
-                        VidCloudApi.toLecture(item)?.let { lectures.add(it) }
+                    when (val r = VidCloudApi.contents(subjectId, topicId, type)) {
+                        is VidCloudApi.SiteResult.Fail -> failures.add(r.reason)
+                        is VidCloudApi.SiteResult.Ok ->
+                            VidCloudApi.dataArrayOf(r).forEach { item ->
+                                VidCloudApi.toLecture(item)?.let { lectures.add(it) }
+                            }
                     }
                 }
                 for (type in listOf("notes", "DppNotes")) {
-                    pdfs.addAll(VidCloudApi.toPdfRefs(VidCloudApi.contents(subjectId, topicId, type)))
+                    when (val r = VidCloudApi.contents(subjectId, topicId, type)) {
+                        is VidCloudApi.SiteResult.Fail -> failures.add(r.reason)
+                        is VidCloudApi.SiteResult.Ok ->
+                            pdfs.addAll(VidCloudApi.toPdfRefs(VidCloudApi.dataArrayOf(r)))
+                    }
                 }
-                VidCloudApi.dppTests(batchId, subjectId, topicId).forEach { entry ->
-                    VidCloudApi.testOf(entry)?.let { tests.add(it) }
+                when (val r = VidCloudApi.dppTests(batchId, subjectId, topicId)) {
+                    is VidCloudApi.SiteResult.Fail -> failures.add(r.reason)
+                    is VidCloudApi.SiteResult.Ok ->
+                        VidCloudApi.dataArrayOf(r).forEach { entry ->
+                            VidCloudApi.testOf(entry)?.let { tests.add(it) }
+                        }
                 }
 
                 withContext(Dispatchers.Main) {
                     if (!isAdded) return@withContext
-                    buildRows(topic, subject, batchId, subjectId, topicId, lectures, pdfs, tests)
+                    buildRows(
+                        topic, subject, batchId, subjectId, topicId,
+                        lectures, pdfs, tests,
+                        failures.distinct().takeIf { it.isNotEmpty() }?.joinToString("\n"),
+                    )
                 }
             }
         }
@@ -215,13 +232,17 @@ class TopicDialogFragment : DialogFragment() {
         lectures: List<VidCloudApi.Lecture>,
         pdfs: List<VidCloudApi.PdfRef>,
         tests: List<JSONObject>,
+        failure: String? = null,
     ) {
         list.removeAllViews()
         val activity = activity as? AppCompatActivity ?: return
 
         if (lectures.isEmpty() && pdfs.isEmpty() && tests.isEmpty()) {
             list.addView(TextView(requireContext()).apply {
-                text = "No material under this topic yet."
+                text = when {
+                    failure != null -> "Couldn't reach the site.\n$failure"
+                    else -> "No material under this topic yet."
+                }
                 textSize = 14f
                 setTextColor(Color.parseColor("#8E8E93"))
                 setPadding(dp(16), dp(16), dp(16), dp(16))

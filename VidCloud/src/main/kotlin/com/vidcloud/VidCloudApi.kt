@@ -21,9 +21,11 @@ import android.util.Base64
  *              subject, the page batch does not carry the study material
  *  dpp tests   vidcloud.eu.org/api/v3/test-service/tests/new-dpp-list
  *
- * The api sits behind the site's php session: / hands out PHPSESSID,
- * generate_token.php mints the bearer the proxy wants, and both are replayed
- * on every api call together with the client headers the site sends.
+ * The site's edge refuses plain http clients on the api paths, so every api
+ * read goes three deep: plain, with the webview's harvested session, and
+ * finally from inside the site's own page where the request rides the
+ * webview's browser stack. Whatever happens, the real reason travels back
+ * out - a blocked read is never an empty one.
  *
  * play.php encrypts the stream url and the drm fields into hidden inputs
  * before the page ships; the player script walks them back with a fixed
@@ -45,86 +47,107 @@ object VidCloudApi {
     const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 
-    private val randomId = UUID.randomUUID().toString()
+    val randomId = UUID.randomUUID().toString()
 
-    @Volatile
-    private var sessionCookie = ""
+    // ------------------------------------------------------------- results
 
-    @Volatile
-    private var bearer = ""
+    sealed class SiteResult {
+        class Ok(val json: JSONObject) : SiteResult()
+        class Fail(val reason: String) : SiteResult()
+    }
 
-    @Volatile
-    private var tokenAt = 0L
-
-    private const val TOKEN_TTL = 10L * 60L * 1000L
-
-    /**
-     * A live php session: / seeds PHPSESSID, generate_token.php exchanges it
-     * for the bearer. Anything that fails is left empty - the api answers
-     * for the parts it does not gate on it.
-     */
-    private suspend fun ensureSession(force: Boolean = false) {
-        if (!force && bearer.isNotBlank() && System.currentTimeMillis() - tokenAt < TOKEN_TTL) return
-        try {
-            val root = app.get(
-                SITE,
-                headers = mapOf("User-Agent" to UA, "Accept" to "text/html", "Referer" to "$SITE/"),
-                timeout = 15L
-            )
-            val sess = root.headers.values("Set-Cookie")
-                .mapNotNull { Regex("PHPSESSID=([a-z0-9]+)").find(it)?.groupValues?.get(1) }
-                .firstOrNull()
-            if (sess != null) sessionCookie = "PHPSESSID=$sess"
+    private fun okJson(text: String): SiteResult? {
+        if (text.isBlank()) return null
+        return try {
+            SiteResult.Ok(JSONObject(text))
         } catch (_: Exception) {
-        }
-        try {
-            val tokenText = app.get(
-                "$SITE/generate_token.php",
-                headers = mapOf(
-                    "User-Agent" to UA,
-                    "Accept" to "*/*",
-                    "Referer" to "$SITE/",
-                ) + cookieHeader(),
-                timeout = 15L
-            ).text
-            val t = JSONObject(tokenText).optString("access_token")
-            if (t.isNotBlank()) {
-                bearer = t
-                tokenAt = System.currentTimeMillis()
-            }
-        } catch (_: Exception) {
+            null
         }
     }
 
-    private fun cookieHeader(): Map<String, String> {
-        val out = mutableMapOf<String, String>()
-        val parts = mutableListOf<String>()
-        if (sessionCookie.isNotBlank()) parts.add(sessionCookie)
-        if (bearer.isNotBlank()) parts.add("auth_token=$bearer")
-        if (parts.isNotEmpty()) out["Cookie"] = parts.joinToString("; ")
-        return out
-    }
-
-    private suspend fun apiGet(url: String): JSONObject? {
-        ensureSession()
-        val headers = mapOf(
-            "User-Agent" to UA,
+    private fun apiHeaders(ua: String, cookie: String, token: String): Map<String, String> {
+        val out = mutableMapOf(
+            "User-Agent" to ua,
             "Accept" to "application/json, text/plain, */*",
             "Referer" to "$SITE/",
             "Origin" to SITE,
-            "Authorization" to "Bearer $bearer",
             "Randomid" to randomId,
             "Client-Type" to "WEB",
             "Client-Id" to "5eb393ee95fab7468a79d189",
             "Client-Version" to "2.1.6",
             "Version" to "0.0.1",
-        ) + cookieHeader()
-        return try {
-            val text = app.get(url, headers = headers, timeout = 20L).text
-            if (text.isBlank()) null else JSONObject(text)
-        } catch (_: Exception) {
-            null
+        )
+        if (token.isNotBlank()) out["Authorization"] = "Bearer $token"
+        if (cookie.isNotBlank()) out["Cookie"] = cookie
+        return out
+    }
+
+    // the transport that answered last goes first the next time; a transport
+    // that stops answering resets it
+    @Volatile
+    private var fastLane = 0
+
+    /**
+     * One api read, three transports deep. The note on a Fail carries what
+     * each transport actually saw so the surface can show the real reason.
+     */
+    suspend fun siteJson(path: String): SiteResult {
+        val order = when (fastLane) {
+            3 -> listOf(3, 1, 2)
+            2 -> listOf(2, 1, 3)
+            else -> listOf(1, 2, 3)
         }
+        val findings = mutableListOf<String>()
+        for (lane in order) {
+            when (lane) {
+                1 -> {
+                    try {
+                        val resp = app.get(SITE + path, headers = apiHeaders(UA, "", ""), timeout = 10L)
+                        if (resp.isSuccessful) {
+                            okJson(resp.text)?.let { fastLane = 1; return it }
+                            findings.add("plain: not json")
+                        } else findings.add("plain: ${resp.code}")
+                    } catch (e: Exception) {
+                        findings.add("plain: ${e.message ?: e.javaClass.simpleName}")
+                    }
+                }
+                2 -> {
+                    val jar = VidCloudWebView.cookies()
+                    val ua = VidCloudWebView.userAgent() ?: UA
+                    if (jar.isNullOrBlank()) {
+                        findings.add("session: none yet")
+                        continue
+                    }
+                    try {
+                        val resp = app.get(
+                            SITE + path,
+                            headers = apiHeaders(ua, jar, VidCloudWebView.token() ?: ""),
+                            timeout = 10L
+                        )
+                        if (resp.isSuccessful) {
+                            okJson(resp.text)?.let { fastLane = 2; return it }
+                            findings.add("session: not json")
+                        } else findings.add("session: ${resp.code}")
+                    } catch (e: Exception) {
+                        findings.add("session: ${e.message ?: e.javaClass.simpleName}")
+                    }
+                }
+                3 -> {
+                    val got = VidCloudWebView.fetch(path)
+                    if (got == null) {
+                        findings.add("page: no webview")
+                        continue
+                    }
+                    val (status, body) = got
+                    if (status in 200..299) {
+                        okJson(body)?.let { fastLane = 3; return it }
+                        findings.add("page: not json")
+                    } else findings.add("page: $status")
+                }
+            }
+        }
+        if (fastLane != 0) fastLane = 0
+        return SiteResult.Fail(findings.distinct().joinToString("; ").ifBlank { "no transport answered" })
     }
 
     // ------------------------------------------------------------- catalog
@@ -137,63 +160,79 @@ object VidCloudApi {
     @Volatile
     private var batchesAt = 0L
 
+    /**
+     * The catalog mirror is a plain static file, so a failure here is a real
+     * failure and travels out instead of an empty page.
+     */
     suspend fun batches(): List<JSONObject> {
         val now = System.currentTimeMillis()
         if (batchesCache.isNotEmpty() && now - batchesAt < BATCHES_TTL) return batchesCache
-        return try {
-            val text = app.get(BATCHES_URL, headers = mapOf("User-Agent" to UA), timeout = 30L).text
-            val arr = JSONObject(text).optJSONArray("data") ?: return batchesCache
-            val out = mutableListOf<JSONObject>()
-            for (i in 0 until arr.length()) {
-                val b = arr.optJSONObject(i) ?: continue
-                if (b.optString("batch_id").isBlank() || b.optString("name").isBlank()) continue
-                out.add(b)
-            }
-            batchesCache = out
-            batchesAt = now
-            out
-        } catch (_: Exception) {
-            batchesCache
+        val text = try {
+            app.get(BATCHES_URL, headers = mapOf("User-Agent" to UA), timeout = 30L).text
+        } catch (e: Exception) {
+            throw SiteException("catalog unreachable: ${e.message ?: e.javaClass.simpleName}")
         }
+        val arr = try {
+            JSONObject(text).optJSONArray("data")
+        } catch (_: Exception) {
+            null
+        } ?: throw SiteException("catalog unreadable")
+        val out = mutableListOf<JSONObject>()
+        for (i in 0 until arr.length()) {
+            val b = arr.optJSONObject(i) ?: continue
+            if (b.optString("batch_id").isBlank() || b.optString("name").isBlank()) continue
+            out.add(b)
+        }
+        batchesCache = out
+        batchesAt = now
+        return out
     }
 
-    fun batchById(id: String): JSONObject? = batchesCache.firstOrNull { it.optString("batch_id") == id }
+    class SiteException(message: String) : Exception(message)
 
     // ------------------------------------------------------------- study api
 
-    suspend fun details(id: String): JSONObject? =
-        apiGet("$SITE/api/v3/batches/$id/details?type=EXPLORE_LEAD")?.optJSONObject("data")
+    private const val DETAILS_TTL = 10L * 60L * 1000L
+    private val detailsCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, SiteResult.Ok>>()
 
-    suspend fun topics(batchId: String, subjectId: String): List<JSONObject> {
-        val data = apiGet("$SITE/api/v2/batches/$batchId/subject/$subjectId/topics?page=1")
-            ?.optJSONArray("data") ?: return emptyList()
-        val out = mutableListOf<JSONObject>()
-        for (i in 0 until data.length()) {
-            data.optJSONObject(i)?.let { out.add(it) }
+    suspend fun details(id: String): SiteResult {
+        detailsCache[id]?.let { (at, ok) ->
+            if (System.currentTimeMillis() - at < DETAILS_TTL) return ok
         }
-        return out
+        return when (val r = siteJson("/api/v3/batches/$id/details?type=EXPLORE_LEAD")) {
+            is SiteResult.Ok -> {
+                detailsCache[id] = System.currentTimeMillis() to r
+                r
+            }
+            is SiteResult.Fail -> r
+        }
     }
 
-    suspend fun contents(subjectId: String, topicId: String, contentType: String): List<JSONObject> {
-        val url = "$SITE/api/v2/batches/$STUDY_BATCH/subject/$subjectId/contents" +
-            "?tag=$topicId&contentType=$contentType&page=1"
-        val data = apiGet(url)?.optJSONArray("data") ?: return emptyList()
-        val out = mutableListOf<JSONObject>()
-        for (i in 0 until data.length()) {
-            data.optJSONObject(i)?.let { out.add(it) }
-        }
-        return out
-    }
+    suspend fun topics(batchId: String, subjectId: String): SiteResult =
+        siteJson("/api/v2/batches/$batchId/subject/$subjectId/topics?page=1")
 
-    suspend fun dppTests(batchId: String, subjectId: String, topicId: String): List<JSONObject> {
-        val url = "$SITE/api/v3/test-service/tests/new-dpp-list" +
-            "?page=1&batchId=$batchId&batchSubjectId=$subjectId&chapterId=$topicId&dppType=ALL&limit=20"
-        val data = apiGet(url)?.optJSONArray("data") ?: return emptyList()
-        val out = mutableListOf<JSONObject>()
-        for (i in 0 until data.length()) {
-            data.optJSONObject(i)?.let { out.add(it) }
+    suspend fun contents(subjectId: String, topicId: String, contentType: String): SiteResult =
+        siteJson(
+            "/api/v2/batches/$STUDY_BATCH/subject/$subjectId/contents" +
+                "?tag=$topicId&contentType=$contentType&page=1"
+        )
+
+    suspend fun dppTests(batchId: String, subjectId: String, topicId: String): SiteResult =
+        siteJson(
+            "/api/v3/test-service/tests/new-dpp-list" +
+                "?page=1&batchId=$batchId&batchSubjectId=$subjectId&chapterId=$topicId&dppType=ALL&limit=20"
+        )
+
+    fun dataArrayOf(r: SiteResult): List<JSONObject> = when (r) {
+        is SiteResult.Fail -> emptyList()
+        is SiteResult.Ok -> {
+            val arr = r.json.optJSONArray("data") ?: return emptyList()
+            val out = mutableListOf<JSONObject>()
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { out.add(it) }
+            }
+            out
         }
-        return out
     }
 
     // ------------------------------------------------------------- lectures
@@ -258,32 +297,22 @@ object VidCloudApi {
      * empty.
      */
     suspend fun resolvePlay(playUrl: String): PlayPayload? {
-        return try {
-            val html = app.get(
-                playUrl,
-                headers = mapOf(
-                    "User-Agent" to UA,
-                    "Accept" to "text/html,application/xhtml+xml",
-                    "Referer" to "$SITE/",
-                ) + cookieHeader(),
-                timeout = 20L
-            ).text
-            fun field(id: String): String {
-                val m = Regex("id=\"$id\"\\s+value=\"([^\"]*)\"").find(html) ?: return ""
-                return fieldOf(m.groupValues[1])
-            }
-            val url = field("enc_video_url")
-            if (url.isBlank()) null
-            else PlayPayload(
-                url = url,
-                drmType = field("enc_drm_type"),
-                keyId = field("enc_key_id"),
-                keyValue = field("enc_key_value"),
-                licenseUrl = field("enc_license_url"),
-            )
-        } catch (_: Exception) {
-            null
+        val got = VidCloudWebView.fetch(playUrl.removePrefix(SITE)) ?: return null
+        val (status, html) = got
+        if (status !in 200..299) return null
+        fun field(id: String): String {
+            val m = Regex("id=\"$id\"\\s+value=\"([^\"]*)\"").find(html) ?: return ""
+            return fieldOf(m.groupValues[1])
         }
+        val url = field("enc_video_url")
+        if (url.isBlank()) return null
+        return PlayPayload(
+            url = url,
+            drmType = field("enc_drm_type"),
+            keyId = field("enc_key_id"),
+            keyValue = field("enc_key_value"),
+            licenseUrl = field("enc_license_url"),
+        )
     }
 
     fun decryptField(b64: String): String {

@@ -1,11 +1,13 @@
 package com.vidcloud
 
-import com.lagradost.cloudstream3.plugins.BasePlugin
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
-class VidCloudPlugin : BasePlugin() {
-    override fun load() {
+class VidCloudPlugin : Plugin() {
+    override fun load(context: Context) {
+        VidCloudWebView.init(context)
         registerMainAPI(VidCloudProvider())
     }
 }
