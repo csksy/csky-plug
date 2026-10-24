@@ -237,28 +237,51 @@ object TgTvApi {
 
     // ---------------------------------------------------------------- CDN cookies
 
-    private val cookieCache = ConcurrentHashMap<String, Pair<String, Long>>()
+    /**
+     * The two rotating cookie endpoints are shared by every channel, so the
+     * responses are fetched once per TTL and parsed per call - browsing a
+     * grid of channels no longer refetches the 78KB star file each time.
+     * From some networks they answer an interstitial page instead, which
+     * simply means no token.
+     */
     private const val COOKIE_TTL = 4L * 60L * 1000L
 
-    /**
-     * The global jiotvmblive token. The endpoint answers an array whose first
-     * entry with a cookie field carries the live token; from some networks it
-     * serves an interstitial page instead, which simply means no cookie.
-     */
-    suspend fun primaryCookie(): String {
-        val cached = cookieCache["primary"]
+    private val endpointCache = ConcurrentHashMap<String, Pair<String, Long>>()
+
+    private suspend fun endpointText(url: String): String {
+        val cached = endpointCache[url]
         val now = System.currentTimeMillis()
         if (cached != null && now - cached.second < COOKIE_TTL) return cached.first
-        val token = try {
+        return try {
             val text = app.get(
-                COOKIE_PRIMARY,
+                url,
                 headers = mapOf(
                     "User-Agent" to UA,
                     "Accept" to "application/json",
                     "Referer" to "https://jjtvxweb.pages.dev/"
                 ),
-                timeout = 12L
+                timeout = 15L
             ).text
+            if (text.isNotBlank()) {
+                endpointCache[url] = text to now
+                text
+            } else {
+                cached?.first ?: ""
+            }
+        } catch (_: Exception) {
+            cached?.first ?: ""
+        }
+    }
+
+    /**
+     * The global token every non-jiotvpllive cdn runs on. The endpoint answers
+     * an array whose first entry with a cookie field carries the live token
+     * (the first entries are update stamps without one).
+     */
+    suspend fun primaryCookie(): String {
+        val text = endpointText(COOKIE_PRIMARY)
+        if (text.isBlank()) return ""
+        return try {
             val arr = JSONArray(text.trim())
             var out = ""
             for (i in 0 until arr.length()) {
@@ -273,29 +296,17 @@ object TgTvApi {
         } catch (_: Exception) {
             ""
         }
-        if (token.isNotBlank()) cookieCache["primary"] = token to now
-        return token
     }
 
     /**
-     * The per channel token the Star (jiotvpllive) streams need. Both result
-     * buckets can carry the final url with the token in it, matching the
-     * embedded player's own extraction.
+     * The per channel token the jiotvpllive streams need - the only token
+     * class that host ever accepts. Both result buckets can carry the final
+     * url with the token in it, matching the embedded player's own extraction.
      */
     suspend fun starCookie(id: String): String {
-        val cached = cookieCache["star-$id"]
-        val now = System.currentTimeMillis()
-        if (cached != null && now - cached.second < COOKIE_TTL) return cached.first
-        val token = try {
-            val text = app.get(
-                COOKIE_STAR,
-                headers = mapOf(
-                    "User-Agent" to UA,
-                    "Accept" to "application/json",
-                    "Referer" to "https://jjtvxweb.pages.dev/"
-                ),
-                timeout = 12L
-            ).text
+        val text = endpointText(COOKIE_STAR)
+        if (text.isBlank()) return ""
+        return try {
             val root = JSONObject(text.trim())
             var out = ""
             val buckets = listOf(root.optJSONArray("successful_results"), root.optJSONArray("failed_results"))
@@ -318,7 +329,5 @@ object TgTvApi {
         } catch (_: Exception) {
             ""
         }
-        if (token.isNotBlank()) cookieCache["star-$id"] = token to now
-        return token
     }
 }

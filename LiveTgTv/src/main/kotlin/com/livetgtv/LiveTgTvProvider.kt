@@ -22,19 +22,35 @@ import org.json.JSONObject
 
 /**
  * TG TV (livetgtv.lovable.app) - the JioTV mirror the site runs, with every
- * channel it carries. Links are resolved exactly the way the site does:
+ * channel it carries. Every link is built exactly the way the site builds
+ * its own, verified request by request against the site's traffic:
  *
- *  1. the site's own server function hands out the stream config - urls with
- *     fresh CDN tokens, ClearKey DRM pairs and backup servers; tokenless
- *     urls are dead on the JioTV edge so the tokened variant of each stream
- *     is the one that gets emitted
- *  2. the channel list urls plus the rotating tokens from the embedded
- *     player's cookie endpoints cover the same CDNs when the server function
- *     is unreachable
+ *  the site's server picker (servers.js) offers one server per entry of the
+ *  stream config - the config's own urls first ("Server 1"), then each
+ *  backup as its own server ("Server 2", "Server 3", ...), and when they all
+ *  fail the page swaps to the embedded player (jjtvxweb pind), which plays
+ *  the channel list urls with the rotating cookie endpoints. This provider
+ *  emits the same ladder, one link per distinct stream:
  *
- * The CDN signs every request (manifest and segment alike). The manifest url
- * carries the token in its query and the same token rides as the __hdnea__
- * cookie so the player's segment requests pass the edge too.
+ *  1. Server 1 - the config's urls
+ *  2. Server 2.. - every backup's urls with the backup's own cookie and keys
+ *  3. the embedded player's urls - the channel list with the live cookies
+ *
+ *  The token that signs a url is fixed by its host, the same rule the
+ *  embedded player enforces (its own source): jiotvpllive only ever accepts
+ *  the per-channel token from the star cookie endpoint and must never be
+ *  given the global one (403), every other cdn runs on the global token.
+ *  When the right class has no token the url keeps its own query - it may
+ *  still carry a working one.
+ *
+ *  The DRM pairs ride in a single clearkey license: the player template puts
+ *  the first pair in and the remaining pairs are appended inside the kid
+ *  string, so the finished license holds every pair the mpd asks for by its
+ *  cenc:default_KID list (verified against the live mpds - the pllive ones
+ *  carry two distinct kids).
+ *
+ *  The manifest url carries its token in the query and the same token rides
+ *  as the __hdnea__ cookie so the player's segment requests pass the edge.
  */
 class LiveTgTvProvider : MainAPI() {
 
@@ -149,14 +165,25 @@ class LiveTgTvProvider : MainAPI() {
 
     // ------------------------------------------------------------------ links
 
-    /** One playable stream: a final url plus the DRM key pairs that open it. */
-    private data class Candidate(
-        val path: String,
-        val url: String,
-        val keys: Map<String, String>,
-        val headers: Map<String, String>
-    )
+    /** DRM pairs attached to the channel entry itself (single or list form). */
+    private fun channelKeys(channel: JSONObject): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        val multi = channel.optJSONArray("keys")
+        if (multi != null) {
+            for (i in 0 until multi.length()) {
+                val e = multi.optJSONObject(i) ?: continue
+                val kid = e.optString("keyId").lowercase()
+                val key = e.optString("key").lowercase()
+                if (kid.length == 32 && key.length == 32) out[kid] = key
+            }
+        }
+        val kid = channel.optString("keyId").lowercase()
+        val key = channel.optString("key").lowercase()
+        if (kid.length == 32 && key.length == 32) out[kid] = key
+        return out
+    }
 
+    /** DRM pairs carried by a config or backup entry (dict or single pair). */
     private fun keyPairsOf(vararg sources: Any?): Map<String, String> {
         val out = LinkedHashMap<String, String>()
         fun addPair(kid: Any?, key: Any?) {
@@ -175,24 +202,6 @@ class LiveTgTvProvider : MainAPI() {
                 addPair(src.optString("keyId"), src.optString("key"))
             }
         }
-        return out
-    }
-
-    /** DRM pairs attached to the channel entry itself (single or list form). */
-    private fun channelKeys(channel: JSONObject): Map<String, String> {
-        val out = LinkedHashMap<String, String>()
-        val multi = channel.optJSONArray("keys")
-        if (multi != null) {
-            for (i in 0 until multi.length()) {
-                val e = multi.optJSONObject(i) ?: continue
-                val kid = e.optString("keyId").lowercase()
-                val key = e.optString("key").lowercase()
-                if (kid.length == 32 && key.length == 32) out[kid] = key
-            }
-        }
-        val kid = channel.optString("keyId").lowercase()
-        val key = channel.optString("key").lowercase()
-        if (kid.length == 32 && key.length == 32) out[kid] = key
         return out
     }
 
@@ -221,78 +230,93 @@ class LiveTgTvProvider : MainAPI() {
         // data is the bare channel id load() stored; older history entries can
         // carry the mainUrl-prefixed form so both are parsed here
         val id = channelIdOf(data) ?: return false
-        val channels = TgTvApi.channels()
-        val channel = channels.firstOrNull { it.optString("id") == id } ?: return false
+        val channel = TgTvApi.channels().firstOrNull { it.optString("id") == id } ?: return false
         val chanKeys = channelKeys(channel)
 
-        // path -> best candidate; the tokened variant of a stream replaces a
-        // tokenless one, mirroring how the site falls through its servers
-        val byPath = LinkedHashMap<String, Candidate>()
+        // the two rotating token sources the site's players use; the embedded
+        // player fetches both the same way from the phone, they answer json or
+        // an interstitial from some networks which simply means no token
+        val starTok = TgTvApi.starCookie(id)
+        val primTok = TgTvApi.primaryCookie()
+        val config = TgTvApi.serverFn(id)
+        println("LiveTgTv[$id] ${channel.optString("name")}: star=${starTok.isNotBlank()} primary=${primTok.isNotBlank()} config=${config != null}")
 
-        fun offer(url: String, cookie: String, extraKeys: Map<String, String>, headers: Map<String, String>) {
-            var u = url.replace("//bpk-tv/", "/bpk-tv/").replace("bpk-tv//", "bpk-tv/")
-            if (cookie.isNotBlank()) u = u.substringBefore('?') + "?" + cookie
+        // final url -> the key pairs that open it; links are emitted in the
+        // site's own order (config urls, backups, then the channel list) and
+        // only distinct urls survive, so two servers that hand out the same
+        // stream do not double up in the picker
+        val byUrl = LinkedHashMap<String, Map<String, String>>()
+
+        fun offer(rawUrl: String, cookie: String, extraKeys: Map<String, String>) {
+            var u = rawUrl.trim()
             if (!u.startsWith("http")) return
+            u = u.replace("//bpk-tv/", "/bpk-tv/").replace("bpk-tv//", "bpk-tv/")
             val path = u.substringBefore('?')
-            val keys = if (extraKeys.isEmpty()) chanKeys else chanKeys + extraKeys
-            val token = tokenOf(u)
-            val withCookie = if (token != null) {
-                headers + mapOf("Cookie" to "__hdnea__=$token")
-            } else headers
-            val candidate = Candidate(path, u, keys, withCookie)
-            val existing = byPath[path]
-            val existingTokened = existing != null && tokenOf(existing.url) != null
-            if (existing == null) {
-                byPath[path] = candidate
-            } else if (!existingTokened && token != null) {
-                byPath[path] = candidate
+            // the token class is fixed by the host, the rule the embedded
+            // player enforces in its own source: jiotvpllive takes the
+            // per-channel star token and nothing else, every other cdn takes
+            // the global one - the config's fresh mint first, the live
+            // endpoint behind it
+            val pllive = isPlLive(path)
+            val token = when {
+                pllive -> starTok
+                cookie.isNotBlank() -> cookie
+                else -> primTok
+            }
+            // no token of the right class: keep the url as it stands, its own
+            // query may still carry a working one
+            val finalUrl = if (token.isBlank()) u else "$path?$token"
+            if (finalUrl !in byUrl) {
+                byUrl[finalUrl] = if (extraKeys.isEmpty()) chanKeys else chanKeys + extraKeys
             }
         }
 
-        // 1. the site's own stream config
-        val config = TgTvApi.serverFn(id)
+        // 1. the site's Server 1: the stream config's own urls
         if (config != null) {
-            val mainKeys = keyPairsOf(config)
-            val mainCookie = config.optString("cookie")
+            val cfgKeys = keyPairsOf(config)
+            val cfgCookie = config.optString("cookie")
             val urls = config.optJSONArray("urls")
             if (urls != null) {
                 for (i in 0 until urls.length()) {
-                    offer(urls.optString(i), mainCookie, mainKeys, TgTvApi.siteHeaders)
+                    offer(urls.optString(i), cfgCookie, cfgKeys)
                 }
             }
+            // 2. the site's Server 2..N: every backup is its own server, with
+            // its own urls, its own cookie and its own keys
             val backups = config.optJSONArray("backups")
             if (backups != null) {
                 for (i in 0 until backups.length()) {
                     val b = backups.optJSONObject(i) ?: continue
+                    val bUrls = b.optJSONArray("urls") ?: continue
                     val bKeys = keyPairsOf(b)
                     val bCookie = b.optString("cookie")
-                    val bUrls = b.optJSONArray("urls") ?: continue
                     for (j in 0 until bUrls.length()) {
-                        offer(bUrls.optString(j), bCookie, bKeys, TgTvApi.siteHeaders)
+                        offer(bUrls.optString(j), bCookie, bKeys)
                     }
                 }
             }
         }
 
-        // 2. the channel list urls with the embedded player's tokens
-        val plLiveUrls = listOf("url", "url1", "url2", "url3")
-            .mapNotNull { channel.optString(it).takeIf { u -> u.isNotBlank() } }
-            .filter { isPlLive(it) }
-        for (u in plLiveUrls) {
-            offer(u, TgTvApi.starCookie(id), emptyMap(), TgTvApi.playerHeaders)
-        }
-        for (key in listOf("url", "url1", "url2", "url3")) {
-            val u = channel.optString(key).takeIf { it.isNotBlank() } ?: continue
-            if (isPlLive(u)) continue
-            offer(u, TgTvApi.primaryCookie(), emptyMap(), TgTvApi.playerHeaders)
+        // 3. the embedded player's ladder: the channel's own urls with the
+        // live cookie endpoints - the site falls back to exactly this when
+        // every config server fails
+        for (k in listOf("url", "url1", "url2", "url3")) {
+            val u = channel.optString(k).takeIf { it.isNotBlank() } ?: continue
+            offer(u, "", emptyMap())
         }
 
-        if (byPath.isEmpty()) return false
+        if (byUrl.isEmpty()) return false
 
         var emitted = false
-        for ((index, cand) in byPath.values.withIndex()) {
+        for ((index, entry) in byUrl.entries.withIndex()) {
+            val url = entry.key
+            val keys = entry.value
             val label = "Server ${index + 1}"
-            val encoded = cand.keys.entries
+            val token = tokenOf(url)
+            val headers = TgTvApi.playerHeaders + (
+                if (token != null) mapOf("Cookie" to "__hdnea__=$token") else emptyMap()
+                )
+            val encoded = keys.entries
                 .mapNotNull { (kid, key) ->
                     val k = hexToBase64Url(kid)
                     val v = hexToBase64Url(key)
@@ -300,15 +324,15 @@ class LiveTgTvProvider : MainAPI() {
                 }
             if (encoded.isEmpty()) {
                 callback(
-                    newExtractorLink(name, label, cand.url, INFER_TYPE) {
+                    newExtractorLink(name, label, url, INFER_TYPE) {
                         this.quality = Qualities.Unknown.value
-                        this.headers = cand.headers
+                        this.headers = headers
                     }
                 )
             } else {
-                // the player drops kid and key into a single entry clearkey
-                // license; the remaining pairs ride inside the kid string so
-                // the finished license holds every pair
+                // the player template puts the first pair into a single entry
+                // clearkey license; the remaining pairs ride inside the kid
+                // string so the finished license holds every pair
                 val kidField = StringBuilder(encoded.first().first)
                 for (i in 1 until encoded.size) {
                     kidField.append("\"},{\"kty\":\"oct\",\"k\":\"").append(encoded[i].second)
@@ -318,7 +342,7 @@ class LiveTgTvProvider : MainAPI() {
                     newDrmExtractorLink(
                         name,
                         label,
-                        cand.url,
+                        url,
                         INFER_TYPE,
                         CLEARKEY_UUID
                     ) {
@@ -326,10 +350,11 @@ class LiveTgTvProvider : MainAPI() {
                         this.kty = "oct"
                         this.key = encoded.first().second
                         this.kid = kidField.toString()
-                        this.headers = cand.headers
+                        this.headers = headers
                     }
                 )
             }
+            println("LiveTgTv[$id] $label: ${url.substringBefore('?')} token=${token != null} keys=${encoded.size}")
             emitted = true
         }
         return emitted
