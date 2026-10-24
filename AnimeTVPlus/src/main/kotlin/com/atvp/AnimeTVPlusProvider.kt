@@ -178,8 +178,26 @@ class AnimeTVPlusProvider : MainAPI() {
         return out
     }
 
+    /**
+     * The mal id out of any url form that reaches load(): the full site url
+     * the response builders store (mainUrl-prefixed, e.g.
+     * https://animetvplus.xyz/5114), the bare id a library resume passes and
+     * site page shapes like /watch/5114. Without this the catalog gets called
+     * with the whole url as the id and every title reads "not found".
+     */
+    private fun malOf(url: String): String {
+        var s = url.trim()
+        if (s.startsWith(AtvpApi.SITE)) s = s.removePrefix(AtvpApi.SITE)
+        s = s.trim('/')
+        if (s.contains('/')) s = s.substringAfterLast('/')
+        return s.substringBefore('|').substringBefore('?').substringBefore('#')
+    }
+
     override suspend fun load(url: String): LoadResponse {
-        val mal = url.substringAfterLast('|').ifBlank { url }
+        val mal = malOf(url)
+        if (mal.isBlank()) {
+            throw com.lagradost.cloudstream3.ErrorLoadingException("Title not found: $url")
+        }
         val item = AtvpApi.byId(mal)
             ?: throw com.lagradost.cloudstream3.ErrorLoadingException(
                 // the real transport failure, not a blanket "not found" - a
@@ -297,10 +315,19 @@ class AnimeTVPlusProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val sep = data.indexOf('|')
+        // episode data was built as "mal|ep" but the response builder stores it
+        // mainUrl-prefixed (newEpisode runs fixUrl), so the prefix is stripped
+        // here; movie data keeps the bare form and passes through unchanged
+        val clean = if (data.startsWith(AtvpApi.SITE)) {
+            data.removePrefix(AtvpApi.SITE).trimStart('/')
+        } else {
+            data
+        }
+        val sep = clean.indexOf('|')
         if (sep <= 0) return false
-        val mal = data.substring(0, sep)
-        val episode = data.substring(sep + 1).toIntOrNull() ?: 1
+        val mal = clean.substring(0, sep)
+        val episode = clean.substring(sep + 1).toIntOrNull() ?: 1
+        if (mal.isBlank()) return false
 
         var found = false
         coroutineScope {

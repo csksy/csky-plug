@@ -43,6 +43,10 @@ class LiveTgTvProvider : MainAPI() {
     override var lang = "hi"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Live)
+    // the site's stream function fronts a live JioTV fetch and can take half a
+    // minute before it answers, so the whole link search gets the same budget
+    // the slower providers in this repo run with
+    override val loadLinksTimeoutMs: Long? = 3 * 60_000L
 
     override val mainPage = listOf(
         MainPageData("All Channels", "all"),
@@ -82,9 +86,26 @@ class LiveTgTvProvider : MainAPI() {
         val id = c.optString("id")
         val name = c.optString("name")
         if (id.isBlank() || name.isBlank()) return null
-        return newLiveSearchResponse(name, id, TvType.Live) {
+        return newLiveSearchResponse(name, "${TgTvApi.SITE}/watch/$id", TvType.Live) {
             posterUrl = c.optString("logo").takeIf { it.startsWith("http") }
         }
+    }
+
+    /**
+     * The channel id out of any url form that can reach load() or loadLinks():
+     * the site's own watch page (/watch/146), the bare id form the response
+     * builders used to prefix with mainUrl (/146, stored in existing watch
+     * history) and the bare id itself.
+     */
+    private fun channelIdOf(input: String): String? {
+        var s = input.trim()
+        if (s.isBlank()) return null
+        s = s.substringBefore('?').substringBefore('#')
+        if (s.startsWith(TgTvApi.SITE)) s = s.removePrefix(TgTvApi.SITE)
+        s = s.trim('/')
+        if (s.startsWith("watch/")) s = s.removePrefix("watch/")
+        if (s.contains('/')) s = s.substringAfterLast('/')
+        return s.takeIf { it.isNotBlank() }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -114,11 +135,13 @@ class LiveTgTvProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val channel = TgTvApi.channelById(url)
-            ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Channel not found")
+        val id = channelIdOf(url)
+            ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Channel not found: $url")
+        val channel = TgTvApi.channelById(id)
+            ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Channel not found: $id")
         val name = channel.optString("name")
         val category = channel.optString("category").ifBlank { "Live TV" }
-        return newLiveStreamLoadResponse(name, url, url) {
+        return newLiveStreamLoadResponse(name, "${TgTvApi.SITE}/watch/$id", id) {
             posterUrl = channel.optString("logo").takeIf { it.startsWith("http") }
             plot = "$name - live $category channel from TG TV"
         }
@@ -195,8 +218,11 @@ class LiveTgTvProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // data is the bare channel id load() stored; older history entries can
+        // carry the mainUrl-prefixed form so both are parsed here
+        val id = channelIdOf(data) ?: return false
         val channels = TgTvApi.channels()
-        val channel = channels.firstOrNull { it.optString("id") == data } ?: return false
+        val channel = channels.firstOrNull { it.optString("id") == id } ?: return false
         val chanKeys = channelKeys(channel)
 
         // path -> best candidate; the tokened variant of a stream replaces a
@@ -224,7 +250,7 @@ class LiveTgTvProvider : MainAPI() {
         }
 
         // 1. the site's own stream config
-        val config = TgTvApi.serverFn(data)
+        val config = TgTvApi.serverFn(id)
         if (config != null) {
             val mainKeys = keyPairsOf(config)
             val mainCookie = config.optString("cookie")
@@ -253,7 +279,7 @@ class LiveTgTvProvider : MainAPI() {
             .mapNotNull { channel.optString(it).takeIf { u -> u.isNotBlank() } }
             .filter { isPlLive(it) }
         for (u in plLiveUrls) {
-            offer(u, TgTvApi.starCookie(data), emptyMap(), TgTvApi.playerHeaders)
+            offer(u, TgTvApi.starCookie(id), emptyMap(), TgTvApi.playerHeaders)
         }
         for (key in listOf("url", "url1", "url2", "url3")) {
             val u = channel.optString(key).takeIf { it.isNotBlank() } ?: continue

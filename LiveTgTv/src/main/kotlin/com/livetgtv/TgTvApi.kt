@@ -81,7 +81,12 @@ object TgTvApi {
         }
     }
 
-    fun channelById(id: String): JSONObject? = channelsCache.firstOrNull { it.optString("id") == id }
+    /**
+     * One channel by id. Fetches the list first so a channel opened from a
+     * deep link or watch history (never through the main page) still resolves.
+     */
+    suspend fun channelById(id: String): JSONObject? =
+        channels().firstOrNull { it.optString("id") == id }
 
     // ---------------------------------------------------------------- serverFn
 
@@ -108,7 +113,9 @@ object TgTvApi {
             val text = app.get(
                 "$SITE/_serverFn/$hash?payload=${buildPayload(id)}",
                 headers = siteHeaders + mapOf("Referer" to "$SITE/watch/$id"),
-                timeout = 15L
+                // the function fronts a live JioTV fetch and regularly answers
+                // in 10-15s, so the budget has to sit well above that
+                timeout = 30L
             ).text
             if (text.isBlank()) null else decodeEnvelope(text)
         } catch (_: Exception) {
@@ -194,19 +201,38 @@ object TgTvApi {
         }
     }
 
+    /**
+     * The stream function id out of the live bundle. The reference moved
+     * between files across deploys (entry js -> watch route chunk), so every
+     * page that has carried it is walked: the watch page html lists the
+     * servers chunk directly, the entry js did in earlier builds.
+     */
     private suspend fun discoverFnHash(): String? {
-        return try {
-            val html = app.get(SITE, headers = mapOf("User-Agent" to UA), timeout = 15L).text
-            val entryJs = Regex("""(/assets/index-[A-Za-z0-9._-]+\.js)""").find(html)?.groupValues?.get(1)
-                ?: return null
-            val entry = app.get("$SITE$entryJs", headers = mapOf("User-Agent" to UA), timeout = 15L).text
-            val serversJs = Regex("""(/assets/servers-[A-Za-z0-9._-]+\.js)""").find(entry)?.groupValues?.get(1)
-                ?: return null
-            val servers = app.get("$SITE$serversJs", headers = mapOf("User-Agent" to UA), timeout = 15L).text
-            Regex("[0-9a-f]{64}").find(servers)?.value
+        val serversJs = try {
+            val pages = mutableListOf<String>()
+            for (pageUrl in listOf(SITE, "$SITE/watch/146")) {
+                runCatching {
+                    pages.add(app.get(pageUrl, headers = mapOf("User-Agent" to UA), timeout = 15L).text)
+                }
+            }
+            val entryJs = pages.flatMap { html ->
+                Regex("""(/assets/index-[A-Za-z0-9._-]+\.js)""").findAll(html)
+                    .map { it.groupValues[1] }.distinct().toList()
+            }.firstOrNull()?.let { path ->
+                runCatching {
+                    app.get("$SITE$path", headers = mapOf("User-Agent" to UA), timeout = 15L).text
+                }.getOrNull()
+            }
+            if (entryJs != null) pages.add(entryJs)
+            val chunk = pages.flatMap { html ->
+                Regex("""(/assets/servers-[A-Za-z0-9._-]+\.js)""").findAll(html)
+                    .map { it.groupValues[1] }.distinct().toList()
+            }.firstOrNull() ?: return null
+            app.get("$SITE$chunk", headers = mapOf("User-Agent" to UA), timeout = 15L).text
         } catch (_: Exception) {
-            null
+            return null
         }
+        return Regex("[0-9a-f]{64}").find(serversJs)?.value
     }
 
     // ---------------------------------------------------------------- CDN cookies
