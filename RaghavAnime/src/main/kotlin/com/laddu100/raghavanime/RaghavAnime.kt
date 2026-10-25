@@ -37,7 +37,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.raghav.donation.DonationManager
 import java.net.URLEncoder
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentLinkedQueue
 
 class RaghavAnime : MainAPI() {
     override var mainUrl = "https://graphql.anilist.co"
@@ -589,12 +589,19 @@ class RaghavAnime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         rawCallback: (ExtractorLink) -> Unit
     ): Boolean {
-        // every emitted link is counted so the instant mode can tell whether the
-        // player already has something to play when its short window runs out
-        val emittedLinks = AtomicInteger(0)
-        val callback: (ExtractorLink) -> Unit = { link ->
-            emittedLinks.incrementAndGet()
-            rawCallback(link)
+        // instant mode emits every link the moment its source resolves; the full
+        // pass holds them all until the pass completes so the whole set lands at
+        // once - one full pass loads every source first
+        val progressive = RaghavPerf.instantLoad()
+        val heldLinks = if (progressive) null else ConcurrentLinkedQueue<ExtractorLink>()
+        val heldSubs = if (progressive) null else ConcurrentLinkedQueue<SubtitleFile>()
+        val callback: (ExtractorLink) -> Unit = when {
+            heldLinks != null -> { link -> heldLinks.add(link) }
+            else -> { link -> rawCallback(link) }
+        }
+        val subs: (SubtitleFile) -> Unit = when {
+            heldSubs != null -> { file -> heldSubs.add(file) }
+            else -> { file -> subtitleCallback(file) }
         }
         val linkData = parseJson<LinkData>(data)
         val aniId = linkData.animeId
@@ -618,7 +625,7 @@ class RaghavAnime : MainAPI() {
                         resolveMiruro(aniId, episode, isDub)
                     }
                     if (epData != null) {
-                        Miruro().loadLinks(epData, false, subtitleCallback, callback)
+                        Miruro().loadLinks(epData, false, subs, callback)
                     }
                 }
             },
@@ -627,7 +634,7 @@ class RaghavAnime : MainAPI() {
                     resolveAniSuge(searchTitles, targetTitles, episode, isDub, linkData.year)
                 }
                 if (epData != null) {
-                    AniSugeProvider().loadLinks(epData, false, subtitleCallback, callback)
+                    AniSugeProvider().loadLinks(epData, false, subs, callback)
                 }
             },
             "AniWaves" to {
@@ -635,13 +642,13 @@ class RaghavAnime : MainAPI() {
                     resolveAniWaves(searchTitles, targetTitles, episode, isDub)
                 }
                 if (epData != null) {
-                    AniWaves().loadLinks(epData, false, subtitleCallback, callback)
+                    AniWaves().loadLinks(epData, false, subs, callback)
                 }
             },
             "AniKage" to {
                 if (aniId > 0) {
                     val anikage = RaghavAniKage()
-                    anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                    anikage.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subs, callback)
                 }
             },
             "2DHive" to {
@@ -649,7 +656,7 @@ class RaghavAnime : MainAPI() {
                     resolveTwoDHive(searchTitles, targetTitles, episode, isDub, linkData.year)
                 }
                 if (epData != null) {
-                    RaghavTwoDHive().loadLinks(epData, false, subtitleCallback, callback)
+                    RaghavTwoDHive().loadLinks(epData, false, subs, callback)
                 }
             },
             "AniKoto" to {
@@ -657,7 +664,7 @@ class RaghavAnime : MainAPI() {
                     resolveAniKoto(searchTitles, targetTitles, episode, isDub, linkData.year)
                 }
                 if (epData != null) {
-                    RaghavAnikoto().loadLinks(epData, false, subtitleCallback, callback)
+                    RaghavAnikoto().loadLinks(epData, false, subs, callback)
                 }
             },
             "GoTaku" to {
@@ -665,25 +672,25 @@ class RaghavAnime : MainAPI() {
                     resolveGoTaku(searchTitles, targetTitles, episode, isDub, linkData.year)
                 }
                 if (epData != null) {
-                    RaghavGoTaku().loadLinks(epData, false, subtitleCallback, callback)
+                    RaghavGoTaku().loadLinks(epData, false, subs, callback)
                 }
             },
             "Anidap" to {
                 if (aniId > 0) {
                     val anidap = RaghavAnidap()
-                    anidap.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                    anidap.loadLinksByAnilistId(aniId, episode, isDub, subs, callback)
                 }
             },
             "AniPM" to {
                 val anipm = RaghavAniPM()
-                anipm.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subtitleCallback, callback)
+                anipm.loadLinksByAnilistId(aniId, title, jpTitle, episode, isDub, subs, callback)
             },
             "Senshi" to {
                 val epData = SourceCache.episodeData("Senshi", animeKey, isDub, episode) {
                     resolveSenshi(searchTitles, targetTitles, episode, isDub, linkData.year)
                 }
                 if (epData != null) {
-                    RaghavSenshi().loadLinks(epData, false, subtitleCallback, callback)
+                    RaghavSenshi().loadLinks(epData, false, subs, callback)
                 }
             },
             "AniNami" to {
@@ -692,14 +699,14 @@ class RaghavAnime : MainAPI() {
                         resolveAniNami(aniId, episode, isDub)
                     }
                     if (epData != null) {
-                        RaghavAniNami().loadLinks(epData, false, subtitleCallback, callback)
+                        RaghavAniNami().loadLinks(epData, false, subs, callback)
                     }
                 }
             },
             "AniChan" to {
                 if (aniId > 0) {
                     val anichan = RaghavAniChan()
-                    anichan.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                    anichan.loadLinksByAnilistId(aniId, episode, isDub, subs, callback)
                 }
             },
             "Xanime" to {
@@ -707,25 +714,25 @@ class RaghavAnime : MainAPI() {
                     resolveXanime(searchTitles, targetTitles, episode, isDub, linkData.year)
                 }
                 if (epData != null) {
-                    RaghavXanime().loadLinks(epData, false, subtitleCallback, callback)
+                    RaghavXanime().loadLinks(epData, false, subs, callback)
                 }
             },
             "Kyren" to {
                 if (aniId > 0) {
                     val kyren = RaghavKyren()
-                    kyren.loadLinksByAnilistId(aniId, title, episode, isDub, subtitleCallback, callback)
+                    kyren.loadLinksByAnilistId(aniId, title, episode, isDub, subs, callback)
                 }
             },
             "ReAnime" to {
                 if (aniId > 0) {
                     val reanime = RaghavReAnime()
-                    reanime.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                    reanime.loadLinksByAnilistId(aniId, episode, isDub, subs, callback)
                 }
             },
             "Anv" to {
                 if (aniId > 0) {
                     val anv = RaghavAnv()
-                    anv.loadLinksByAnilistId(aniId, episode, isDub, subtitleCallback, callback)
+                    anv.loadLinksByAnilistId(aniId, episode, isDub, subs, callback)
                 }
             },
         )
@@ -743,20 +750,16 @@ class RaghavAnime : MainAPI() {
                 { runBoundedSource(name, task) }
             })
         }
-        if (RaghavPerf.instantLoad()) {
-            // instant load hands the first wave of sources to the player right away
-            // and lets the rest keep loading in the background scope while
-            // playback runs
-            withTimeoutOrNull(INSTANT_SOURCE_WAIT_MS) { linksJob?.join() }
-            // nothing playable yet: keep the loading state alive until the first
-            // link lands or the full window passes
-            if (emittedLinks.get() == 0) {
-                withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
-            }
-        } else {
-            // the full pass waits for every source, the way it always loaded
-            withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
-        }
+        // the sources emit as they resolve - the fast ones land in a second or
+        // two and the player starts on them, and the rest keep loading while
+        // playback runs - but the call only returns once the whole pass is done,
+        // capped at MAX_SOURCE_WAIT_MS. the player accepts links into its live
+        // list only while loadLinks is running: returning after the first wave
+        // froze the list at the initial burst, which is what broke the
+        // background loading
+        withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
+        heldSubs?.let { queue -> while (true) { subtitleCallback(queue.poll() ?: break) } }
+        heldLinks?.let { queue -> while (true) { rawCallback(queue.poll() ?: break) } }
 
         return true
     }
@@ -1060,7 +1063,6 @@ class RaghavAnime : MainAPI() {
         var hasShownThisSession = false
         private val homePageCache = mutableMapOf<String, List<AniListMedia>>()
         private const val MAX_SOURCE_WAIT_MS = 35_000L
-        private const val INSTANT_SOURCE_WAIT_MS = 3_000L
     }
 }
 
