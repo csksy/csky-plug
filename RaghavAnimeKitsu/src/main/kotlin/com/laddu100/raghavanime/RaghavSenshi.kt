@@ -258,6 +258,25 @@ class RaghavSenshi : MainAPI() {
             if (masterText != null) break
         }
 
+        // a plain master plays as it is, both audio tracks included: the token
+        // wants the fetch's User-Agent and no Origin, or the CDN ignores byte ranges
+        if (masterText != null && masterText.trimStart().startsWith("#EXTM3U")) {
+            val height = resolutionTag.findAll(masterText)
+                .mapNotNull { it.groupValues[2].toIntOrNull() }
+                .maxOrNull()
+            callback.invoke(
+                newExtractorLink(source = name, name = "Senshi $modeLabel", url = master, type = ExtractorLinkType.M3U8) {
+                    height?.let { this.quality = it }
+                    this.headers = mapOf(
+                        "User-Agent" to RaghavSenshiVhost.browserUa(),
+                        "Referer" to "$mainUrl/"
+                    )
+                }
+            )
+            return true
+        }
+
+        // Only an encrypted master (EM3U8v1) still needs the local proxy to decrypt it
         var playlist = masterText
         if (playlist != null && RaghavSenshiCrypt.isEncrypted(playlist)) {
             playlist = RaghavSenshiCrypt.decrypt(playlist)

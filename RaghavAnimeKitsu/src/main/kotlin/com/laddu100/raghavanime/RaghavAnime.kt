@@ -33,6 +33,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicInteger
 import com.raghav.donation.DonationManager
 
 class RaghavAnime : MainAPI() {
@@ -97,22 +98,26 @@ class RaghavAnime : MainAPI() {
         val ctx = activity ?: return
         ctx.runOnUiThread {
             try {
-                val cBg = Color.parseColor("#0A0A0A")
-                val cAccent = Color.parseColor("#FF1744")
-                val cTextSub = Color.parseColor("#9E9E9E")
+                val cAccent = Color.parseColor("#0A84FF")
+                val cText = Color.parseColor("#FFFFFF")
+                val cTextSub = Color.parseColor("#98989F")
                 val d = ctx.resources.displayMetrics.density
                 fun Int.dp() = (this * d).toInt()
 
                 val container = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(24.dp(), 28.dp(), 24.dp(), 24.dp())
-                    setBackgroundColor(cBg)
+                    background = GradientDrawable().apply {
+                        cornerRadius = 24 * d
+                        setColor(Color.parseColor("#17171B"))
+                        setStroke(1.dp(), Color.parseColor("#30FFFFFF"))
+                    }
                 }
 
                 container.addView(TextView(ctx).apply {
                     text = "Kitsu API is Down"
                     textSize = 20f
-                    setTextColor(cAccent)
+                    setTextColor(cText)
                     setTypeface(typeface, Typeface.BOLD)
                     gravity = Gravity.CENTER
                     setPadding(0, 0, 0, 12.dp())
@@ -135,7 +140,7 @@ class RaghavAnime : MainAPI() {
                     textSize = 14f
                     setTypeface(typeface, Typeface.BOLD)
                     background = GradientDrawable().apply {
-                        cornerRadius = 12 * d
+                        cornerRadius = 16 * d
                         setColor(cAccent)
                     }
                     setPadding(0, 14.dp(), 0, 14.dp())
@@ -394,8 +399,15 @@ class RaghavAnime : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        rawCallback: (ExtractorLink) -> Unit
     ): Boolean {
+        // every emitted link is counted so the instant mode can tell whether the
+        // player already has something to play when its short window runs out
+        val emittedLinks = AtomicInteger(0)
+        val callback: (ExtractorLink) -> Unit = { link ->
+            emittedLinks.incrementAndGet()
+            rawCallback(link)
+        }
         val linkData = parseJson<LinkData>(data)
         val aniId = linkData.animeId
         val title = linkData.title
@@ -543,7 +555,20 @@ class RaghavAnime : MainAPI() {
                 { runBoundedSource(name, task) }
             })
         }
-        withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
+        if (RaghavPerf.instantLoad()) {
+            // instant load hands the first wave of sources to the player right away
+            // and lets the rest keep loading in the background scope while
+            // playback runs
+            withTimeoutOrNull(INSTANT_SOURCE_WAIT_MS) { linksJob?.join() }
+            // nothing playable yet: keep the loading state alive until the first
+            // link lands or the full window passes
+            if (emittedLinks.get() == 0) {
+                withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
+            }
+        } else {
+            // the full pass waits for every source, the way it always loaded
+            withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
+        }
 
         return true
     }
@@ -864,6 +889,7 @@ class RaghavAnime : MainAPI() {
         var hasShownThisSession = false
         private val homePageCache = mutableMapOf<String, List<KitsuMedia>>()
         private const val MAX_SOURCE_WAIT_MS = 35_000L
+        private const val INSTANT_SOURCE_WAIT_MS = 3_000L
     }
 }
 

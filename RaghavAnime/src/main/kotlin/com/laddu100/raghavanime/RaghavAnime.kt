@@ -37,6 +37,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.raghav.donation.DonationManager
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicInteger
 
 class RaghavAnime : MainAPI() {
     override var mainUrl = "https://graphql.anilist.co"
@@ -586,8 +587,15 @@ class RaghavAnime : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        rawCallback: (ExtractorLink) -> Unit
     ): Boolean {
+        // every emitted link is counted so the instant mode can tell whether the
+        // player already has something to play when its short window runs out
+        val emittedLinks = AtomicInteger(0)
+        val callback: (ExtractorLink) -> Unit = { link ->
+            emittedLinks.incrementAndGet()
+            rawCallback(link)
+        }
         val linkData = parseJson<LinkData>(data)
         val aniId = linkData.animeId
         val title = linkData.title
@@ -735,7 +743,20 @@ class RaghavAnime : MainAPI() {
                 { runBoundedSource(name, task) }
             })
         }
-        withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
+        if (RaghavPerf.instantLoad()) {
+            // instant load hands the first wave of sources to the player right away
+            // and lets the rest keep loading in the background scope while
+            // playback runs
+            withTimeoutOrNull(INSTANT_SOURCE_WAIT_MS) { linksJob?.join() }
+            // nothing playable yet: keep the loading state alive until the first
+            // link lands or the full window passes
+            if (emittedLinks.get() == 0) {
+                withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
+            }
+        } else {
+            // the full pass waits for every source, the way it always loaded
+            withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
+        }
 
         return true
     }
@@ -1039,6 +1060,7 @@ class RaghavAnime : MainAPI() {
         var hasShownThisSession = false
         private val homePageCache = mutableMapOf<String, List<AniListMedia>>()
         private const val MAX_SOURCE_WAIT_MS = 35_000L
+        private const val INSTANT_SOURCE_WAIT_MS = 3_000L
     }
 }
 
