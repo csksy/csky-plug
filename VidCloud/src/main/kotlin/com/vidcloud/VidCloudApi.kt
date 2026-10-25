@@ -1,6 +1,7 @@
 package com.vidcloud
 
 import com.lagradost.cloudstream3.app
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.UUID
@@ -55,6 +56,15 @@ object VidCloudApi {
     const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 
+    // the client hints every real browser ride along - the stream edge reads
+    // them: a request that carries only a user agent and a referer is answered
+    // with a plain 403, the same request with the browser header set behind it
+    // is served the playlist, so every ask the plugin makes wears them
+    const val SEC_CH_UA = "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Brave\";v=\"156\""
+    const val SEC_CH_UA_MOBILE = "?0"
+    const val SEC_CH_UA_PLATFORM = "\"Windows\""
+    const val ACCEPT_LANGUAGE = "en-US,en;q=0.7"
+
     val randomId = UUID.randomUUID().toString()
 
     // ------------------------------------------------------------- results
@@ -77,8 +87,15 @@ object VidCloudApi {
         val out = mutableMapOf(
             "User-Agent" to ua,
             "Accept" to "application/json, text/plain, */*",
+            "Accept-Language" to ACCEPT_LANGUAGE,
             "Referer" to "$SITE/",
             "Origin" to SITE,
+            "sec-fetch-dest" to "empty",
+            "sec-fetch-mode" to "cors",
+            "sec-fetch-site" to "same-origin",
+            "sec-ch-ua" to SEC_CH_UA,
+            "sec-ch-ua-mobile" to SEC_CH_UA_MOBILE,
+            "sec-ch-ua-platform" to SEC_CH_UA_PLATFORM,
             "Randomid" to randomId,
             "Client-Type" to "WEB",
             "Client-Id" to "5eb393ee95fab7468a79d189",
@@ -89,6 +106,28 @@ object VidCloudApi {
         if (cookie.isNotBlank()) out["Cookie"] = cookie
         return out
     }
+
+    /**
+     * The header set the site's own player sends the stream edge for the
+     * playlist and every segment after it, exactly the set the captured
+     * browser request wears: the edge answers the plain playlist url with
+     * 403 while the identical url carrying these is served the manifest, so
+     * the player link hands them to the cloudstream player for every request
+     * it makes on this source. The referer rides the link's own referer
+     * field the way it always has.
+     */
+    fun playerHeaders(): Map<String, String> = mapOf(
+        "User-Agent" to UA,
+        "Accept" to "*/*",
+        "Accept-Language" to ACCEPT_LANGUAGE,
+        "Origin" to SITE,
+        "sec-fetch-dest" to "empty",
+        "sec-fetch-mode" to "cors",
+        "sec-fetch-site" to "cross-site",
+        "sec-ch-ua" to SEC_CH_UA,
+        "sec-ch-ua-mobile" to SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform" to SEC_CH_UA_PLATFORM,
+    )
 
     // the transport that answered last goes first the next time; a transport
     // that stops answering resets it
@@ -561,18 +600,80 @@ object VidCloudApi {
 
     /**
      * Walks play.php's hidden inputs back to plain values. The page is asked
-     * twice: once over plain http riding the minted session, which is the
-     * way the site's own pages ask from a phone, and once from inside the
-     * site's own page when the first ask comes back empty. Empty fields stay
-     * empty.
+     * through a ladder that keeps asking until one lane answers: plain http
+     * riding the minted session with the full browser navigation headers a
+     * real page load wears, then from inside the site's own page, then one
+     * more plain ask after a beat for a slow edge. A page that answered is
+     * kept for ten minutes so a second click on the same lecture never asks
+     * again, and what every lane actually saw travels out in the notes so a
+     * blocked page is never an empty one. Empty fields stay empty.
      */
+    @Volatile
+    var lastPlayNotes: String = "no transport answered"
+        private set
+
+    private const val PLAY_TTL = 10L * 60L * 1000L
+    private val playCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, PlayPayload>>()
+
+    // play pages are expensive on the origin - they mint a fresh signed url
+    // every time - so two asks never ride back to back
+    @Volatile
+    private var lastPlayAt = 0L
+
+    private suspend fun spacePlay() {
+        val gap = System.currentTimeMillis() - lastPlayAt
+        if (lastPlayAt > 0 && gap in 0 until 1500) delay(1500L - gap)
+        lastPlayAt = System.currentTimeMillis()
+    }
+
     suspend fun resolvePlay(playUrl: String): PlayPayload? {
-        val html = fetchPlayHttp(playUrl)
-            ?: VidCloudWebView.fetch(playUrl.removePrefix(SITE))?.let { (status, body) ->
-                if (status in 200..299) body else null
+        val now = System.currentTimeMillis()
+        playCache[playUrl]?.let { (at, page) ->
+            if (now - at < PLAY_TTL) {
+                lastPlayNotes = "cache"
+                return page
             }
-            ?: return null
-        if (!html.contains("enc_video_url")) return null
+        }
+        val findings = mutableListOf<String>()
+        for (round in 1..2) {
+            spacePlay()
+            val pageA = fetchPlayHttp(playUrl)
+            playOf(pageA)?.let { page ->
+                playCache[playUrl] = System.currentTimeMillis() to page
+                lastPlayNotes = "plain"
+                return page
+            }
+            findings.add(
+                when {
+                    pageA == null -> "plain: no answer"
+                    else -> "plain: not the player page"
+                }
+            )
+
+            val got = VidCloudWebView.fetch(playUrl.removePrefix(SITE), html = true)
+            if (got == null) {
+                findings.add("page: no webview")
+            } else {
+                val (status, body) = got
+                if (status in 200..299) {
+                    playOf(body)?.let { page ->
+                        playCache[playUrl] = System.currentTimeMillis() to page
+                        lastPlayNotes = "page"
+                        return page
+                    }
+                    findings.add("page: not the player page")
+                } else {
+                    findings.add("page: $status")
+                }
+            }
+            if (round == 1) delay(1200L)
+        }
+        lastPlayNotes = findings.distinct().joinToString("; ").ifBlank { "no transport answered" }
+        return null
+    }
+
+    private fun playOf(html: String?): PlayPayload? {
+        if (html == null || !html.contains("enc_video_url")) return null
         fun field(id: String): String {
             val m = Regex("id=\"$id\"\\s+value=\"([^\"]*)\"").find(html) ?: return ""
             return fieldOf(m.groupValues[1])
@@ -589,17 +690,27 @@ object VidCloudApi {
     }
 
     private suspend fun fetchPlayHttp(playUrl: String): String? {
-        val (jar, ua, token) = session() ?: return null
+        val (jar, ua, _) = session() ?: return null
+        // the exact navigation header set the site's own page load sends:
+        // no authorization and no origin on a same-origin document, the php
+        // session and the bearer ride together in the cookie jar the way the
+        // browser carries them
         val headers = mutableMapOf(
             "User-Agent" to ua,
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language" to ACCEPT_LANGUAGE,
             "Referer" to "$SITE/",
-            "Origin" to SITE,
+            "sec-fetch-dest" to "document",
+            "sec-fetch-mode" to "navigate",
+            "sec-fetch-site" to "same-origin",
+            "sec-ch-ua" to SEC_CH_UA,
+            "sec-ch-ua-mobile" to SEC_CH_UA_MOBILE,
+            "sec-ch-ua-platform" to SEC_CH_UA_PLATFORM,
+            "Upgrade-Insecure-Requests" to "1",
             "Cookie" to jar,
         )
-        if (token.isNotBlank()) headers["Authorization"] = "Bearer $token"
         return try {
-            val resp = app.get(playUrl, headers = headers, timeout = 15L)
+            val resp = app.get(playUrl, headers = headers, timeout = 20L)
             if (resp.isSuccessful) resp.textLarge else null
         } catch (_: Exception) {
             null

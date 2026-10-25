@@ -31,7 +31,7 @@ internal object VidCloudWebView {
     private const val TAG = "VidCloud"
 
     private const val PAGE_LOAD_TIMEOUT = 20_000L
-    private const val FETCH_TIMEOUT = 20_000L
+    private const val FETCH_TIMEOUT = 25_000L
     private const val RETRY_PAGE_LOADS = 2
 
     private var appContext: Context? = null
@@ -138,9 +138,11 @@ internal object VidCloudWebView {
      * Runs the fetch from page context so it rides the webview's own stack,
      * with the site's own header set on it. The token comes from the page's
      * cookie jar; when the page has none yet it is minted the same way the
-     * site's own script mints it. Returns status and body, or null.
+     * site's own script mints it. The html flag switches the ask to the
+     * header set a real page load wears, which is what a document route
+     * like the player page expects. Returns status and body, or null.
      */
-    suspend fun fetch(path: String): Pair<Int, String>? {
+    suspend fun fetch(path: String, html: Boolean = false): Pair<Int, String>? {
         if (failedHard) return null
         if (!path.startsWith("/")) return null
         return withContext(Dispatchers.Main) {
@@ -163,9 +165,15 @@ internal object VidCloudWebView {
                 append(jsString(path))
                 append(",RID=")
                 append(jsString(VidCloudApi.randomId))
+                append(",HTML=")
+                append(if (html) "true" else "false")
                 append(";")
                 append("function done(s,b){try{window.VidCloudBridge.deliver(TAG,s+'|'+b);}catch(e){}}")
                 append("function go(tok){")
+                append("if(HTML){fetch(PATH,{method:'GET',credentials:'include',")
+                append("headers:{'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'}})")
+                append(".then(function(r){r.text().then(function(b){done(String(r.status),b);});})")
+                append(".catch(function(e){done('0','');});return;}")
                 append("var h={'Accept':'application/json, text/plain, */*','Randomid':RID,'Client-Type':'WEB','Client-Id':'5eb393ee95fab7468a79d189','Client-Version':'2.1.6','Version':'0.0.1'};")
                 append("if(tok){h['Authorization']='Bearer '+tok;}")
                 append("fetch(PATH,{method:'GET',credentials:'include',headers:h})")

@@ -380,7 +380,8 @@ class VidCloudProvider : MainAPI() {
                 val playUrl = VidCloudApi.playUrl(batchId, subjectId, topicId, lecture)
                 val payload = VidCloudApi.resolvePlay(playUrl)
                     ?: throw com.lagradost.cloudstream3.ErrorLoadingException(
-                        "Could not open the player page for ${lecture.name} - the site may be busy, try again"
+                        "Could not open the player page for ${lecture.name} - " +
+                            "${VidCloudApi.lastPlayNotes}. Try again in a minute"
                     )
                 if (payload.clearkey) {
                     callback(
@@ -394,7 +395,7 @@ class VidCloudProvider : MainAPI() {
                             this.kid = payload.keyId
                             this.key = payload.keyValue
                             this.referer = "${VidCloudApi.SITE}/"
-                            this.headers = mapOf("User-Agent" to VidCloudApi.UA)
+                            this.headers = VidCloudApi.playerHeaders()
                         }
                     )
                 } else {
@@ -406,7 +407,7 @@ class VidCloudProvider : MainAPI() {
                             type = ExtractorLinkType.M3U8,
                         ) {
                             this.referer = "${VidCloudApi.SITE}/"
-                            this.headers = mapOf("User-Agent" to VidCloudApi.UA)
+                            this.headers = VidCloudApi.playerHeaders()
                         }
                     )
                 }
