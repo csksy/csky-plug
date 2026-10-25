@@ -253,10 +253,18 @@ class AniPMProvider : MainAPI() {
         if (hardAvailable) {
             tasks.add {
                 emitSettlar(
-                    selection, episode, "${channel}hard", "$name Hardsub",
+                    selection, episode, "${channel}hard", "AniPm Hardsub ($channel)",
                     seenLinks, seenSubUrls, seenSubLabels,
                     subtitleCallback, callback
                 )
+            }
+        }
+        // the beta server the site added: one stream whose master carries an
+        // audio rendition per language, the track is picked in the player like
+        // the site's own picker and the subtitles ride the manifest
+        if (anilistId.isNotBlank()) {
+            tasks.add {
+                emitBetaServer(anilistId, episode, channel, seenLinks, callback)
             }
         }
         tasks.add {
@@ -331,6 +339,47 @@ class AniPMProvider : MainAPI() {
                 }
             )
         }
+        return true
+    }
+
+    // the site's beta server: one hls master that carries every audio track the
+    // title ships, segments sit on a per title cdn the playlists point at with
+    // absolute urls, so the player only ever needs this one link
+    private suspend fun emitBetaServer(
+        anilistId: String,
+        episode: Int,
+        channel: String,
+        seenLinks: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val info = AniPMApi.betaServer(anilistId) ?: return false
+        if (info.available != true) return false
+        if (episode !in (info.episodes ?: emptyList())) return false
+        if (channel == "dub" && info.dub != true) return false
+        if (channel == "sub" && info.sub != true) return false
+
+        // /watch/{slug}-{anilistId} turns into /hls/{anilistId}-{slug}/E{ep}/master.m3u8
+        val watchPath = info.path?.removePrefix("/watch/")?.takeIf { it.isNotBlank() } ?: return false
+        val split = watchPath.lastIndexOf('-')
+        if (split <= 0) return false
+        val origin = (info.origin ?: return false).removeSuffix("/")
+        val slug = watchPath.substring(0, split)
+        val betaId = watchPath.substring(split + 1)
+        val masterUrl = "$origin/hls/$betaId-$slug/E${"%04d".format(episode)}/master.m3u8"
+
+        val master = AniPMApi.betaMasterVerified(masterUrl, "$origin/") ?: return false
+        if (!seenLinks.add(master)) return true
+
+        val playHeaders = mapOf(
+            "User-Agent" to AniPMApi.USER_AGENT,
+            "Referer" to "$origin/"
+        )
+        callback.invoke(
+            newExtractorLink(name, "AniPm- Multi audio", master, type = ExtractorLinkType.M3U8) {
+                referer = "$origin/"
+                headers = playHeaders
+            }
+        )
         return true
     }
 
