@@ -33,7 +33,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URLEncoder
-import java.util.concurrent.ConcurrentLinkedQueue
 import com.raghav.donation.DonationManager
 
 class RaghavAnime : MainAPI() {
@@ -401,20 +400,10 @@ class RaghavAnime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         rawCallback: (ExtractorLink) -> Unit
     ): Boolean {
-        // instant mode emits every link the moment its source resolves; the full
-        // pass holds them all until the pass completes so the whole set lands at
-        // once - one full pass loads every source first
-        val progressive = RaghavPerf.instantLoad()
-        val heldLinks = if (progressive) null else ConcurrentLinkedQueue<ExtractorLink>()
-        val heldSubs = if (progressive) null else ConcurrentLinkedQueue<SubtitleFile>()
-        val callback: (ExtractorLink) -> Unit = when {
-            heldLinks != null -> { link -> heldLinks.add(link) }
-            else -> { link -> rawCallback(link) }
-        }
-        val subs: (SubtitleFile) -> Unit = when {
-            heldSubs != null -> { file -> heldSubs.add(file) }
-            else -> { file -> subtitleCallback(file) }
-        }
+        // every link is handed to the player the moment its source resolves
+        // so the loading screen shows the set growing live
+        val callback = rawCallback
+        val subs = subtitleCallback
         val linkData = parseJson<LinkData>(data)
         val aniId = linkData.animeId
         val title = linkData.title
@@ -562,16 +551,9 @@ class RaghavAnime : MainAPI() {
                 { runBoundedSource(name, task) }
             })
         }
-        // the sources emit as they resolve - the fast ones land in a second or
-        // two and the player starts on them, and the rest keep loading while
-        // playback runs - but the call only returns once the whole pass is done,
-        // capped at MAX_SOURCE_WAIT_MS. the player accepts links into its live
-        // list only while loadLinks is running: returning after the first wave
-        // froze the list at the initial burst, which is what broke the
-        // background loading
+        // the player only takes links while loadLinks is running, so the pass
+        // stays open for the slowest sources before it returns
         withTimeoutOrNull(MAX_SOURCE_WAIT_MS) { linksJob?.join() }
-        heldSubs?.let { queue -> while (true) { subtitleCallback(queue.poll() ?: break) } }
-        heldLinks?.let { queue -> while (true) { rawCallback(queue.poll() ?: break) } }
 
         return true
     }
