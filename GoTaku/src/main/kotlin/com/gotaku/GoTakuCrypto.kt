@@ -12,7 +12,7 @@ import java.io.ByteArrayInputStream
 
 object GoTakuCrypto {
 
-    // the site bumps this when it rotates the seal, the api answers 426 for older ones
+    // the api answers 426 for older versions
     private const val SEALED_VERSION = 6
 
     private val apiSeed = intArrayOf(

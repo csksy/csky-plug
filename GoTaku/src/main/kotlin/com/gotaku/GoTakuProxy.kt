@@ -18,8 +18,7 @@ import java.util.concurrent.Executors
 
 object GoTakuProxy {
 
-    // Only refreshed tokens and playlist copies are kept, for this many streams. A stream's link
-    // carries everything it needs (see register), so one dropped from here still plays.
+    // evicted sessions only lose their caches, links carry the stream themselves
     private const val CACHED_STREAMS = 200
     private const val HLS_TYPE = "application/vnd.apple.mpegurl"
 
@@ -38,6 +37,13 @@ object GoTakuProxy {
         val keySeed: ByteArray,
         val segmentBytes: Int
     ) {
+        // the cdn sees the embed host as the referring site, it is not
+        // always gotaku.to anymore so take it from the manifest base
+        val embedOrigin: String = try {
+            URI(manifestBase).host?.let { "https://$it" } ?: GoTakuApi.site()
+        } catch (_: Exception) {
+            GoTakuApi.site()
+        }
         @Volatile
         var token: String = ""
 
@@ -86,8 +92,7 @@ object GoTakuProxy {
     ): String? {
         val port = ensureServerRunning()
         if (port == 0) return null
-        // The id is the stream itself, so the link never stops working: no count of streams to
-        // fall out of when other episodes are opened, even in the middle of playback
+        // the id encodes the whole stream, the map below is only a cache
         val id = encodeSession(manifestBase, stamp, token, expiresAt, keySeed, segmentBytes, masterUrl)
         val session = StreamSession(id, manifestBase, stamp, masterUrl, keySeed, segmentBytes)
         session.token = token
@@ -106,7 +111,6 @@ object GoTakuProxy {
         return Base64.encodeToString(fields.joinToString("\n").toByteArray(Charsets.UTF_8), B64)
     }
 
-    /** The stream of a link: the cached one (refreshed token, playlist copies), else rebuilt from its id. */
     private fun sessionFor(id: String): StreamSession? {
         synchronized(sessions) { sessions[id] }?.let { return it }
         val f = try {
@@ -267,7 +271,7 @@ object GoTakuProxy {
 
     private fun serveSegment(conn: Socket, session: StreamSession, target: String, range: String?) {
         try {
-            val response = runBlocking { app.get(target, headers = cdnHeaders(target)) }
+            val response = runBlocking { app.get(target, headers = cdnHeaders(session)) }
             if (!response.isSuccessful) {
                 send404(conn)
                 return
@@ -353,7 +357,7 @@ object GoTakuProxy {
         var url = rewriteWithToken(target, session.token, session.expiresAt)
         for (attempt in 0 until 3) {
             try {
-                val response = runBlocking { app.get(url, headers = cdnHeaders(url)) }
+                val response = runBlocking { app.get(url, headers = cdnHeaders(session)) }
                 if (response.isSuccessful) {
                     val bytes = response.body.bytes()
                     val key = GoTakuCrypto.playlistKey(session.keySeed, tokenFromUrl(url, session))
@@ -378,10 +382,10 @@ object GoTakuProxy {
         }
     }
 
-    private fun cdnHeaders(url: String): Map<String, String> {
+    private fun cdnHeaders(session: StreamSession): Map<String, String> {
         val headers = GoTakuApi.browserHeaders.toMutableMap()
-        headers["Referer"] = "https://gotaku.to/"
-        headers["Origin"] = "https://gotaku.to"
+        headers["Referer"] = "${session.embedOrigin}/"
+        headers["Origin"] = session.embedOrigin
         return headers
     }
 

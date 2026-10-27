@@ -1,4 +1,4 @@
-version = 7
+version = 9
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
@@ -14,5 +14,5 @@ cloudstream {
         "AnimeMovie",
         "OVA"
     )
-    iconUrl = "https://gotaku.to/images/icons/logo.png"
+    iconUrl = "https://gotaku.to/images/icons/logo-white.png?v21"
 }
