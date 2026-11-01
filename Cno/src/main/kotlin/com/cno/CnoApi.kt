@@ -1,181 +1,281 @@
 package com.cno
 
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.nicehttp.NiceResponse
-import org.json.JSONObject
-import java.net.URI
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.laddu100.FirebaseDomainHelper
 
-internal object CnoApi {
+object CnoApi {
+    const val USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 
-    const val MAIN_URL = "https://cno.to"
+    private const val DEFAULT_BETA = "https://beta.cno.to"
+    private const val DEFAULT_ANI = "https://ani.pm"
 
-    private const val IMAGE_BASE = "https://image.tmdb.org/t/p"
+    @Volatile
+    private var betaUrl = DEFAULT_BETA
 
-    fun image(path: String?, size: String = "w500"): String? {
+    @Volatile
+    private var aniUrl = DEFAULT_ANI
+
+    @Volatile
+    private var domainsRefreshedAt = 0L
+
+    suspend fun refreshDomains() {
+        // the firebase map is the same one the repo's other plugins read, so a
+        // domain swap for this network only has to be published once
+        if (System.currentTimeMillis() - domainsRefreshedAt < 5 * 60 * 1000L) return
+        domainsRefreshedAt = System.currentTimeMillis()
+        try {
+            FirebaseDomainHelper.getDomain("cno_beta")?.let { betaUrl = it.removeSuffix("/") }
+            FirebaseDomainHelper.getDomain("anipm")?.let { aniUrl = it.removeSuffix("/") }
+        } catch (_: Exception) {
+            // keep the last known bases, both defaults have stayed live so far
+        }
+    }
+
+    fun beta(): String = betaUrl
+
+    fun ani(): String = aniUrl
+
+    fun artUrl(path: String?, width: String = "w500"): String? {
         if (path.isNullOrBlank()) return null
-        return if (path.startsWith("http")) path else "$IMAGE_BASE/$size$path"
+        return "$betaUrl/art/t/p/$width$path"
     }
 
-    fun absolute(url: String): String =
-        if (url.startsWith("http")) url else MAIN_URL + url
+    // the edge serves the artwork of every title it lists, so posters never
+    // depend on image.tmdb.org being reachable from the device
+    fun stillUrl(path: String?): String? = artUrl(path, "w300")
 
-    private fun hostOf(url: String): String? = try {
-        URI(absolute(url)).host
-    } catch (_: Exception) {
-        null
-    }
-
-    // the same shape of request the site's own pages send, it keeps the
-    // plain path alive whenever the edge is feeling permissive
-    private fun browserHeaders(json: Boolean): Map<String, String> = mapOf(
-        "User-Agent" to CnoWebView.userAgent().orEmpty()
-            .ifBlank { DEFAULT_UA },
-        "Accept" to if (json) "application/json" else "*/*",
-        "Accept-Language" to "en-US,en;q=0.9",
-        "Referer" to "$MAIN_URL/",
-        "Sec-Fetch-Dest" to "empty",
-        "Sec-Fetch-Mode" to "cors",
-        "Sec-Fetch-Site" to "same-origin"
+    private fun headers(referer: String = "$betaUrl/", accept: String = "application/json") = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to accept,
+        "Referer" to referer
     )
 
-    // a clearance is only honored next to the user agent it was minted for
-    private fun cookieHeaders(): Map<String, String> {
-        val jar = CnoWebView.cookies() ?: return emptyMap()
-        val ua = CnoWebView.userAgent() ?: return emptyMap()
-        if (jar.isBlank() || ua.isBlank()) return emptyMap()
-        return mapOf(
-            "Cookie" to jar,
-            "User-Agent" to ua
-        )
-    }
-
-    private val DEFAULT_UA =
-        "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36"
-
-    // the edge answers a refused request with one of these, whatever the
-    // transport says about itself above that is a real response
-    private fun refused(res: NiceResponse, body: String): Boolean {
-        if (res.headers["cf-mitigated"] == "challenge") return true
-        if (res.isSuccessful && res.code == 200) {
-            val type = res.headers["content-type"] ?: ""
-            if (type.contains("text/html")) return true
-            return body.contains("you have been blocked") ||
-                body.contains("Attention Required") ||
-                body.contains("challenge-platform")
-        }
-        if (res.code == 403 || res.code == 429 || res.code == 503) {
-            val server = res.headers["server"] ?: ""
-            if (server.contains("cloudflare", true)) return true
-            return body.contains("you have been blocked") ||
-                body.contains("Attention Required") ||
-                body.contains("just a moment", true) ||
-                body.contains("challenge-platform")
-        }
-        return !res.isSuccessful
-    }
-
-    /**
-     * Everything the plugin reads off the site goes through here. The plain
-     * call goes first because it is instant when the edge lets it through,
-     * then the same call with the harvested clearance, and when the edge
-     * still refuses the request is re-run from inside the site's own page
-     * where the webview's browser stack carries it.
-     */
-    suspend fun text(url: String, json: Boolean = true): String? {
-        val abs = absolute(url)
-        if (hostOf(abs) != URI(MAIN_URL).host) {
-            return try {
-                val res = app.get(abs, headers = browserHeaders(json))
-                if (res.isSuccessful) res.text else null
-            } catch (_: Exception) {
-                null
-            }
-        }
-
-        val withCookies = cookieHeaders()
-        if (withCookies.isNotEmpty()) {
-            try {
-                val res = app.get(abs, headers = browserHeaders(json) + withCookies, timeout = 15L)
-                val body = res.text
-                if (res.isSuccessful && !refused(res, body)) return body
-            } catch (_: Exception) {
-            }
-        }
-
-        try {
-            val res = app.get(abs, headers = browserHeaders(json), timeout = 15L)
-            val body = res.text
-            if (res.isSuccessful && !refused(res, body)) return body
-        } catch (_: Exception) {
-        }
-
-        return CnoWebView.fetch(abs)
-    }
-
-    suspend fun json(path: String): JSONObject? {
-        val body = text(path, json = true) ?: return null
+    private suspend fun getJson(url: String, referer: String = "$betaUrl/"): String? {
         return try {
-            JSONObject(body)
+            val res = app.get(url, headers = headers(referer), timeout = 20_000L)
+            if (res.code == 200) res.text else null
         } catch (_: Exception) {
             null
         }
     }
 
-    // headers for anything the player itself has to pull off cno.to, the
-    // subtitle files are the only ones left, the stream playlists moved to
-    // the site's open cdn hosts where nothing is checked
-    fun streamHeaders(url: String): Map<String, String>? {
-        if (hostOf(url) != URI(MAIN_URL).host) return null
-        val base = cookieHeaders()
-        if (base.isEmpty()) return null
-        return base + mapOf(
-            "Referer" to "$MAIN_URL/",
-            "Accept" to "*/*"
-        )
+    suspend fun searchScreen(query: String, page: Int): ScreenSearchResponse? {
+        val text = getJson(
+            "$betaUrl/screen-api/search?q=${encode(query)}&type=all&page=$page"
+        ) ?: return null
+        return try {
+            parseJson<ScreenSearchResponse>(text)
+        } catch (_: Exception) {
+            null
+        }
     }
 
-    data class Variant(val url: String, val quality: Int)
+    @Volatile
+    private var shelfCache: List<ScreenShelf> = emptyList()
 
-    // the multi cdn server hands out absolute variant urls, both kinds
-    // resolve through the same URI call
-    fun parseVariants(master: String, masterUrl: String): List<Variant> {
-        val lines = master.lines()
-        val out = ArrayList<Variant>(8)
-        for (i in 0 until lines.size - 1) {
-            if (!lines[i].startsWith("#EXT-X-STREAM-INF")) continue
-            val target = lines[i + 1].trim()
-            if (target.isEmpty() || target.startsWith("#")) continue
-            val size = RESOLUTION.find(lines[i])
-            val width = size?.groupValues?.get(1)?.toIntOrNull() ?: 0
-            val height = size?.groupValues?.get(2)?.toIntOrNull() ?: 0
-            val url = try {
-                URI(absolute(masterUrl)).resolve(target).toString()
-            } catch (_: Exception) {
-                continue
+    @Volatile
+    private var shelfCacheAt = 0L
+
+    suspend fun siteShelves(): List<ScreenShelf> {
+        // every mainpage section reads the same shelf document, so it is kept
+        // for a few minutes instead of being pulled once per section
+        if (System.currentTimeMillis() - shelfCacheAt < 5 * 60 * 1000L && shelfCache.isNotEmpty()) {
+            return shelfCache
+        }
+        // v pins the shelf layout the site itself renders, without it the edge
+        // can hand back an older shape
+        val text = getJson("$betaUrl/screen-api/site/dexter?v=8") ?: return shelfCache
+        return try {
+            val shelves = parseJson<ScreenSite>(text).shelves
+            if (shelves.isNotEmpty()) {
+                shelfCache = shelves
+                shelfCacheAt = System.currentTimeMillis()
             }
-            val labeled = PATH_QUALITY.find(target)?.groupValues?.get(1)?.toIntOrNull()
-            out.add(Variant(url, labeled ?: qualityOf(width, height)))
+            shelves
+        } catch (_: Exception) {
+            shelfCache
         }
-        // a media playlist with no variants plays fine as a single link
-        if (out.isEmpty() && master.startsWith("#EXTM3U")) {
-            out.add(Variant(absolute(masterUrl), Qualities.Unknown.value))
-        }
-        return out
     }
 
-    // scope masters are 3840 wide but barely 1600 tall, the width is what
-    // makes those 4K, everything else buckets off the height
-    private fun qualityOf(width: Int, height: Int): Int = when {
-        width >= 3000 || height >= 1900 -> 2160
-        height >= 1400 -> 1440
-        height >= 1000 -> 1080
-        height >= 700 -> 720
-        height >= 500 -> 576
-        height > 0 -> 480
-        else -> Qualities.Unknown.value
+    suspend fun movieDetail(id: Int): ScreenDetail? {
+        val text = getJson("$betaUrl/screen-api/movie/$id") ?: return null
+        return try {
+            parseJson<ScreenDetail>(text)
+        } catch (_: Exception) {
+            null
+        }
     }
 
-    private val RESOLUTION = Regex("""RESOLUTION=(\d+)x(\d+)""")
-    private val PATH_QUALITY = Regex("""/(\d{3,4})p/""")
+    suspend fun tvDetail(id: Int): ScreenDetail? {
+        val text = getJson("$betaUrl/screen-api/tv/$id") ?: return null
+        return try {
+            parseJson<ScreenDetail>(text)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    suspend fun seasonEpisodes(id: Int, season: Int): SeasonResponse? {
+        val text = getJson("$betaUrl/screen-api/tv/$id/season/$season") ?: return null
+        return try {
+            parseJson<SeasonResponse>(text)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    data class MasterResult(
+        val text: String,
+        val hasAudioRenditions: Boolean,
+        val variants: List<Variant>
+    )
+
+    data class Variant(
+        val height: Int,
+        val url: String
+    )
+
+    // one retry: the edge has been seen answering a perfectly valid request
+    // with a truncated playlist once before serving the real one
+    suspend fun masterPlaylist(path: String): MasterResult? {
+        repeat(2) {
+            val text = fetchMaster("$betaUrl$path")
+            if (text != null) {
+                val parsed = parseMaster(text) ?: return null
+                return parsed
+            }
+        }
+        return null
+    }
+
+    private suspend fun fetchMaster(url: String): String? {
+        return try {
+            val res = app.get(
+                url,
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "*/*",
+                    "Referer" to "$betaUrl/"
+                ),
+                timeout = 20_000L
+            )
+            if (res.code == 200 && res.text.startsWith("#EXTM3U")) res.text else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // variants in these masters are relative /screen/pl/ paths, the player
+    // would resolve them against whatever host it loaded the master from, so
+    // they are made absolute here before being handed out as links
+    fun parseMaster(text: String): MasterResult? {
+        val hasAudio = text.contains("TYPE=AUDIO")
+        val variants = mutableListOf<Variant>()
+        val lines = text.lines()
+        var pendingHeight: Int? = null
+        for (line in lines) {
+            val trimmed = line.trim()
+            if (trimmed.startsWith("#EXT-X-STREAM-INF")) {
+                val resolution = Regex("RESOLUTION=(\\d+)x(\\d+)").find(trimmed)
+                pendingHeight = resolution?.groupValues?.get(2)?.toIntOrNull()
+            } else if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                val height = pendingHeight
+                if (height != null && height > 0) {
+                    val absolute = if (trimmed.startsWith("http")) {
+                        trimmed
+                    } else {
+                        "$betaUrl$trimmed"
+                    }
+                    variants.add(Variant(height, absolute))
+                }
+                pendingHeight = null
+            }
+        }
+        if (variants.isEmpty() && !hasAudio) return null
+        return MasterResult(text, hasAudio, variants)
+    }
+
+    suspend fun subsList(path: String): List<SubFile> {
+        val text = getJson("$betaUrl/screen-api/subs/list/$path") ?: return emptyList()
+        return try {
+            parseJson<SubsList>(text).files
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun subTrackUrl(path: String, lang: String): String {
+        return "$betaUrl/screen/subs/$path/$lang.vtt"
+    }
+
+    suspend fun partnerSearch(query: String): List<PartnerTitle> {
+        val text = getJson(
+            "${ani()}api/partner/v1/titles?q=${encode(query)}&limit=50&adult=0",
+            referer = "${ani()}/"
+        ) ?: return emptyList()
+        return try {
+            parseJson<PartnerTitlesResponse>(text).data
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun partnerTop(range: String, limit: Int): List<PartnerTitle> {
+        val text = getJson(
+            "${ani()}api/partner/v1/top?range=$range&limit=$limit&adult=0",
+            referer = "${ani()}/"
+        ) ?: return emptyList()
+        return try {
+            parseJson<PartnerTitlesResponse>(text).data
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun partnerRecent(page: Int): List<PartnerRecentItem> {
+        val text = getJson(
+            "${ani()}api/partner/v1/recent?page=$page&limit=40&adult=0",
+            referer = "${ani()}/"
+        ) ?: return emptyList()
+        return try {
+            parseJson<PartnerRecentResponse>(text).data
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun partnerSeries(anilistId: Int): PartnerSeries? {
+        val text = getJson(
+            "${ani()}api/partner/v1/series/$anilistId",
+            referer = "${ani()}/"
+        ) ?: return null
+        return try {
+            parseJson<PartnerSeriesResponse>(text).data
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // the beta edge keys its hls folders by anilist id plus the slug the site
+    // itself uses, and the slug is not guessable, so it is read from here
+    suspend fun betaServer(anilistId: Int): BetaServerResponse? {
+        val text = getJson(
+            "${ani()}api/anime/beta-server/$anilistId",
+            referer = "${ani()}/"
+        ) ?: return null
+        return try {
+            parseJson<BetaServerResponse>(text)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun animeMasterUrl(origin: String, anilistId: Int, slug: String, episode: Int): String {
+        return "$origin/hls/$anilistId-$slug/E${"%04d".format(episode)}/master.m3u8"
+    }
+
+    private fun encode(value: String): String =
+        java.net.URLEncoder.encode(value, "UTF-8")
 }
