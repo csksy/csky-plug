@@ -42,14 +42,6 @@ data class ScreenShelf(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class ScreenSource(
-    val id: String? = null,
-    val kind: String? = null,
-    val url: String? = null,
-    val label: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
 data class ScreenDetail(
     val type: String? = null,
     val id: Int? = null,
@@ -105,6 +97,14 @@ data class ScreenNextEpisode(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
+data class ScreenSource(
+    val id: String? = null,
+    val kind: String? = null,
+    val url: String? = null,
+    val label: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class SeasonInfo(
     val number: Int? = null,
     val name: String? = null,
@@ -153,112 +153,79 @@ data class SubFile(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerTitlesResponse(
-    val data: List<PartnerTitle> = emptyList(),
+data class BrowseResponse(
+    val items: List<BrowseItem> = emptyList(),
     val page: Int? = null,
-    val limit: Int? = null,
+    val lastPage: Int? = null,
     val total: Int? = null,
-    val hasMore: Boolean? = null
+    val hasNextPage: Boolean? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerTitle(
-    val anilistId: Int? = null,
-    val malId: Int? = null,
+data class BrowseItem(
+    val id: Int? = null,
+    val anilistId: String? = null,
+    val malId: String? = null,
     val title: String? = null,
-    val nativeTitle: String? = null,
-    val format: String? = null,
-    val status: String? = null,
-    val year: Int? = null,
-    val season: String? = null,
-    val score: Double? = null,
-    val rating: String? = null,
-    val durationMinutes: Int? = null,
-    val episodes: PartnerEpisodeCounts? = null,
-    val genres: List<String> = emptyList(),
-    val studios: List<String> = emptyList(),
-    val adult: Boolean? = null,
-    val synopsis: String? = null,
-    val poster: String? = null,
-    val banner: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerEpisodeCounts(
-    val total: Int? = null,
-    val sub: Int? = null,
-    val dub: Int? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerSeriesResponse(
-    val data: PartnerSeries? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerSeries(
-    val anilistId: Int? = null,
-    val malId: Int? = null,
-    val title: String? = null,
-    val nativeTitle: String? = null,
-    val format: String? = null,
-    val status: String? = null,
-    val year: Int? = null,
-    val season: String? = null,
-    val score: Double? = null,
-    val rating: String? = null,
-    val durationMinutes: Int? = null,
-    val episodes: PartnerEpisodeCounts? = null,
-    val genres: List<String> = emptyList(),
-    val studios: List<String> = emptyList(),
-    val adult: Boolean? = null,
-    val synopsis: String? = null,
+    val native: String? = null,
     val poster: String? = null,
     val banner: String? = null,
-    val episodeList: List<PartnerEpisode> = emptyList()
+    val year: Int? = null,
+    val score: Double? = null,
+    val rating: String? = null,
+    val status: String? = null,
+    val type: String? = null,
+    val genres: List<String> = emptyList(),
+    val studios: List<String> = emptyList(),
+    val episodeCount: Int? = null,
+    val subCount: Int? = null,
+    val dubCount: Int? = null,
+    val synopsis: String? = null,
+    val routeId: String? = null,
+    val hasDub: Boolean? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerEpisode(
+data class AnimeDetail(
+    val id: Int? = null,
+    val anilistId: String? = null,
+    val malId: String? = null,
+    val title: String? = null,
+    val native: String? = null,
+    val romaji: String? = null,
+    val poster: String? = null,
+    val banner: String? = null,
+    val year: Int? = null,
+    val score: Double? = null,
+    val rating: String? = null,
+    // the site sends minutes as a number for some titles and as "80 min"
+    // for others, the player wants plain minutes
+    val duration: Any? = null,
+    val status: String? = null,
+    val type: String? = null,
+    val genres: List<String> = emptyList(),
+    val studios: List<String> = emptyList(),
+    val synopsis: String? = null,
+    val episodeCount: Int? = null,
+    val subCount: Int? = null,
+    val dubCount: Int? = null,
+    val season: String? = null,
+    val hasDub: Boolean? = null,
+    val episodes: List<AnimeEpisode> = emptyList(),
+    val routeId: String? = null,
+    val recommendations: List<BrowseItem> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AnimeEpisode(
     val number: Int? = null,
     val title: String? = null,
-    val runtimeSeconds: Int? = null,
-    val aired: String? = null,
     val thumbnail: String? = null,
-    val available: PartnerAvailability? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerAvailability(
+    val description: String? = null,
     val sub: Boolean? = null,
     val dub: Boolean? = null,
-    val subHard: Boolean? = null,
-    val dubHard: Boolean? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerRecentResponse(
-    val data: List<PartnerRecentItem> = emptyList()
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class PartnerRecentItem(
-    val anilistId: Int? = null,
-    val title: String? = null,
-    val poster: String? = null,
-    val episode: Int? = null,
-    val episodeTitle: String? = null,
-    val sub: Boolean? = null,
-    val dub: Boolean? = null,
-    val adult: Boolean? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class BetaServerResponse(
-    val available: Boolean? = null,
-    val origin: String? = null,
-    val path: String? = null,
-    val episodes: List<Int> = emptyList(),
-    val sub: Boolean? = null,
-    val dub: Boolean? = null
+    val runtimeSeconds: Int? = null,
+    val rating: String? = null,
+    val aired: String? = null,
+    val embedId: String? = null
 )

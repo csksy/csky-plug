@@ -180,11 +180,10 @@ internal object CnoProxy {
     }
 
     private fun fetchPlaylist(url: String): String? {
-        // the referer the site's own player sends is the origin the hls tree
-        // lives under, it is the only one the edge accepts
-        val referer = url.substringBefore("/hls/") + "/"
         return try {
-            runBlocking { CnoApi.text(url, referer, accept = "*/*") }
+            // the referer the whole site family accepts, the edge and the
+            // cdns behind it alike
+            runBlocking { CnoApi.text(url, CnoApi.streamReferer(), accept = "*/*") }
         } catch (e: Exception) {
             Log.d(TAG, "proxy playlist fetch failed: ${e.message}")
             null

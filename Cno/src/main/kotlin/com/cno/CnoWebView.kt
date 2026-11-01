@@ -41,6 +41,11 @@ internal object CnoWebView {
     private const val CLEARANCE_WAIT_MS = 2500L
     private const val CLEARANCE_POLL_MS = 400L
 
+    // a page that never comes up twice in a row means the network itself
+    // is in the way, every call after it would pay the same wait for the
+    // same nothing so the webview is left alone for a while
+    private const val DEAD_COOLDOWN_MS = 5 * 60 * 1000L
+
     private var appContext: Context? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val loadMutex = Mutex()
@@ -56,6 +61,9 @@ internal object CnoWebView {
 
     @Volatile
     private var failedHard = false
+
+    @Volatile
+    private var deadUntil = 0L
 
     @Volatile
     private var loadGate: CompletableDeferred<Boolean>? = null
@@ -197,6 +205,7 @@ internal object CnoWebView {
      */
     suspend fun fetch(url: String): String? {
         if (failedHard) return null
+        if (System.currentTimeMillis() < deadUntil) return null
         val origin = originOf(url) ?: return null
         return withContext(Dispatchers.Main) {
             val view = ensureWebView() ?: return@withContext null
@@ -210,6 +219,7 @@ internal object CnoWebView {
             }
             if (!loadedOnce(view, origin)) {
                 Log.w(TAG, "webview page never came up for ${origin.removePrefix("https://")}")
+                deadUntil = System.currentTimeMillis() + DEAD_COOLDOWN_MS
                 return@withContext null
             }
             runInPage(view, url)

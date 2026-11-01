@@ -55,13 +55,15 @@ class CnoProvider : MainAPI() {
             "dexter-classics" to "Classics"
         )
 
-        fun qualityOf(height: Int): Int = when {
-            height >= 2160 -> Qualities.P2160.value
-            height >= 1440 -> Qualities.P1440.value
-            height >= 1080 -> Qualities.P1080.value
-            height >= 720 -> Qualities.P720.value
-            height >= 480 -> Qualities.P480.value
-            height >= 360 -> Qualities.P360.value
+        // cinema scopes report short heights next to huge widths, the width
+        // is the honest signal of the master behind the variant
+        fun qualityOf(width: Int, height: Int): Int = when {
+            width >= 3840 || height >= 2160 -> Qualities.P2160.value
+            width >= 2560 || height >= 1440 -> Qualities.P1440.value
+            width >= 1920 || height >= 1080 -> Qualities.P1080.value
+            width >= 1280 || height >= 720 -> Qualities.P720.value
+            width >= 852 || height >= 480 -> Qualities.P480.value
+            width >= 640 || height >= 360 -> Qualities.P360.value
             else -> Qualities.P240.value
         }
 
@@ -243,12 +245,29 @@ class CnoProvider : MainAPI() {
             else -> return false
         }
 
-        val master = CnoApi.masterPlaylist(masterPath) ?: return false
+        val masterUrl = "${CnoApi.beta()}$masterPath"
+        val readable = CnoApi.masterPlaylist(masterPath) ?: return false
+        val master = CnoApi.parseMaster(readable.body) ?: return false
 
-        // shows with a separate audio rendition only play in sync from the full
-        // master, splitting those per quality would hand the player silent video
-        if (master.hasAudioRenditions || master.variants.isEmpty()) {
-            val masterUrl = "${CnoApi.beta()}$masterPath"
+        if (!readable.plainOk) {
+            // only the browser stack got through, the player cannot walk the
+            // guarded playlist tree itself so it is served from the local
+            // proxy while the segments stay on the open cdn
+            val proxyUrl = CnoProxy.linkFor(masterUrl) ?: return false
+            callback.invoke(
+                newExtractorLink(
+                    source = name,
+                    name = name,
+                    url = proxyUrl,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    headers = CnoApi.streamHeaders()
+                }
+            )
+        } else if (master.hasAudioRenditions || master.variants.isEmpty()) {
+            // shows with a separate audio rendition only play in sync from
+            // the full master, splitting those per quality would hand the
+            // player silent video
             callback.invoke(
                 newExtractorLink(
                     source = name,
@@ -256,9 +275,7 @@ class CnoProvider : MainAPI() {
                     url = masterUrl,
                     type = ExtractorLinkType.M3U8
                 ) {
-                    // the playlists live on the guarded host, exoplayer needs
-                    // the same clearance and user agent the plugin itself uses
-                    headers = CnoApi.streamHeaders(masterUrl, "${CnoApi.beta()}/")
+                    headers = CnoApi.streamHeaders()
                 }
             )
         } else {
@@ -270,8 +287,8 @@ class CnoProvider : MainAPI() {
                         url = variant.url,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        quality = qualityOf(variant.height)
-                        headers = CnoApi.streamHeaders(variant.url, "${CnoApi.beta()}/")
+                        quality = qualityOf(variant.width, variant.height)
+                        headers = CnoApi.streamHeaders()
                     }
                 )
             }
@@ -301,9 +318,9 @@ class CnoProvider : MainAPI() {
                 subtitleCallback.invoke(
                     newSubtitleFile(label, trackUrl) {
                         // the files are served by the guarded host itself, the
-                        // player fetches them directly so they carry the
-                        // clearance and user agent along
-                        headers = CnoApi.streamHeaders(trackUrl, "${CnoApi.beta()}/")
+                        // player fetches them directly so they carry the same
+                        // headers the playlists ride
+                        headers = CnoApi.streamHeaders()
                     }
                 )
             } catch (_: Exception) {

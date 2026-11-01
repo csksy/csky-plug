@@ -1,10 +1,18 @@
 package com.cno
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.nicehttp.NiceResponse
 import com.laddu100.FirebaseDomainHelper
+import okhttp3.Dns
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 object CnoApi {
     private const val TAG = "Cno"
@@ -13,40 +21,43 @@ object CnoApi {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 
     private const val DEFAULT_BETA = "https://beta.cno.to"
-    private const val DEFAULT_ANI = "https://ani.pm"
+
+    // every host in the site's family, the edge and both cdns, lets this one
+    // referer through, so the player can wear it for playlists and segments
+    // alike instead of a per host guess
+    private const val STREAM_REFERER = "https://cno.to/"
 
     // nicehttp counts its timeout in seconds, a mistaken millis value
     // turns into a request that can hang for hours
     private const val CALL_TIMEOUT = 15L
 
-    @Volatile
-    private var betaUrl = DEFAULT_BETA
+    private const val DNS_TTL_MS = 10 * 60 * 1000L
 
     @Volatile
-    private var aniUrl = DEFAULT_ANI
+    private var betaUrl = DEFAULT_BETA
 
     @Volatile
     private var domainsRefreshedAt = 0L
 
     suspend fun refreshDomains() {
-        // the firebase map is the same one the repo's other plugins read, so a
-        // domain swap for this network only has to be published once
+        // the firebase map is the same one the repo's other plugins read, so
+        // a domain swap for this network only has to be published once
         if (System.currentTimeMillis() - domainsRefreshedAt < 5 * 60 * 1000L) return
         domainsRefreshedAt = System.currentTimeMillis()
         try {
             FirebaseDomainHelper.getDomain("cno_beta")?.let { betaUrl = it.removeSuffix("/") }
-            FirebaseDomainHelper.getDomain("anipm")?.let { aniUrl = it.removeSuffix("/") }
         } catch (_: Exception) {
-            // keep the last known bases, both defaults have stayed live so far
+            // keep the last known base, the default has stayed live so far
         }
     }
 
     fun beta(): String = betaUrl
 
-    fun ani(): String = aniUrl
+    fun streamReferer(): String = STREAM_REFERER
 
     fun artUrl(path: String?, width: String = "w500"): String? {
         if (path.isNullOrBlank()) return null
+        if (path.startsWith("http")) return path
         return "$betaUrl/art/t/p/$width$path"
     }
 
@@ -54,11 +65,24 @@ object CnoApi {
     // depend on image.tmdb.org being reachable from the device
     fun stillUrl(path: String?): String? = artUrl(path, "w300")
 
+    // anime art arrives as site relative paths, they only resolve against
+    // the beta base
+    fun animeArt(path: String?): String? {
+        if (path.isNullOrBlank()) return null
+        if (path.startsWith("http")) return path
+        return "$betaUrl$path"
+    }
+
     private fun originOf(url: String): String = try {
         val cut = url.indexOf('/', url.indexOf("//") + 2)
         if (cut <= 0) url else url.substring(0, cut)
     } catch (_: Exception) {
         url
+    }
+
+    private fun hostAndPath(url: String): String {
+        val origin = originOf(url)
+        return url.removePrefix(origin).take(80).ifBlank { "/" }
     }
 
     // the same shape of request the site's own pages send, it keeps the
@@ -85,77 +109,241 @@ object CnoApi {
         )
     }
 
-    // the edge answers a refused request with one of these, whatever the
-    // transport says about itself above that is a real response
-    private fun refused(res: NiceResponse, body: String): Boolean {
-        if (res.headers["cf-mitigated"] == "challenge") return true
-        if (res.code == 200) {
-            val type = res.headers["content-type"] ?: ""
-            if (type.contains("text/html")) return true
-        }
-        if (res.code == 403 || res.code == 429 || res.code == 503) {
-            return body.contains("challenge-platform") ||
-                body.contains("just a moment", true) ||
-                body.contains("you have been blocked") ||
-                body.contains("attention required", true)
-        }
+    // the edge answers a refused request with a challenge page, a block page
+    // or a bare 403, and the shapes have changed between deployments, so
+    // anything that is not the expected payload counts as a refusal and
+    // wakes the heavier lanes up
+    private fun refused(code: Int, body: String, mitigated: String?, contentType: String?): Boolean {
+        if (mitigated == "challenge") return true
+        if (code == 200 && contentType?.contains("text/html") == true) return true
+        if (code == 403 || code == 429 || code >= 500) return true
         return false
     }
 
-    private class DirectOutcome(val body: String?, val refusedByEdge: Boolean)
+    private fun refusedNice(res: com.lagradost.nicehttp.NiceResponse, body: String): Boolean =
+        refused(
+            res.code,
+            body,
+            res.headers["cf-mitigated"],
+            res.headers["content-type"]
+        )
 
-    // both direct attempts in one place: the harvested clearance first, then
-    // the plain browser shaped call. A refusal by the edge is told apart from
-    // a definitive miss so only the first one wakes the webview up.
+    class DirectOutcome internal constructor(
+        val body: String?,
+        val refused: Boolean,
+        val definitiveMiss: Boolean
+    )
+
+    // the first lane: the app's own client with the browser shaped headers,
+    // the harvested clearance riding along when one exists. a dead network
+    // or a refused answer is told apart from a real miss so the caller can
+    // send the heavier lanes in only when they can help
     private suspend fun directOutcome(url: String, referer: String, accept: String): DirectOutcome {
+        val headers = browserHeaders(url, referer, accept)
         val clearance = clearanceHeaders(url)
         if (clearance.isNotEmpty()) {
             try {
-                val res = app.get(
-                    url,
-                    headers = browserHeaders(url, referer, accept) + clearance,
-                    timeout = CALL_TIMEOUT
-                )
+                val res = app.get(url, headers = headers + clearance, timeout = CALL_TIMEOUT)
                 val body = res.text
-                if (res.code == 200 && !refused(res, body)) return DirectOutcome(body, false)
-            } catch (_: Exception) {
+                if (res.code == 200 && !refusedNice(res, body)) return DirectOutcome(body, false, false)
+            } catch (e: Exception) {
+                Log.w(TAG, "direct lane with clearance failed ${hostAndPath(url)}: ${e.message}")
             }
         }
         return try {
-            val res = app.get(url, headers = browserHeaders(url, referer, accept), timeout = CALL_TIMEOUT)
+            val res = app.get(url, headers = headers, timeout = CALL_TIMEOUT)
             val body = res.text
             when {
-                res.code == 200 && !refused(res, body) -> DirectOutcome(body, false)
-                refused(res, body) || res.code == 403 || res.code == 429 || res.code == 503 ->
-                    DirectOutcome(null, true)
-                else -> DirectOutcome(null, false)
+                res.code == 200 && !refusedNice(res, body) -> DirectOutcome(body, false, false)
+                res.code == 404 || res.code == 410 -> DirectOutcome(null, false, true)
+                else -> DirectOutcome(null, true, false)
             }
-        } catch (_: Exception) {
-            DirectOutcome(null, false)
+        } catch (e: Exception) {
+            // a carrier resolver that forgets the site's name or a middlebox
+            // that cuts the handshake lands here, the heavier lanes still
+            // have a chance of getting through
+            Log.w(TAG, "direct lane failed ${hostAndPath(url)}: ${e.message}")
+            DirectOutcome(null, true, false)
         }
     }
 
-    /**
-     * Everything the plugin reads off either host goes through here. The
-     * direct call goes first because it is instant whenever the edge lets
-     * it through, and when the edge refuses the request is re-run from
-     * inside the site's own page where the webview's browser stack carries
-     * it. A definitive not found comes back as null without waking the
-     * webview up.
-     */
-    suspend fun text(url: String, referer: String, accept: String = "application/json"): String? {
-        val direct = directOutcome(url, referer, accept)
-        if (direct.body != null) return direct.body
-        if (!direct.refusedByEdge) return null
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private class DohAnswer(
+        @com.fasterxml.jackson.annotation.JsonProperty("Answer")
+        val answer: List<DohRecord> = emptyList()
+    )
 
-        Log.d(TAG, "edge refused ${originOf(url).removePrefix("https://")}${url.substringAfter(originOf(url), "")}, moving to the webview")
-        return CnoWebView.fetch(url)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private class DohRecord(val type: Int? = null, val data: String? = null)
+
+    private val dnsCache = ConcurrentHashMap<String, Pair<Long, List<InetAddress>>>()
+
+    // a carrier resolver can be made to forget the site's names while the
+    // rest of the internet still answers, so the guarded hosts are resolved
+    // over https through google's public resolver before the system is
+    // asked. only literal addresses are kept, the resolver also hands back
+    // cname strings no socket can dial
+    private class GuardedDns : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            if (hostname == "cno.to" || hostname.endsWith(".cno.to") || hostname == "ani.pm") {
+                dohAnswer(hostname)?.let { if (it.isNotEmpty()) return it }
+            }
+            return Dns.SYSTEM.lookup(hostname)
+        }
+
+        private fun dohAnswer(hostname: String): List<InetAddress>? {
+            val cached = dnsCache[hostname]
+            if (cached != null && System.currentTimeMillis() - cached.first < DNS_TTL_MS) {
+                return cached.second
+            }
+            try {
+                val found = mutableListOf<InetAddress>()
+                for (qtype in listOf("A", "AAAA")) {
+                    val conn = URL("https://dns.google/resolve?name=$hostname&type=$qtype")
+                        .openConnection() as HttpURLConnection
+                    try {
+                        conn.connectTimeout = 5000
+                        conn.readTimeout = 5000
+                        conn.requestMethod = "GET"
+                        conn.setRequestProperty("User-Agent", USER_AGENT)
+                        conn.setRequestProperty("Accept", "application/json")
+                        if (conn.responseCode != 200) return null
+                        val parsed = parseJson<DohAnswer>(
+                            conn.inputStream.bufferedReader().use { it.readText() }
+                        )
+                        for (record in parsed.answer) {
+                            val data = record.data ?: continue
+                            val literal = when (record.type) {
+                                1 -> Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(data)
+                                28 -> data.contains(':') && !data.contains(' ')
+                                else -> false
+                            }
+                            if (literal) {
+                                runCatching { InetAddress.getByName(data) }.getOrNull()?.let { found.add(it) }
+                            }
+                        }
+                    } finally {
+                        conn.disconnect()
+                    }
+                }
+                dnsCache[hostname] = System.currentTimeMillis() to found
+                return found
+            } catch (_: Exception) {
+                // the resolver itself is out of reach, the system answer is
+                // whatever it is
+                return null
+            }
+        }
     }
 
-    // tells whether the network lets plain clients onto a path, the anime
-    // links only need the proxy when it does not
-    suspend fun plainText(url: String, referer: String, accept: String = "application/json"): String? {
-        return directOutcome(url, referer, accept).body
+    private val dohClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .dns(GuardedDns())
+            .connectTimeout(CALL_TIMEOUT, TimeUnit.SECONDS)
+            .readTimeout(CALL_TIMEOUT, TimeUnit.SECONDS)
+            .callTimeout(CALL_TIMEOUT + 5, TimeUnit.SECONDS)
+            .build()
+    }
+
+    // the second lane: the same browser shaped call placed through a client
+    // that dials the guarded hosts at addresses it resolved itself
+    private fun dohOutcome(url: String, referer: String, accept: String): DirectOutcome {
+        return try {
+            val builder = Request.Builder().url(url)
+            (browserHeaders(url, referer, accept) + clearanceHeaders(url)).forEach { (k, v) ->
+                builder.header(k, v)
+            }
+            dohClient.newCall(builder.build()).execute().use { res ->
+                val body = res.body?.string() ?: ""
+                when {
+                    res.code == 200 && !refused(
+                        res.code,
+                        body,
+                        res.header("cf-mitigated"),
+                        res.header("content-type")
+                    ) -> DirectOutcome(body, false, false)
+
+                    res.code == 404 || res.code == 410 -> DirectOutcome(null, false, true)
+                    else -> DirectOutcome(null, true, false)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "doh lane failed ${hostAndPath(url)}: ${e.message}")
+            DirectOutcome(null, true, false)
+        }
+    }
+
+    enum class Lane { DIRECT, DOH }
+
+    @Volatile
+    private var preferredLane: Lane? = null
+
+    class Readable internal constructor(
+        val body: String,
+        // true when a plain client could read the url, false when only the
+        // browser stack got through, the player then has to be served from
+        // the local proxy instead of the guarded urls
+        val plainOk: Boolean
+    )
+
+    /**
+     * Everything the plugin reads off the guarded hosts goes through here.
+     * The plain lanes go first because they are instant whenever the network
+     * lets them through, the doh lane answers the networks whose resolver
+     * refuses the site's names, and when both are turned away the request
+     * is re-run from inside the site's own page where the webview's browser
+     * stack carries it and its clearance lands in the jar for the calls
+     * after it. a definitive not found comes back as null without waking
+     * the webview up.
+     */
+    suspend fun readable(url: String, referer: String, accept: String = "application/json"): Readable? {
+        val lanes = if (preferredLane == Lane.DOH) {
+            listOf(Lane.DOH, Lane.DIRECT)
+        } else {
+            listOf(Lane.DIRECT, Lane.DOH)
+        }
+        for (lane in lanes) {
+            val outcome = when (lane) {
+                Lane.DIRECT -> directOutcome(url, referer, accept)
+                Lane.DOH -> dohOutcome(url, referer, accept)
+            }
+            if (outcome.body != null) {
+                preferredLane = lane
+                return Readable(outcome.body, true)
+            }
+            if (outcome.definitiveMiss) return null
+        }
+
+        val viaWebView = CnoWebView.fetch(url)
+        if (viaWebView != null) return Readable(viaWebView, false)
+
+        // the page session may still have harvested a clearance on its way
+        // down, the direct lane gets one more go with it before giving up
+        if (clearanceHeaders(url).isNotEmpty()) {
+            val retry = directOutcome(url, referer, accept)
+            if (retry.body != null) {
+                preferredLane = Lane.DIRECT
+                return Readable(retry.body, false)
+            }
+        }
+        Log.w(TAG, "every lane refused ${hostAndPath(url)}")
+        return null
+    }
+
+    suspend fun text(url: String, referer: String, accept: String = "application/json"): String? =
+        readable(url, referer, accept)?.body
+
+    // headers for anything the player itself has to pull off the guarded
+    // hosts, the playlists, the subtitle files and the cdn segments all
+    // accept this one set, the clearance rides along when one exists
+    fun streamHeaders(): Map<String, String> {
+        val headers = mutableMapOf(
+            "User-Agent" to (CnoWebView.userAgent() ?: USER_AGENT),
+            "Referer" to STREAM_REFERER,
+            "Accept" to "*/*"
+        )
+        CnoWebView.cookies(betaUrl)?.let { headers["Cookie"] = it }
+        return headers
     }
 
     suspend fun searchScreen(query: String, page: Int): ScreenSearchResponse? {
@@ -231,18 +419,17 @@ object CnoApi {
     )
 
     data class Variant(
+        val width: Int,
         val height: Int,
         val url: String
     )
 
     // one retry: the edge has been seen answering a perfectly valid request
     // with a truncated playlist once before serving the real one
-    suspend fun masterPlaylist(path: String): MasterResult? {
+    suspend fun masterPlaylist(path: String): Readable? {
         repeat(2) {
-            val body = text("$betaUrl$path", "$betaUrl/", accept = "*/*")
-            if (body != null && body.startsWith("#EXTM3U")) {
-                return parseMaster(body)
-            }
+            val readable = readable("$betaUrl$path", "$betaUrl/", accept = "*/*")
+            if (readable != null && readable.body.startsWith("#EXTM3U")) return readable
         }
         return null
     }
@@ -254,22 +441,26 @@ object CnoApi {
         val hasAudio = body.contains("TYPE=AUDIO")
         val variants = mutableListOf<Variant>()
         val lines = body.lines()
+        var pendingWidth: Int? = null
         var pendingHeight: Int? = null
         for (line in lines) {
             val trimmed = line.trim()
             if (trimmed.startsWith("#EXT-X-STREAM-INF")) {
                 val resolution = Regex("RESOLUTION=(\\d+)x(\\d+)").find(trimmed)
+                pendingWidth = resolution?.groupValues?.get(1)?.toIntOrNull()
                 pendingHeight = resolution?.groupValues?.get(2)?.toIntOrNull()
             } else if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                val width = pendingWidth
                 val height = pendingHeight
-                if (height != null && height > 0) {
+                if (width != null && width > 0) {
                     val absolute = if (trimmed.startsWith("http")) {
                         trimmed
                     } else {
                         "$betaUrl$trimmed"
                     }
-                    variants.add(Variant(height, absolute))
+                    variants.add(Variant(width, height ?: 0, absolute))
                 }
+                pendingWidth = null
                 pendingHeight = null
             }
         }
@@ -290,71 +481,53 @@ object CnoApi {
         return "$betaUrl/screen/subs/$path/$lang.vtt"
     }
 
-    // headers for anything the player itself has to pull off the guarded
-    // hosts, the playlists and subtitle files are fetched by exoplayer so
-    // they carry the clearance and the user agent it belongs to
-    fun streamHeaders(url: String, referer: String): Map<String, String> {
-        val headers = mutableMapOf(
-            "User-Agent" to (CnoWebView.userAgent() ?: USER_AGENT),
-            "Referer" to referer,
-            "Accept" to "*/*"
-        )
-        CnoWebView.cookies(url)?.let { headers["Cookie"] = it }
-        return headers
-    }
-
-    suspend fun partnerSearch(query: String): List<PartnerTitle> {
-        val body = text("${ani()}/api/partner/v1/titles?q=${encode(query)}&limit=50&adult=0", "${ani()}/")
-            ?: return emptyList()
-        return try {
-            parseJson<PartnerTitlesResponse>(body).data
-        } catch (_: Exception) {
-            emptyList()
+    // the anime catalog lives on the beta edge itself and answers plain
+    // clients, the partner api on the sibling domain sits behind a harder
+    // challenge for no extra data
+    suspend fun browseAnime(
+        query: String?,
+        page: Int,
+        season: String? = null,
+        year: Int? = null
+    ): BrowseResponse? {
+        val params = buildList {
+            if (!query.isNullOrBlank()) add("q=${encode(query)}")
+            add("page=$page")
+            add("sfw=1")
+            add("sort=trending")
+            season?.let { add("season=$it") }
+            year?.let { add("year=$it") }
         }
-    }
-
-    suspend fun partnerTop(range: String, limit: Int): List<PartnerTitle> {
-        val body = text("${ani()}/api/partner/v1/top?range=$range&limit=$limit&adult=0", "${ani()}/")
-            ?: return emptyList()
+        val body = text("$betaUrl/api/anime/browse?${params.joinToString("&")}", "$betaUrl/") ?: return null
         return try {
-            parseJson<PartnerTitlesResponse>(body).data
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    suspend fun partnerRecent(page: Int): List<PartnerRecentItem> {
-        val body = text("${ani()}/api/partner/v1/recent?page=$page&limit=40&adult=0", "${ani()}/")
-            ?: return emptyList()
-        return try {
-            parseJson<PartnerRecentResponse>(body).data
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    suspend fun partnerSeries(anilistId: Int): PartnerSeries? {
-        val body = text("${ani()}/api/partner/v1/series/$anilistId", "${ani()}/") ?: return null
-        return try {
-            parseJson<PartnerSeriesResponse>(body).data
-        } catch (_: Exception) {
+            parseJson<BrowseResponse>(body)
+        } catch (e: Exception) {
+            Log.d(TAG, "browse parse failed: ${e.message}")
             null
         }
     }
 
-    // the beta edge keys its hls folders by anilist id plus the slug the site
-    // itself uses, and the slug is not guessable, so it is read from here
-    suspend fun betaServer(anilistId: Int): BetaServerResponse? {
-        val body = text("${ani()}/api/anime/beta-server/$anilistId", "${ani()}/") ?: return null
+    suspend fun animeDetail(anilistId: Int): AnimeDetail? {
+        val body = text("$betaUrl/api/anime/ani/$anilistId", "$betaUrl/") ?: return null
         return try {
-            parseJson<BetaServerResponse>(body)
-        } catch (_: Exception) {
+            parseJson<AnimeDetail>(body)
+        } catch (e: Exception) {
+            Log.d(TAG, "anime detail parse failed: ${e.message}")
             null
         }
     }
 
-    fun animeMasterUrl(origin: String, anilistId: Int, slug: String, episode: Int): String {
-        return "$origin/hls/$anilistId-$slug/E${"%04d".format(episode)}/master.m3u8"
+    // the stream folders on the edge are keyed by anilist id plus the slug
+    // the site's watch route carries, the slug only lives inside the route
+    fun slugOf(routeId: String?): String? {
+        if (routeId.isNullOrBlank()) return null
+        val parts = routeId.split('-')
+        if (parts.size < 3) return null
+        return parts.subList(0, parts.size - 2).joinToString("-")
+    }
+
+    fun animeMasterUrl(anilistId: Int, slug: String, episode: Int): String {
+        return "$betaUrl/hls/$anilistId-$slug/E${"%04d".format(episode)}/master.m3u8"
     }
 
     private fun encode(value: String): String =

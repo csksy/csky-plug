@@ -24,6 +24,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.raghav.donation.DonationManager
+import java.util.Calendar
 
 class CnoAnimeProvider : MainAPI() {
     override var mainUrl = CnoApi.beta()
@@ -34,48 +35,55 @@ class CnoAnimeProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
     private companion object {
-        const val RECENT_PAGE_LIMIT = 25
+        const val PAGE_LIMIT = 30
 
-        fun tvTypeOf(format: String?): TvType = when (format?.lowercase()) {
-            "movie" -> TvType.AnimeMovie
-            "ova", "ona", "special", "music" -> TvType.OVA
+        fun tvTypeOf(format: String?): TvType = when (format?.uppercase()) {
+            "MOVIE" -> TvType.AnimeMovie
+            "OVA", "ONA", "SPECIAL", "MUSIC" -> TvType.OVA
             else -> TvType.Anime
         }
 
-        fun showStatusOf(status: String?): ShowStatus? = when (status?.lowercase()) {
+        fun showStatusOf(status: String?): ShowStatus? = when (status?.uppercase()) {
             null -> null
-            "currently airing", "releasing", "ongoing" -> ShowStatus.Ongoing
-            "finished", "finished airing", "completed" -> ShowStatus.Completed
+            "RELEASING", "CURRENTLY AIRING" -> ShowStatus.Ongoing
+            "FINISHED", "FINISHED AIRING", "NOT_YET_RELEASED" -> ShowStatus.Completed
             else -> null
         }
+
+        // the site sends minutes as a number for some titles and as "80 min"
+        // for others, the response wants plain minutes
+        fun minutesOf(duration: Any?): Int? = when (duration) {
+            is Int -> duration.takeIf { it > 0 }
+            is String -> Regex("(\\d+)").find(duration)?.groupValues?.get(1)?.toIntOrNull()
+            else -> null
+        }
+
+        fun currentSeason(): String = when (Calendar.getInstance().get(Calendar.MONTH)) {
+            11, 0, 1 -> "winter"
+            2, 3, 4 -> "spring"
+            5, 6, 7 -> "summer"
+            else -> "fall"
+        }
+
+        fun currentYear(): Int = Calendar.getInstance().get(Calendar.YEAR)
     }
 
     override val mainPage = mainPageOf(
-        "top:week" to "Trending This Week",
-        "top:month" to "Trending This Month",
-        "top:all" to "All-Time Popular",
-        "recent" to "Latest Episodes"
+        "trending" to "Trending",
+        "season" to "Airing This Season",
+        "year" to "New This Year"
     )
 
-    private fun titleResponse(title: PartnerTitle): SearchResponse? {
-        val id = title.anilistId ?: return null
-        val name = title.title?.takeIf { it.isNotBlank() } ?: return null
-        return newAnimeSearchResponse(name, id.toString(), tvTypeOf(title.format)) {
-            posterUrl = title.poster
-            year = title.year
-            addDubStatus(
-                dubExist = (title.episodes?.dub ?: 0) > 0,
-                subExist = (title.episodes?.sub ?: 0) > 0
-            )
-        }
-    }
-
-    private fun recentResponse(item: PartnerRecentItem): SearchResponse? {
-        val id = item.anilistId ?: return null
+    private fun browseResponse(item: BrowseItem): SearchResponse? {
+        val id = item.anilistId?.toIntOrNull() ?: return null
         val name = item.title?.takeIf { it.isNotBlank() } ?: return null
-        return newAnimeSearchResponse(name, id.toString(), TvType.Anime) {
-            posterUrl = item.poster
-            addDubStatus(dubExist = item.dub == true, subExist = item.sub == true)
+        return newAnimeSearchResponse(name, id.toString(), tvTypeOf(item.type)) {
+            posterUrl = CnoApi.animeArt(item.poster)
+            year = item.year
+            addDubStatus(
+                dubExist = (item.dubCount ?: 0) > 0 || item.hasDub == true,
+                subExist = (item.subCount ?: 0) > 0 || item.hasDub == false
+            )
         }
     }
 
@@ -83,62 +91,58 @@ class CnoAnimeProvider : MainAPI() {
         DonationManager.checkAndShow()
         CnoApi.refreshDomains()
         mainUrl = CnoApi.beta()
-        return when {
-            request.data == "recent" -> {
-                if (page > RECENT_PAGE_LIMIT) {
-                    return newHomePageResponse(request.name, emptyList(), hasNext = false)
-                }
-                val items = CnoApi.partnerRecent(page).mapNotNull { recentResponse(it) }
-                newHomePageResponse(request.name, items, hasNext = page < RECENT_PAGE_LIMIT)
-            }
-            request.data.startsWith("top:") -> {
-                val range = request.data.removePrefix("top:")
-                val items = CnoApi.partnerTop(range, 30).mapNotNull { titleResponse(it) }
-                newHomePageResponse(request.name, items, hasNext = false)
-            }
-            else -> newHomePageResponse(request.name, emptyList(), hasNext = false)
+        if (page > PAGE_LIMIT) {
+            return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
+        val response = when (request.data) {
+            "season" -> CnoApi.browseAnime(null, page, season = currentSeason(), year = currentYear())
+            "year" -> CnoApi.browseAnime(null, page, year = currentYear())
+            else -> CnoApi.browseAnime(null, page)
+        } ?: return newHomePageResponse(request.name, emptyList(), hasNext = false)
+        val items = response.items.mapNotNull { browseResponse(it) }
+        return newHomePageResponse(request.name, items, hasNext = response.hasNextPage == true)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.length < 2) return emptyList()
         CnoApi.refreshDomains()
         mainUrl = CnoApi.beta()
-        return CnoApi.partnerSearch(query).mapNotNull { titleResponse(it) }
+        val first = CnoApi.browseAnime(query, 1) ?: return emptyList()
+        val results = first.items.toMutableList()
+        if (first.hasNextPage == true) {
+            CnoApi.browseAnime(query, 2)?.let { results.addAll(it.items) }
+        }
+        return results.mapNotNull { browseResponse(it) }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         CnoApi.refreshDomains()
         mainUrl = CnoApi.beta()
         val anilistId = url.toIntOrNull() ?: return null
-        val series = CnoApi.partnerSeries(anilistId) ?: return null
-        val title = series.title?.takeIf { it.isNotBlank() } ?: return null
+        val detail = CnoApi.animeDetail(anilistId) ?: return null
+        val title = detail.title?.takeIf { it.isNotBlank() } ?: return null
 
-        // the stream folders on the edge are keyed by anilist id plus the slug
-        // the site uses in its watch route, which only this endpoint knows
-        val beta = CnoApi.betaServer(anilistId)
-        val watchPath = beta?.path?.takeIf { beta.available == true } ?: return null
-        val split = watchPath.lastIndexOf('-')
-        if (split <= 0) return null
-        val slug = watchPath.substring(0, split).removePrefix("/watch/")
-        val pathId = watchPath.substring(split + 1)
-        val origin = (beta.origin ?: CnoApi.beta()).removeSuffix("/")
-        val playableEpisodes = beta.episodes.toSet()
+        // the stream folders on the edge are keyed by the anilist id plus the
+        // slug carried in the watch route, and the slug is not guessable
+        val slug = CnoApi.slugOf(detail.routeId) ?: return null
+        val idNumber = detail.anilistId?.toIntOrNull() ?: anilistId
 
-        fun episodeData(number: Int): String = "$anilistId|$number|$slug|$pathId|$origin"
+        fun episodeData(number: Int): String = "$idNumber|$number|$slug"
 
         fun buildEpisodes(dub: Boolean): List<Episode> {
-            return series.episodeList.mapNotNull { ep ->
+            return detail.episodes.mapNotNull { ep ->
                 val number = ep.number ?: return@mapNotNull null
                 if (number < 1) return@mapNotNull null
-                if (number !in playableEpisodes) return@mapNotNull null
-                val available = ep.available
-                val wanted = if (dub) available?.dub == true else available?.sub == true
+                // episodes riding a third party player cannot be played here
+                if (ep.embedId != null) return@mapNotNull null
+                val wanted = if (dub) ep.dub == true else ep.sub == true
                 if (!wanted) return@mapNotNull null
                 newEpisode(episodeData(number)) {
                     this.name = ep.title?.takeIf { it.isNotBlank() } ?: "Episode $number"
                     this.episode = number
-                    this.description = ep.aired?.takeIf { it.isNotBlank() }?.let { "Aired $it" }
+                    this.description = ep.description?.takeIf { it.isNotBlank() }
+                        ?: ep.aired?.takeIf { it.isNotBlank() }?.let { "Aired $it" }
+                    this.posterUrl = CnoApi.animeArt(ep.thumbnail)
                     ep.runtimeSeconds?.takeIf { it > 0 }?.let { this.runTime = it / 60 }
                 }
             }
@@ -148,18 +152,18 @@ class CnoAnimeProvider : MainAPI() {
         val dubEpisodes = buildEpisodes(dub = true)
         if (subEpisodes.isEmpty() && dubEpisodes.isEmpty()) return null
 
-        return newAnimeLoadResponse(title, url, tvTypeOf(series.format)) {
-            posterUrl = series.poster
-            backgroundPosterUrl = series.banner
-            year = series.year
-            plot = series.synopsis
-            tags = series.genres
-            duration = series.durationMinutes?.takeIf { it > 0 }
-            contentRating = series.rating?.takeIf { it.isNotBlank() }
-            series.score?.takeIf { it > 0 }?.let { score = Score.from10(it.toString()) }
-            showStatusOf(series.status)?.let { this.showStatus = it }
-            series.anilistId?.let { addAniListId(it) }
-            series.malId?.let { addMalId(it) }
+        return newAnimeLoadResponse(title, url, tvTypeOf(detail.type)) {
+            posterUrl = CnoApi.animeArt(detail.poster)
+            backgroundPosterUrl = CnoApi.animeArt(detail.banner)
+            year = detail.year
+            plot = detail.synopsis
+            tags = detail.genres
+            duration = minutesOf(detail.duration)
+            contentRating = detail.rating?.takeIf { it.isNotBlank() }
+            detail.score?.takeIf { it > 0 }?.let { score = Score.from10(it.toString()) }
+            showStatusOf(detail.status)?.let { this.showStatus = it }
+            addAniListId(idNumber)
+            detail.malId?.toIntOrNull()?.let { addMalId(it) }
             if (subEpisodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEpisodes)
             if (dubEpisodes.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEpisodes)
         }
@@ -172,55 +176,47 @@ class CnoAnimeProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val parts = data.split("|")
-        if (parts.size < 5) return false
+        if (parts.size < 3) return false
         val anilistId = parts[0].toIntOrNull() ?: return false
         val episode = parts[1].toIntOrNull() ?: return false
         val slug = parts[2].takeIf { it.isNotBlank() } ?: return false
-        val pathId = parts[3].takeIf { it.isNotBlank() } ?: return false
-        val origin = parts[4].removeSuffix("/")
 
-        val masterUrl = CnoApi.animeMasterUrl(origin, pathId.toIntOrNull() ?: anilistId, slug, episode)
+        val masterUrl = CnoApi.animeMasterUrl(anilistId, slug, episode)
 
-        // the direct link is preferred: on a network where the edge hands
-        // the hls tree to plain clients the player can be pointed straight
-        // at it
-        if (CnoApi.plainText(masterUrl, "$origin/", accept = "*/*")?.startsWith("#EXTM3U") == true) {
-            callback.invoke(
-                newExtractorLink(
-                    source = name,
-                    name = "$name - Multi Audio",
-                    url = masterUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    // the master refuses the default player user agent
-                    // outright, so it rides the headers the plugin sends
-                    headers = CnoApi.streamHeaders(masterUrl, "$origin/")
-                }
-            )
-            return true
-        }
-
-        // the edge has also been seen answering a first hit with a half
-        // synced master, so the full transport gets two tries, and when it
-        // still refuses every plain client the playlists are served locally
-        // with only the open cdn left to the player
-        var reachable = false
+        // one retry: the edge has been seen answering a first hit with a
+        // truncated playlist before serving the real one
+        var readable: CnoApi.Readable? = null
         for (attempt in 0 until 2) {
-            if (CnoApi.text(masterUrl, "$origin/", accept = "*/*")?.startsWith("#EXTM3U") == true) {
-                reachable = true
+            val candidate = CnoApi.readable(masterUrl, "${CnoApi.beta()}/", accept = "*/*")
+            if (candidate != null && candidate.body.startsWith("#EXTM3U")) {
+                readable = candidate
                 break
             }
         }
-        if (!reachable) return false
+        val screen = readable ?: return false
 
-        val proxyUrl = CnoProxy.linkFor(masterUrl) ?: return false
+        // the master carries an audio rendition per language and a subtitle
+        // rendition per track, one link plays every one of them and the
+        // audio is picked inside the player exactly like the site's picker
+        val linkUrl = if (screen.plainOk) {
+            masterUrl
+        } else {
+            // only the browser stack got through, the player cannot walk the
+            // guarded playlist tree itself so it is served from the local
+            // proxy while the segments stay on the open cdn
+            CnoProxy.linkFor(masterUrl) ?: return false
+        }
         callback.invoke(
             newExtractorLink(
                 source = name,
                 name = "$name - Multi Audio",
-                url = proxyUrl,
+                url = linkUrl,
                 type = ExtractorLinkType.M3U8
-            )
+            ) {
+                // the tree refuses plain user agents outright, the headers
+                // ride the master, every rendition and the segments
+                headers = CnoApi.streamHeaders()
+            }
         )
         return true
     }
