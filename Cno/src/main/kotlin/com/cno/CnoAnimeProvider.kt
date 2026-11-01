@@ -13,7 +13,6 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addDubStatus
 import com.lagradost.cloudstream3.addEpisodes
-import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
@@ -182,42 +181,47 @@ class CnoAnimeProvider : MainAPI() {
 
         val masterUrl = CnoApi.animeMasterUrl(origin, pathId.toIntOrNull() ?: anilistId, slug, episode)
 
-        // the edge has been seen serving a half synced master on the first hit,
-        // so it is asked for once more before the link is handed to the player
-        if (!masterIsHealthy(masterUrl)) return false
+        // the direct link is preferred: on a network where the edge hands
+        // the hls tree to plain clients the player can be pointed straight
+        // at it
+        if (CnoApi.plainText(masterUrl, "$origin/", accept = "*/*")?.startsWith("#EXTM3U") == true) {
+            callback.invoke(
+                newExtractorLink(
+                    source = name,
+                    name = "$name - Multi Audio",
+                    url = masterUrl,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    // the master refuses the default player user agent
+                    // outright, so it rides the headers the plugin sends
+                    headers = CnoApi.streamHeaders(masterUrl, "$origin/")
+                }
+            )
+            return true
+        }
 
-        // every audio track and subtitle of the episode rides this one master,
-        // the track switcher of the player picks between them
+        // the edge has also been seen answering a first hit with a half
+        // synced master, so the full transport gets two tries, and when it
+        // still refuses every plain client the playlists are served locally
+        // with only the open cdn left to the player
+        var reachable = false
+        for (attempt in 0 until 2) {
+            if (CnoApi.text(masterUrl, "$origin/", accept = "*/*")?.startsWith("#EXTM3U") == true) {
+                reachable = true
+                break
+            }
+        }
+        if (!reachable) return false
+
+        val proxyUrl = CnoProxy.linkFor(masterUrl) ?: return false
         callback.invoke(
             newExtractorLink(
                 source = name,
                 name = "$name - Multi Audio",
-                url = masterUrl,
+                url = proxyUrl,
                 type = ExtractorLinkType.M3U8
-            ) {
-                referer = "$origin/"
-            }
+            )
         )
         return true
-    }
-
-    private suspend fun masterIsHealthy(url: String): Boolean {
-        repeat(2) {
-            try {
-                val res = app.get(
-                    url,
-                    headers = mapOf(
-                        "User-Agent" to CnoApi.USER_AGENT,
-                        "Accept" to "*/*",
-                        "Referer" to url.substringBefore("/hls/") + "/"
-                    ),
-                    timeout = 20_000L
-                )
-                if (res.code == 200 && res.text.startsWith("#EXTM3U")) return true
-            } catch (_: Exception) {
-                // retried below, two failures mean the episode is not there
-            }
-        }
-        return false
     }
 }

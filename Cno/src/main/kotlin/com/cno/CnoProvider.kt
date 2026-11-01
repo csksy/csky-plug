@@ -248,14 +248,17 @@ class CnoProvider : MainAPI() {
         // shows with a separate audio rendition only play in sync from the full
         // master, splitting those per quality would hand the player silent video
         if (master.hasAudioRenditions || master.variants.isEmpty()) {
+            val masterUrl = "${CnoApi.beta()}$masterPath"
             callback.invoke(
                 newExtractorLink(
                     source = name,
                     name = name,
-                    url = "${CnoApi.beta()}$masterPath",
+                    url = masterUrl,
                     type = ExtractorLinkType.M3U8
                 ) {
-                    referer = "${CnoApi.beta()}/"
+                    // the playlists live on the guarded host, exoplayer needs
+                    // the same clearance and user agent the plugin itself uses
+                    headers = CnoApi.streamHeaders(masterUrl, "${CnoApi.beta()}/")
                 }
             )
         } else {
@@ -268,7 +271,7 @@ class CnoProvider : MainAPI() {
                         type = ExtractorLinkType.M3U8
                     ) {
                         quality = qualityOf(variant.height)
-                        referer = "${CnoApi.beta()}/"
+                        headers = CnoApi.streamHeaders(variant.url, "${CnoApi.beta()}/")
                     }
                 )
             }
@@ -294,8 +297,14 @@ class CnoProvider : MainAPI() {
                 if (file.hi == true) append(" [hi]")
             }
             try {
+                val trackUrl = CnoApi.subTrackUrl(path, lang)
                 subtitleCallback.invoke(
-                    newSubtitleFile(label, CnoApi.subTrackUrl(path, lang))
+                    newSubtitleFile(label, trackUrl) {
+                        // the files are served by the guarded host itself, the
+                        // player fetches them directly so they carry the
+                        // clearance and user agent along
+                        headers = CnoApi.streamHeaders(trackUrl, "${CnoApi.beta()}/")
+                    }
                 )
             } catch (_: Exception) {
                 // one broken track should not cost the whole list
