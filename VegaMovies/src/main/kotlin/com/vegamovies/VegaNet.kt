@@ -42,8 +42,7 @@ internal object VegaNet {
         repeat(attempts) { i ->
             try {
                 block()?.let { return it }
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
             if (i < attempts - 1) delay(gapMs)
         }
         return null
@@ -66,22 +65,32 @@ internal object VegaNet {
     private fun lockFor(url: String): Mutex =
         cfLocks.getOrPut(originOf(url)) { Mutex() }
 
-    suspend fun fetchWithCf(url: String, referer: String? = null, timeout: Long = 20L): NiceResponse? {
+    suspend fun fetchWithCf(
+        url: String,
+        referer: String? = null,
+        timeout: Long = 20L,
+        headers: Map<String, String>? = null
+    ): NiceResponse? {
+        val base = headers ?: browserHeaders(referer)
         val plain = try {
-            app.get(url, headers = browserHeaders(referer), timeout = timeout)
+            app.get(url, headers = base, timeout = timeout)
         } catch (_: Exception) {
             null
         }
         if (plain != null && plain.code == 200 && !isCfChallenge(plain)) return plain
 
+        val refererHeaders = if (headers != null && headers.keys.any { it.equals("Referer", true) }) {
+            headers
+        } else {
+            base.toMutableMap().apply { if (referer != null) put("Referer", referer) }
+        }
         return lockFor(url).withLock {
             val killer = killerFor(url)
             try {
                 killer.savedCookies.remove(URI(url).host)
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
             val solved = try {
-                app.get(url, headers = browserHeaders(referer), interceptor = killer, timeout = 60L)
+                app.get(url, headers = refererHeaders, interceptor = killer, timeout = 60L)
             } catch (_: Exception) {
                 null
             }

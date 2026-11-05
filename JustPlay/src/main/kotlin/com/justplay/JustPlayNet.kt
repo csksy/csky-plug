@@ -46,14 +46,16 @@ internal object PlayNet {
         cfLocks.getOrPut(hostOf(url)) { Mutex() }
 
     private val verifiedUrls: MutableSet<String> = ConcurrentHashMap.newKeySet()
-    private val verifyGate = Semaphore(8)
+
+    // probes are short ranged gets and the client allows 40 per host, a narrow
+    // gate here serialises every site's checks and holds the whole run back
+    private val verifyGate = Semaphore(24)
 
     suspend fun <T> retry(attempts: Int = 2, gapMs: Long = 600L, block: suspend () -> T?): T? {
         repeat(attempts) { i ->
             try {
                 block()?.let { return it }
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
             if (i < attempts - 1) delay(gapMs)
         }
         return null
@@ -139,6 +141,22 @@ internal object PlayNet {
         ) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
     }
 
+    private val imageSegment = Regex("""(?i)\.(png|jpe?g|gif|webp|bmp)(?:[?#].*)?$""")
+
+    // hls child uris sit next to the manifest, they resolve against its
+    // directory and not the host root
+    private fun resolveManifestChild(href: String, manifestUrl: String): String = when {
+        href.startsWith("http") -> href
+        href.startsWith("//") -> "https:$href"
+        !manifestUrl.contains("://") -> href
+        else -> {
+            val schemeHost = manifestUrl.substringBefore("://") + "://" +
+                manifestUrl.substringAfter("://").substringBefore("/")
+            if (href.startsWith("/")) schemeHost + href
+            else manifestUrl.substringBeforeLast("/") + "/" + href
+        }
+    }
+
     suspend fun m3u8Alive(url: String, headers: Map<String, String> = emptyMap()): Boolean {
         if (!url.startsWith("http")) return false
         return try {
@@ -147,7 +165,55 @@ internal object PlayNet {
                 res.close()
                 return false
             }
-            res.text.trimStart().startsWith("#EXTM3U")
+            val text = res.text
+            if (!text.trimStart().startsWith("#EXTM3U")) return false
+            playlistServesVideo(text, url, headers)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // scrapers get handed decoy manifests whose segments are image tiles, the
+    // manifest itself looks real so only the segment names give it away
+    private suspend fun playlistServesVideo(
+        text: String,
+        url: String,
+        headers: Map<String, String>
+    ): Boolean {
+        val entries = text.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .toList()
+        if (entries.isEmpty()) return false
+        if (entries.any { imageSegment.containsMatchIn(it) }) return false
+
+        // a master manifest names its video variants after each stream inf line,
+        // subtitle and audio tracks say nothing about the video being real
+        val variants = mutableListOf<String>()
+        val lines = text.lines()
+        for (i in lines.indices) {
+            if (lines[i].trim().startsWith("#EXT-X-STREAM-INF") && i + 1 < lines.size) {
+                lines[i + 1].trim().takeIf { it.isNotEmpty() && !it.startsWith("#") }
+                    ?.let { variants.add(it) }
+            }
+        }
+        val child = variants.firstOrNull()
+            ?: return true
+        val childUrl = resolveManifestChild(child, url)
+        if (childUrl == url) return true
+        return try {
+            val res = app.get(childUrl, headers = headers, timeout = 12L)
+            if (res.code != 200) {
+                res.close()
+                return false
+            }
+            val childText = res.text
+            if (!childText.trimStart().startsWith("#EXTM3U")) return false
+            val childEntries = childText.lineSequence()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+                .toList()
+            childEntries.isNotEmpty() && childEntries.none { imageSegment.containsMatchIn(it) }
         } catch (_: Exception) {
             false
         }
@@ -261,9 +327,8 @@ internal object PlayNet {
         val postWords = wordsOf(postTitle)
         if (queryWords.isEmpty() || postWords.isEmpty()) return false
 
-        // the name is matched as whole words glued together, this keeps acronym spellings
-        // like k g f chapter 2 against kgf chapter 2 in step while a name that only
-        // overlaps the first word of a longer one, war inside war 2 or war path, fails
+        // the name is matched as whole words glued together, so k g f chapter 2 still
+        // lines up with kgf chapter 2 while war inside war 2 or war path does not
         for (start in nameStarts(postWords)) {
             val maxEnd = minOf(start + queryWords.size, postWords.size)
             for (end in start + 1..maxEnd) {
@@ -602,17 +667,18 @@ internal object PlayNet {
         callback: (ExtractorLink) -> Unit
     ) {
         if (links.isEmpty()) return
-        val checked = withTimeoutOrNull(45_000L) {
+        // each link leaves the moment its own check is done, waiting for the whole
+        // batch lets one slow host stall links that were already cleared
+        withTimeoutOrNull(45_000L) {
             coroutineScope {
                 links.map { link ->
                     async(Dispatchers.IO) {
-                        if (alive(link.url, link.type, link.headers, link.referer)) link else null
+                        if (alive(link.url, link.type, link.headers, link.referer)) {
+                            buildSiteLink(site, label, quality, link)?.let(callback)
+                        }
                     }
-                }.mapNotNull { runCatching { it.await() }.getOrNull() }
+                }.forEach { runCatching { it.await() } }
             }
-        } ?: return
-        for (link in checked) {
-            buildSiteLink(site, label, quality, link)?.let(callback)
         }
     }
 }

@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 // both sites run the same theme, api and drive pages, one site object covers vegamovies and rogmovies
 internal object VegaMoviesSite {
 
-    private val domains = listOf("https://new1.vegamovies.lease", "https://rogmovies.one")
+    private val domains = listOf("https://vegamovies.lease", "https://rogmovies.im")
 
     private val deadHosts = Regex("""(?i)megaup|viking|vik1ng|telegram|t\.me""")
 
@@ -772,7 +772,6 @@ internal object VegaMoviesSite {
                     }
                 }
             }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 }

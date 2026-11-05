@@ -45,8 +45,8 @@ object JustPlaySettings {
     private const val ACCENT = 0xFF0A84FF.toInt()
     private const val ACCENT_HI = 0xFF409CFF.toInt()
     private const val ACCENT_DEEP = 0xFF0060DF.toInt()
-    private const val ACCENT_SOFT = 0x590A84FF.toInt()
     private const val GREEN = 0xFF34C759.toInt()
+    private const val ACCENT_SOFT = 0x590A84FF.toInt()
 
     private fun dp(ctx: Context, v: Int): Int =
         (v * ctx.resources.displayMetrics.density).toInt()
@@ -626,23 +626,11 @@ object JustPlaySettings {
             streamRow = rowSt
             body.addView(rowSt)
 
-            body.addView(labelBlock(ctx, "Player protection",
-                "Files your device can only play through software decoding break the player when you switch away from them, every later source then errors out until the title is reopened. With the guard on those files are offered as downloads instead of streams"))
-
-            val (rowGuard, swGuard) = toggleRow(
-                ctx, "Device Decode Guard",
-                "Hide streams this chipset cannot decode in hardware",
-                JustPlay.deviceGuardEnabled()
-            ) { }
-            body.addView(rowGuard)
-
             val dlRef = dlSwitch
             val streamRef = streamSwitch
-            val guardRef = swGuard
             body.addView(saveAndRestartButton(ctx) {
                 JustPlay.setDownloadOnly(dlRef?.isChecked == true)
                 JustPlay.setStreamOnly(streamRef?.isChecked == true)
-                JustPlay.setDeviceGuard(guardRef?.isChecked == true)
                 confirmRestart(ctx, "Link modes saved. Restart CloudStream now to apply them?")
             })
         }

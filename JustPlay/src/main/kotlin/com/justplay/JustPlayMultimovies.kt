@@ -646,9 +646,7 @@ internal object MmCineverse {
         for (server in ordered) {
             try {
                 any = resolveMirror(server, labelPrefix, callback) || any
-            } catch (_: Exception) {
-
-            }
+            } catch (_: Exception) {}
         }
         return any
     }
@@ -1091,9 +1089,7 @@ internal object MmGdMirror {
             for (mirror in mirrors) {
                 try {
                     any = dispatchMirror(mirror, "$labelPrefix $fileLabel", callback) || any
-                } catch (_: Exception) {
-
-                }
+                } catch (_: Exception) {}
             }
         }
         return any
@@ -1123,9 +1119,7 @@ internal object MmGdMirror {
         for (mirror in mirrors) {
             try {
                 any = dispatchMirror(mirror, "$labelPrefix $sid", callback) || any
-            } catch (_: Exception) {
-
-            }
+            } catch (_: Exception) {}
         }
         return any
     }
@@ -1249,9 +1243,7 @@ internal object MmVidout {
                             }
                         }
                     }
-                } catch (_: Exception) {
-
-                }
+                } catch (_: Exception) {}
             }
         } else if (season != null) {
             val body = MmNet.get("$RAW/hls/tv/$tmdbId/S$season.json", referer = "https://vidout.pages.dev/")

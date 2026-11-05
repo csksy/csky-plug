@@ -61,7 +61,6 @@ class JustPlay : MainAPI() {
         private const val KEY_CONCURRENCY = "JUSTPLAY_CONCURRENCY"
         private const val KEY_LIVE_SPORTS = "JUSTPLAY_LIVE_SPORTS"
         private const val KEY_LIVE_SPORTS_TOP = "JUSTPLAY_LIVE_SPORTS_TOP"
-        private const val KEY_HW_GUARD = "JUSTPLAY_HW_GUARD"
         private const val LIVE_ROW = "live_sports"
         // vegamovies alone offers one link per server, quality and encode, the cap only stops junk floods
         private const val LINKS_PER_SOURCE = 40
@@ -69,8 +68,11 @@ class JustPlay : MainAPI() {
         // the app cancels loadLinks after 120s, every site gets cut off before that
         private const val SITE_BUDGET_MS = 90_000L
 
-        // one stuck site must not keep every other result off the screen
+        // the first beat waits for the fastest sites so the opening batch is worth
+        // showing, the rest of the run releases on a steady beat instead of one
+        // giant dump at the end that leaves the on screen counter frozen
         private const val FIRST_RELEASE_MS = 6_000L
+        private const val RELEASE_BEAT_MS = 1_500L
 
         private fun widenClient() {
             try {
@@ -78,8 +80,7 @@ class JustPlay : MainAPI() {
                 // live sports resolve beside site scrapes, both need room in the queue
                 if (dispatcher.maxRequestsPerHost < 40) dispatcher.maxRequestsPerHost = 40
                 if (dispatcher.maxRequests < 200) dispatcher.maxRequests = 200
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
         }
 
         fun siteEnabled(id: String): Boolean = try {
@@ -163,18 +164,6 @@ class JustPlay : MainAPI() {
                 CloudStreamApp.setKey(KEY_STREAM_ONLY, on)
             } catch (_: Exception) {}
         }
-
-        fun deviceGuardEnabled(): Boolean = try {
-            CloudStreamApp.getKey<Boolean>(KEY_HW_GUARD) ?: true
-        } catch (_: Exception) {
-            true
-        }
-
-        fun setDeviceGuard(on: Boolean) {
-            try {
-                CloudStreamApp.setKey(KEY_HW_GUARD, on)
-            } catch (_: Exception) {}
-        }
     }
 
     private val tmdbRows = listOf(
@@ -188,8 +177,7 @@ class JustPlay : MainAPI() {
         Pair("/discover/tv&with_networks=1024", "Amazon Prime"),
         Pair("/discover/movie&with_origin_country=IN&sort_by=popularity.desc", "Indian Movies"),
         Pair("/discover/tv&with_origin_country=IN&sort_by=popularity.desc", "Indian Web Series"),
-        Pair("/discover/tv&with_original_language=ko&sort_by=popularity.desc", "Korean Shows"),
-        Pair("/discover/tv&with_genres=16&with_original_language=ja&sort_by=popularity.desc", "Anime Series")
+        Pair("/discover/tv&with_original_language=ko&sort_by=popularity.desc", "Korean Shows")
     )
 
     // rows load one after another so low end devices don't stall on the burst
@@ -206,7 +194,6 @@ class JustPlay : MainAPI() {
             }
             rows.add(MainPageData(tmdbRows[0].second, tmdbRows[0].first))
             rows.add(MainPageData("Surprise Me", PlayDiscovery.ROW_SURPRISE))
-            rows.add(MainPageData(PlayDiscovery.recommendedRowName(), PlayDiscovery.ROW_RECOMMENDED))
             tmdbRows.drop(1).forEach { rows.add(MainPageData(it.second, it.first)) }
             PlayDiscovery.genreRows.forEach { (id, label) ->
                 rows.add(MainPageData(label, PlayDiscovery.genreData(id)))
@@ -235,9 +222,6 @@ class JustPlay : MainAPI() {
         }
         if (data == PlayDiscovery.ROW_SURPRISE) {
             return PlayDiscovery.surprisePage(this, request.name)
-        }
-        if (data == PlayDiscovery.ROW_RECOMMENDED) {
-            return PlayDiscovery.recommendedPage(this, page, request.name)
         }
         if (data.startsWith(PlayDiscovery.ROW_GENRE)) {
             return PlayDiscovery.genrePage(this, page, data, request.name)
@@ -348,8 +332,6 @@ class JustPlay : MainAPI() {
 
         val title = detail.optString("title").ifBlank { detail.optString("name") }
         if (title.isBlank()) return null
-        // feeds the recommended row, recorded in the background so it never slows this page down
-        prefetchScope.launch { PlayHistory.record(detail, type) }
         val orgTitle = detail.optString("original_title").ifBlank { detail.optString("original_name") }
         val releaseDate = detail.optString("release_date").ifBlank { detail.optString("first_air_date") }
         val year = releaseDate.take(4).toIntOrNull()
@@ -560,9 +542,9 @@ class JustPlay : MainAPI() {
         val seenUrls = ConcurrentHashMap.newKeySet<String>()
         val sourceCounts = ConcurrentHashMap<String, AtomicInteger>()
 
-        // links go out in one batch, a stream of single links keeps the player rebuilding
-        // its source list while the first link is still starting and that churn is what
-        // breaks playback until the title is reopened
+        // links go out in short batches, one link at a time keeps the player
+        // rebuilding its source list for every arrival and a single giant batch
+        // leaves the counter frozen, a beat of a few links has neither problem
         val held = mutableListOf<ExtractorLink>()
         val heldLock = Any()
 
@@ -580,14 +562,7 @@ class JustPlay : MainAPI() {
         }
 
         val guardedCallback: (ExtractorLink) -> Unit = label@{ link ->
-            val isDownload = PlaySourceFilter.isDownloadOnlyName(link.name)
-            // a file the chipset cannot decode in hardware plays through software decoding
-            // and switching away from that leaves the player surface broken until the
-            // title is reopened, so it is offered as a download where it can never
-            // touch the player
-            val hardwarePlayable = isDownload ||
-                DeviceCodecs.canHardwareStream(link.name, link.url, link.quality)
-            val treatAsDownload = isDownload || !hardwarePlayable
+            val treatAsDownload = PlaySourceFilter.isDownloadOnlyName(link.name)
             val allowed = if (treatAsDownload) dlOnly else streamOnly
             if (!allowed) return@label
             if (!seenUrls.add(link.url)) return@label
@@ -616,12 +591,15 @@ class JustPlay : MainAPI() {
                     } catch (_: Exception) {}
                 }
             }
-            val timer = launch {
+            val flusher = launch {
                 delay(FIRST_RELEASE_MS)
-                release()
+                while (true) {
+                    release()
+                    delay(RELEASE_BEAT_MS)
+                }
             }
             jobs.forEach { runCatching { it.await() } }
-            timer.cancel()
+            flusher.cancel()
         }
         release()
         return true

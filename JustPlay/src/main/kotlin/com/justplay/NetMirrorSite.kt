@@ -145,8 +145,7 @@ internal object NetMirrorSite {
         try {
             CloudStreamApp.setKey(KEY_COOKIE, cookie)
             CloudStreamApp.setKey(KEY_COOKIE_AT, System.currentTimeMillis().toString())
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     private suspend fun solvedCookie(): String? {
@@ -203,8 +202,7 @@ internal object NetMirrorSite {
                 "https://userver.net52.cc/?hee5=$addhash&a=y&t=${Math.random()}",
                 timeout = 15L
             ).close()
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
 
         val form = FormBody.Builder().addEncoded("verify", addhash).build()
         repeat(7) {
@@ -375,8 +373,7 @@ internal object NetMirrorSite {
         cookieAt = 0L
         try {
             CloudStreamApp.setKey(KEY_COOKIE_AT, "0")
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
         val fresh = solvedCookie() ?: return false
         val freshHeaders = playlistHeaders(fresh, ott.code)
         val retry = fetchPlaylist(ott, id, title, freshHeaders, fresh) ?: return false
@@ -572,20 +569,17 @@ internal object NetMirrorSite {
                     async(Dispatchers.IO) {
                         try {
                             resolveOtt(cookie, ott, res, subtitleCallback, callback)
-                        } catch (_: Exception) {
-                        }
+                        } catch (_: Exception) {}
                     }
                 }
             }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     // the solve takes about a minute without a stored cookie, warm it up before a show is opened
     suspend fun prefetch() {
         try {
             solvedCookie()
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 }

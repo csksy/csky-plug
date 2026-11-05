@@ -14,15 +14,26 @@ import org.jsoup.nodes.Element
 
 internal object VegaSites {
 
-    class Site(val id: String, val label: String, val base: String) {
+    // both sites keep hopping domains, the retired hosts stay listed so urls
+    // picked up before a move still resolve to their site
+    class Site(val id: String, val label: String, val base: String, val aliases: List<String> = emptyList()) {
         val host: String get() = base.substringAfter("://")
+        val knownHosts: List<String> get() = listOf(host) + aliases
     }
 
-    val VEGA = Site("v", "Vegamovies", "https://new1.vegamovies.lease")
-    val ROG = Site("r", "Rogmovies", "https://rogmovies.one")
+    val VEGA = Site(
+        "v", "Vegamovies", "https://vegamovies.lease",
+        listOf("new1.vegamovies.lease", "vegamovies.lease")
+    )
+    val ROG = Site(
+        "r", "Rogmovies", "https://rogmovies.im",
+        listOf("rogmovies.one", "rogmovies.im")
+    )
     val ALL = listOf(VEGA, ROG)
 
-    fun siteOf(url: String): Site? = ALL.firstOrNull { url.contains(it.host, true) }
+    fun siteOf(url: String): Site? = ALL.firstOrNull { site ->
+        site.knownHosts.any { url.contains(it, true) }
+    }
 
     class Row(val site: Site, val path: String, val title: String)
 
