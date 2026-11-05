@@ -48,7 +48,7 @@ class VegaMovies : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var lang = "en"
 
-    // rows load one by one so low end devices don't stall on the request burst
+    // keep the burst small for low end devices
     override var sequentialMainPage = true
     override var sequentialMainPageDelay = 120L
 
@@ -84,8 +84,7 @@ class VegaMovies : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val site = VegaSites.siteOf(url) ?: return null
-        // both sites change hosts under them, urls saved from an older host are
-        // replayed on the live one instead of dying on the redirect
+        // old-host urls replay on the live domain
         val liveUrl = site.knownHosts.filter { it != site.host }
             .fold(url) { u, old -> u.replace(old, site.host, ignoreCase = true) }
         val res = VegaNet.retry(attempts = 2) {
@@ -135,12 +134,12 @@ class VegaMovies : MainAPI() {
         return url.contains("season", true) || VegaSites.looksLikeSeries(title)
     }
 
-    // single season pages fall back to one block, the url still knows the real number
+    // single season pages fall back to one block
     private fun urlSeason(url: String): Int? {
         return Regex("""(?i)season\s*-?\s*0*(\d{1,2})""").find(url)?.groupValues?.get(1)?.toIntOrNull()
     }
 
-    // episode lists only exist behind the nexdrive hop, one probe per season learns them
+    // episode lists live behind the nexdrive hop
     private suspend fun buildEpisodes(
         detail: VegaSites.Detail,
         fallbackSeason: Int? = null
@@ -198,11 +197,11 @@ class VegaMovies : MainAPI() {
     private fun langTagOf(label: String): String =
         if (Regex("""(?i)english with subtitles""").containsMatchIn(label)) "English" else ""
 
-    // dolby vision encodes get their own slot, most phone decoders choke on them
+    // dolby vision gets its own slot, decoders choke
     private fun dvEncode(label: String): Boolean =
         Regex("""(?i)\bDV\b|dolby|hybrid""").containsMatchIn(label)
 
-    // one link per server, quality, language and encode, so the picker shows every real option exactly once
+    // one link per server, quality, language and encode
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -230,8 +229,7 @@ class VegaMovies : MainAPI() {
             }.orEmpty()
         }
 
-        // a mirror that answers goes straight to the picker, a dead one leaves the slot open
-        // for the next mirror of the same server
+        // a live mirror fills the slot, a dead one waits
         suspend fun offer(server: VegaSources.Server, tier: Int, lang: String, dv: Boolean) {
             if (!seenUrls.add(server.url)) return
             val key = "${server.name}|$tier|$lang|${if (dv) "dv" else ""}"
