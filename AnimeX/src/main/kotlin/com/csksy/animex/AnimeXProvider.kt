@@ -65,8 +65,12 @@ class AnimeXProvider : MainAPI() {
     companion object {
         // the anmx player falls back to these when the servers answer is thin,
         // new ids the site reports are used as-is and only need a display name
-        private val KNOWN_ANMX_PROVIDERS = listOf("nero", "yuki", "zuna", "loli", "sora")
+        private val KNOWN_ANMX_PROVIDERS = listOf(
+            "uwu", "beep", "nero", "yuki", "zuna", "loli", "sora"
+        )
         private val PROVIDER_NAMES = mapOf(
+            "uwu" to "Uwu",
+            "beep" to "Beep",
             "nero" to "Nero",
             "yuki" to "Yuki",
             "zuna" to "Zuna",
@@ -287,6 +291,12 @@ class AnimeXProvider : MainAPI() {
                 }
             }
 
+            launch {
+                if (emitAnmxOg(ref, audio, subtitleCallback, callback)) {
+                    found.set(true)
+                }
+            }
+
             ref.anilistId?.let { anilistId ->
                 launch {
                     val embed = "https://megaplay.buzz/stream/ani/$anilistId/${ref.ep}/$audio"
@@ -357,6 +367,68 @@ class AnimeXProvider : MainAPI() {
         }
 
         return found.get()
+    }
+
+    // the site's own self hosted server, named ANMX OG on both sides. its
+    // manifest is minted through the site's player loader and every answer
+    // is bound to one episode, so the handshake runs in a fresh player page
+    // exactly like navigating to the episode on the site
+    private suspend fun emitAnmxOg(
+        ref: EpisodeRef,
+        audio: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val anilistId = ref.anilistId ?: return false
+        val lookup = try {
+            AnimeXApi.anmxLookup(anilistId, ref.ep)
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        val episodeId = lookup.episode?.episodeId ?: return false
+        if (episodeId <= 0) return false
+        val raw = AnmxWebView.openManifest(
+            episodeId,
+            "https://plyr.animex.one/e/${ref.slug}/${ref.ep}?lang=$audio"
+        ) ?: return false
+        val manifest = try {
+            AnimeXApi.parseAnmxManifest(raw)
+        } catch (_: Exception) {
+            null
+        } ?: return false
+
+        val playHeaders = mapOf(
+            "User-Agent" to AnimeXApi.USER_AGENT,
+            "Referer" to "https://plyr.animex.one/",
+            "Origin" to "https://plyr.animex.one"
+        )
+        val side = audio.uppercase()
+        var emitted = false
+        for (source in manifest.source) {
+            val src = fixUrl(source.src ?: continue)
+            if (!src.startsWith("http")) continue
+            // the loader labels each file with its audio side, a both file
+            // carries every language as selectable renditions
+            val label = source.label?.lowercase(Locale.US) ?: "both"
+            if (label != "both" && label != audio) continue
+            emitStreamLinks(src, "ANMX OG ($side)", playHeaders, callback)
+            emitted = true
+        }
+        if (!emitted) return false
+
+        for (track in manifest.tracks.orEmpty()) {
+            val url = fixUrl(track.vttUrl?.takeIf { it.isNotBlank() } ?: track.url ?: continue)
+            if (!url.startsWith("http")) continue
+            if (url.contains("storyboard") || url.contains("/chapter")) continue
+            val isAiDub = track.label?.contains("AI Dub", ignoreCase = true) == true
+            val lang = if (isAiDub) "en (AI Dub)" else normalizeLang(track.label) ?: "en"
+            subtitleCallback.invoke(
+                newSubtitleFile(lang, url) {
+                    this.headers = playHeaders
+                }
+            )
+        }
+        return true
     }
 
     // the site's own download sheet offers kiwi mirror rows per quality and
@@ -453,8 +525,10 @@ class AnimeXProvider : MainAPI() {
         headers: Map<String, String>,
         callback: (ExtractorLink) -> Unit
     ) {
+        val target = fixUrl(url)
+        if (!target.startsWith("http")) return
         val masterText = try {
-            app.get(url, headers = headers, timeout = 12_000L).text
+            app.get(target, headers = headers, timeout = 12_000L).text
         } catch (_: Exception) {
             null
         }
@@ -465,7 +539,7 @@ class AnimeXProvider : MainAPI() {
         val variants = if (hasAudioRenditions) {
             emptyList()
         } else {
-            masterText?.let { parseVariants(url, it) }.orEmpty()
+            masterText?.let { parseVariants(target, it) }.orEmpty()
         }
 
         if (variants.isNotEmpty()) {
@@ -484,9 +558,9 @@ class AnimeXProvider : MainAPI() {
                 )
             }
         } else {
-            val type = if (url.contains(".mp4")) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+            val type = if (target.contains(".mp4")) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
             callback.invoke(
-                newExtractorLink(name, label, url, type = type) {
+                newExtractorLink(name, label, target, type = type) {
                     this.headers = headers
                 }
             )
@@ -529,7 +603,7 @@ class AnimeXProvider : MainAPI() {
         if (tracks.isNullOrEmpty()) return
         val seen = mutableSetOf<String>()
         for (track in tracks) {
-            val url = track.url ?: continue
+            val url = fixUrl(track.url ?: continue)
             if (!url.startsWith("http")) continue
             if (url.contains("thumbnails") || url.contains("/preview/")) continue
             val lang = normalizeLang(track.lang) ?: normalizeLang(track.label) ?: continue
@@ -541,6 +615,14 @@ class AnimeXProvider : MainAPI() {
                 }
             )
         }
+    }
+
+    // the sites data occasionally carries hosts with a triple slash or an
+    // empty host, the player on the site never sees them because it routes
+    // through its own asset proxy, so they are repaired here before use
+    private fun fixUrl(raw: String): String {
+        val trimmed = raw.trim()
+        return trimmed.replace(Regex("^(https?):///+"), "$1://")
     }
 
     // "spanish (- spanish(latin america))" carries a region variant after the

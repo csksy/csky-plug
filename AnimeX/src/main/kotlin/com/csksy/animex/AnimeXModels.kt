@@ -1,6 +1,7 @@
 package com.csksy.animex
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class CatalogEnvelope(
@@ -173,3 +174,46 @@ data class ResolvedLink(
     val directUrl: String? = null,
     val mirror: String? = null
 )
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AnmxLookup(
+    val episode: AnmxLookupEpisode? = null
+) {
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AnmxLookupEpisode(
+        val episodeId: Int? = null,
+        val audioLayout: String? = null
+    )
+}
+
+// the site's own server answers through its player loader; source entries
+// carry a language side, "both" marks a single dual audio file
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class AnmxManifest(
+    val source: List<AnmxSource> = emptyList(),
+    val tracks: List<AnmxTrack>? = null,
+    val font: List<String>? = null,
+    @JsonProperty("intro_start_ms")
+    val introStartMs: Long? = null,
+    @JsonProperty("intro_end_ms")
+    val introEndMs: Long? = null,
+    @JsonProperty("outro_start_ms")
+    val outroStartMs: Long? = null,
+    @JsonProperty("outro_end_ms")
+    val outroEndMs: Long? = null
+) {
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AnmxSource(
+        val src: String? = null,
+        val label: String? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AnmxTrack(
+        val url: String? = null,
+        @JsonProperty("vtt_url")
+        val vttUrl: String? = null,
+        val label: String? = null,
+        val default: Boolean? = null
+    )
+}

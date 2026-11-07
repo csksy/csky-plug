@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.app
+import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
@@ -16,6 +17,7 @@ object AnimeXApi {
     private const val GRAPHQL = "https://graphql.animex.one/graphql"
     private const val RECENT = "https://graphql.animex.one/api/recent"
     private const val PP = "https://pp.animex.one/rest/api"
+    private const val PLYR = "https://plyr.animex.one"
 
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
@@ -70,23 +72,33 @@ query {
             null
         }
 
-    private suspend fun postGraphQL(query: String, variables: Map<String, Any?>): String? =
-        try {
-            val body = mapper.writeValueAsString(mapOf("query" to query, "variables" to variables))
-            val resp = app.post(
-                GRAPHQL,
-                headers = BASE_HEADERS + mapOf(
-                    "Content-Type" to "application/json",
-                    "Origin" to SITE,
-                    "Referer" to "$SITE/"
-                ),
-                requestBody = body.toRequestBody("application/json".toMediaType())
-            )
-            if (resp.isSuccessful) resp.text else null
-        } catch (e: Exception) {
-            Log.e(TAG, "graphql failed: ${e.message}")
-            null
+    // a single timeout used to kill the whole title load, the same call a
+    // moment later answers fine, so the transport hiccup is retried before
+    // the load is allowed to fail
+    private suspend fun postGraphQL(query: String, variables: Map<String, Any?>): String? {
+        val body = mapper.writeValueAsString(mapOf("query" to query, "variables" to variables))
+        var lastReason: String? = null
+        repeat(3) { attempt ->
+            try {
+                val resp = app.post(
+                    GRAPHQL,
+                    headers = BASE_HEADERS + mapOf(
+                        "Content-Type" to "application/json",
+                        "Origin" to SITE,
+                        "Referer" to "$SITE/"
+                    ),
+                    requestBody = body.toRequestBody("application/json".toMediaType())
+                )
+                if (resp.isSuccessful) return resp.text
+                lastReason = "status ${resp.code}"
+            } catch (e: Exception) {
+                lastReason = e.message
+            }
+            if (attempt < 2) delay(1500L)
         }
+        Log.e(TAG, "graphql failed: $lastReason")
+        return null
+    }
 
     private suspend fun catalog(
         filter: Map<String, Any?>,
@@ -177,6 +189,29 @@ query {
         } ?: return ServerList()
         return parse<ServerList>(body) ?: ServerList()
     }
+
+    // the site's own player discovers its self hosted episode through this
+    // lookup before any provider is asked, the episode id it answers with is
+    // what the site's own loader opens
+    suspend fun anmxLookup(anilistId: Int, epNum: Int): AnmxLookup? {
+        val body = try {
+            val resp = app.get(
+                "$PLYR/api/anmx/$anilistId/$epNum",
+                headers = BASE_HEADERS + mapOf(
+                    "Accept" to "*/*",
+                    "Origin" to "https://plyr.animex.one",
+                    "Referer" to "https://plyr.animex.one/"
+                )
+            )
+            if (resp.isSuccessful) resp.text else null
+        } catch (e: Exception) {
+            Log.e(TAG, "anmx lookup failed: ${e.message}")
+            null
+        } ?: return null
+        return parse<AnmxLookup>(body)
+    }
+
+    fun parseAnmxManifest(body: String): AnmxManifest? = parse<AnmxManifest>(body)
 
     suspend fun sources(slug: String, epNum: Int, type: String, providerId: String): SourceSet? {
         val body = try {
