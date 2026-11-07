@@ -63,7 +63,9 @@ class AnimeXProvider : MainAPI() {
     )
 
     companion object {
-        private val ANMX_PROVIDERS = listOf("nero", "yuki", "zuna", "loli", "sora")
+        // the anmx player falls back to these when the servers answer is thin,
+        // new ids the site reports are used as-is and only need a display name
+        private val KNOWN_ANMX_PROVIDERS = listOf("nero", "yuki", "zuna", "loli", "sora")
         private val PROVIDER_NAMES = mapOf(
             "nero" to "Nero",
             "yuki" to "Yuki",
@@ -176,6 +178,8 @@ class AnimeXProvider : MainAPI() {
             }
         }
 
+        // the app hides the sub/dub switcher on movie types, so dual audio
+        // movies are typed as regular anime to keep both sides reachable
         val type = when {
             anime.format == "MOVIE" && dubEps.isNotEmpty() -> TvType.Anime
             anime.format == "MOVIE" -> TvType.AnimeMovie
@@ -260,17 +264,18 @@ class AnimeXProvider : MainAPI() {
         val audio = if (ref.lang == "dub") "dub" else "sub"
 
         val servers = AnimeXApi.servers(ref.slug, ref.ep)
+        val anmxProviders = (if (audio == "dub") servers.dubProviders else servers.subProviders)
+            .mapNotNull { it.id }
+            .distinct()
+            .ifEmpty { KNOWN_ANMX_PROVIDERS }
         val providerTips = (if (audio == "dub") servers.dubProviders else servers.subProviders)
             .mapNotNull { provider -> provider.id?.let { it to (provider.tip ?: "") } }
             .toMap()
-        val providerIds = providerTips.keys
-            .filter { ANMX_PROVIDERS.contains(it) }
-            .ifEmpty { ANMX_PROVIDERS }
 
         val found = AtomicBoolean(false)
 
         coroutineScope {
-            for (pid in providerIds) {
+            for (pid in anmxProviders) {
                 launch {
                     val set = try {
                         AnimeXApi.sources(ref.slug, ref.ep, audio, pid)
@@ -344,10 +349,76 @@ class AnimeXProvider : MainAPI() {
                         found.set(true)
                     }
                 }
+
+                launch {
+                    emitDownloadLinks(ref, audio, callback)
+                }
             }
         }
 
         return found.get()
+    }
+
+    // the site's own download sheet offers kiwi mirror rows per quality and
+    // audio side, each row resolves to a kwik page that hides a direct file;
+    // only the two best qualities of the active side ride along so the sheet
+    // never slows the streaming links down
+    private suspend fun emitDownloadLinks(
+        ref: EpisodeRef,
+        audio: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val malId = ref.malId ?: return
+        val entries = try {
+            AnimeXApi.episodeLinks(malId, ref.ep)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val qualityOf = { entry: DownloadEntry ->
+            entry.quality?.takeWhile { it.isDigit() }?.takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 0
+        }
+        val picked = entries
+            .filter { entry ->
+                val tracks = entry.audioTracks.orEmpty()
+                entry.id != null && entry.source == "mapper" &&
+                    (tracks.isEmpty() || tracks.contains(audio))
+            }
+            .sortedByDescending(qualityOf)
+            .take(2)
+        for (entry in picked) {
+            val resolved = try {
+                AnimeXApi.resolveEpisodeLink(malId, ref.ep, entry.id!!)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            val kwikUrl = resolved.directUrl ?: continue
+            val (file, kwikPage) = try {
+                KwikResolver.resolve(kwikUrl, resolved.downloadPage ?: "$mainUrl/")
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            if (!file.startsWith("http")) continue
+            val side = when {
+                entry.audioTracks?.contains("dub") == true && entry.audioTracks?.contains("sub") != true -> "DUB"
+                else -> audio.uppercase()
+            }
+            val quality = entry.quality?.takeWhile { it.isDigit() }?.takeIf { it.isNotEmpty() }?.toIntOrNull()
+            val group = entry.releaseGroup?.takeIf { it.isNotBlank() } ?: "Download"
+            callback.invoke(
+                newExtractorLink(
+                    name,
+                    "$group $side${entry.quality?.let { " $it" } ?: ""}",
+                    file,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    quality?.let { this.quality = it }
+                    this.headers = mapOf(
+                        "User-Agent" to AnimeXApi.USER_AGENT,
+                        "Referer" to kwikPage
+                    )
+                }
+            )
+        }
     }
 
     private suspend fun emitProviderSet(
@@ -472,17 +543,26 @@ class AnimeXProvider : MainAPI() {
         }
     }
 
+    // "spanish (- spanish(latin america))" carries a region variant after the
+    // base language, the code keeps both so variants stay distinguishable
     private fun normalizeLang(raw: String?): String? {
         val value = raw?.trim()?.lowercase(Locale.US) ?: return null
         if (value.isBlank()) return null
-        return when (value) {
+        val paren = value.indexOf('(')
+        val base = if (paren > 0) value.substring(0, paren).trim() else value
+        val variant = if (paren > 0) {
+            value.substring(paren + 1).removeSuffix(")").trim()
+        } else {
+            null
+        }
+        val code = when (base) {
             "english", "eng" -> "en"
             "arabic", "ara" -> "ar"
             "french", "fre", "fra" -> "fr"
             "german", "ger", "deu" -> "de"
             "italian", "ita" -> "it"
             "spanish", "spa" -> "es"
-            "portuguese", "por", "pt-br", "brazilian" -> "pt"
+            "portuguese", "por" -> "pt"
             "polish", "pol" -> "pl"
             "russian", "rus" -> "ru"
             "japanese", "jpn" -> "ja"
@@ -499,7 +579,14 @@ class AnimeXProvider : MainAPI() {
             "vietnamese", "vie" -> "vi"
             "ukrainian", "ukr" -> "uk"
             "dutch", "dut", "nld" -> "nl"
-            else -> value
-        }
+            else -> base.takeIf { it.isNotBlank() }
+        } ?: return null
+        if (variant == null || variant == base) return code
+        val region = variant.substringAfterLast('(').removeSuffix(")").trim()
+            .takeIf { it.isNotBlank() } ?: variant
+        return "$code (${
+            region.replace("spanish", "").replace("portuguese", "").trim().replace(" ", "-")
+                .takeIf { it.isNotBlank() } ?: variant
+        })"
     }
 }

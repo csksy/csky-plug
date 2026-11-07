@@ -150,3 +150,26 @@ data class SourceSet(
         val default: Boolean? = null
     )
 }
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class EpisodeLinksEnvelope(
+    val downloads: List<DownloadEntry> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class DownloadEntry(
+    val id: String? = null,
+    val source: String? = null,
+    val audioTracks: List<String>? = null,
+    val quality: String? = null,
+    val size: String? = null,
+    val releaseGroup: String? = null,
+    val downloadPage: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ResolvedLink(
+    val downloadPage: String? = null,
+    val directUrl: String? = null,
+    val mirror: String? = null
+)

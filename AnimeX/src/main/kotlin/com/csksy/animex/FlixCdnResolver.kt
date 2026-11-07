@@ -12,10 +12,10 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.net.URLEncoder
 
-// the ZEN tab points at flixcloud: the download route hands one plain file with
-// every audio track inside, while the /e player only serves hls behind a wasm
-// crypto layer, so downloadable formats are preferred and hls entries only
-// contribute their subtitle tracks
+// the ZEN tab points at flixcloud: the download route hands one plain file
+// with every audio track inside, while the /e player serves hls behind a
+// rotating-id crypto layer that is not worth chasing when the file itself
+// downloads cleanly
 object FlixCdnResolver {
 
     private const val TAG = "AnimeX"
@@ -76,12 +76,8 @@ object FlixCdnResolver {
             val fileId = videoString(data, 2) ?: return null
             val sizeHuman = videoString(data, 6)
             val resolution = videoString(data, 8)
-            val format = videoString(data, 10) ?: return null
             val base = videoString(data, 16) ?: FLIX
             val token = videoString(data, 17) ?: return null
-
-            // hls entries expose no download file at all, the route answers 404
-            if (format.equals("HLS", ignoreCase = true)) return null
 
             val encodedToken = URLEncoder.encode(token, "UTF-8")
             val downloadUrl = "$base/download/$fileId?token=$encodedToken"

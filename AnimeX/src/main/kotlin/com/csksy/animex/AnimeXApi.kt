@@ -1,5 +1,6 @@
 package com.csksy.animex
 
+import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.lagradost.api.Log
@@ -58,9 +59,12 @@ query {
     private fun urlEncode(value: String): String =
         URLEncoder.encode(value, "UTF-8")
 
+    // a raw T::class.java read loses generic arguments to erasure and hands
+    // back LinkedHashMaps where the caller expects typed models, the typed
+    // reference keeps them
     private inline fun <reified T> parse(text: String): T? =
         try {
-            mapper.readValue(text, T::class.java)
+            mapper.readValue(text, object : TypeReference<T>() {})
         } catch (e: Exception) {
             Log.e(TAG, "parse failed: ${e.message}")
             null
@@ -158,7 +162,7 @@ query {
             Log.e(TAG, "episodes failed: ${e.message}")
             null
         } ?: return emptyList()
-        return parse<List<EpisodeList>>(body)?.filterNotNull() ?: emptyList()
+        return parse<List<EpisodeList>>(body).orEmpty()
     }
 
     suspend fun servers(slug: String, epNum: Int): ServerList {
@@ -206,6 +210,41 @@ query {
             .map { ZenEntry(it.groupValues[1], it.groupValues[2]) }
             .distinctBy { it.accessId }
             .toList()
+    }
+
+    // the site's own download sheet is keyed by mal id and offers anidl and
+    // kiwi mirror entries per quality and audio side
+    suspend fun episodeLinks(malId: Int, epNum: Int): List<DownloadEntry> {
+        val body = try {
+            val resp = app.get(
+                "$SITE/api/episode-links/$malId/$epNum",
+                headers = BASE_HEADERS + mapOf("Referer" to "$SITE/")
+            )
+            if (resp.isSuccessful) resp.text else null
+        } catch (_: Exception) {
+            null
+        } ?: return emptyList()
+        return parse<EpisodeLinksEnvelope>(body)?.downloads.orEmpty()
+    }
+
+    // resolves a sheet entry to its kwik file page, anidl rows answer with a
+    // null direct url and only carry their redirect page
+    suspend fun resolveEpisodeLink(malId: Int, epNum: Int, downloadId: String): ResolvedLink? {
+        return try {
+            val resp = app.post(
+                "$SITE/api/episode-links/$malId/$epNum/resolve",
+                headers = BASE_HEADERS + mapOf(
+                    "Content-Type" to "application/json",
+                    "Origin" to SITE,
+                    "Referer" to "$SITE/"
+                ),
+                requestBody = mapper.writeValueAsString(mapOf("downloadId" to downloadId))
+                    .toRequestBody("application/json".toMediaType())
+            )
+            if (resp.isSuccessful) parse<ResolvedLink>(resp.text) else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     data class ZenEntry(val accessId: String, val audio: String)

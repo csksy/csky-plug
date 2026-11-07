@@ -10,10 +10,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
-import java.net.URLEncoder
 
 // the Zoro tab embeds vidcloud.se, a megaplay-family host behind cloudflare:
-// /s-1/{anilistId}/{ep}/{softsub|dub} keyed by anilist, /s-2/{malId} keyed by mal,
+// /s-1/{anilistId}/{ep}/{sub|dub} keyed by anilist, /s-2/{malId} keyed by mal,
 // stream list from /stream/getSources?id={id}&type={sub|dub}
 object VidCloudResolver {
 
@@ -84,21 +83,21 @@ object VidCloudResolver {
     }
 
     suspend fun resolveStream(anilistId: Int?, malId: Int?, epNum: Int, audio: String): VidCloudStream? {
-        val language = if (audio == "dub") "dub" else "softsub"
-        val urlKey = when {
-            anilistId != null && anilistId > 0 -> "s-1/$anilistId"
-            malId != null && malId > 0 -> "s-2/$malId"
+        val language = if (audio == "dub") "dub" else "sub"
+        val embedPaths = when {
+            anilistId != null && anilistId > 0 && malId != null && malId > 0 ->
+                listOf("s-1/$anilistId/$epNum/$language", "s-2/$malId/$epNum/$language")
+            anilistId != null && anilistId > 0 -> listOf("s-1/$anilistId/$epNum/$language")
+            malId != null && malId > 0 -> listOf("s-2/$malId/$epNum/$language")
             else -> return null
         }
-        val embedUrl = "$HOST/$urlKey/$epNum/$language"
 
-        val html = fetchPage(embedUrl) ?: return null
-        val streamId = extractStreamId(html) ?: return null
-
-        val apiType = if (audio == "dub") "dub" else "sub"
-        for (type in listOf(apiType, language)) {
+        for (path in embedPaths) {
+            val embedUrl = "$HOST/$path"
+            val html = fetchPage(embedUrl) ?: continue
+            val streamId = extractStreamId(html) ?: continue
             val root = fetchApi(
-                "$HOST/stream/getSources?id=$streamId&type=$type",
+                "$HOST/stream/getSources?id=$streamId&type=$language",
                 embedUrl
             ) ?: continue
             val stream = extractFromSources(root)
