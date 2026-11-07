@@ -311,21 +311,6 @@ class AnimeXProvider : MainAPI() {
                 }
 
                 launch {
-                    val zoroStream = try {
-                        VidCloudResolver.resolveStream(anilistId, ref.malId, ref.ep, audio)
-                    } catch (_: Exception) {
-                        null
-                    } ?: return@launch
-                    if (VidCloudResolver.emitLinks(
-                            name, "Zoro ${audio.uppercase()}", zoroStream,
-                            subtitleCallback, callback
-                        )
-                    ) {
-                        found.set(true)
-                    }
-                }
-
-                launch {
                     val zenEntries = try {
                         AnimeXApi.zenAccessIds(anilistId, ref.ep)
                     } catch (_: Exception) {
