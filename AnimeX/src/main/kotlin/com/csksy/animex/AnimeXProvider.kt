@@ -30,10 +30,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
 import com.raghav.donation.DonationManager
 
@@ -237,12 +234,10 @@ class AnimeXProvider : MainAPI() {
         }
     }
 
-    private fun parseAirDate(raw: String?): Date? {
+    private fun parseAirDate(raw: String?): kotlin.time.Instant? {
         if (raw.isNullOrBlank()) return null
         return try {
-            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-            sdf.timeZone = TimeZone.getTimeZone("UTC")
-            sdf.parse(raw.take(20))
+            kotlin.time.Instant.parse(raw.take(20))
         } catch (_: Exception) {
             null
         }
@@ -397,8 +392,11 @@ class AnimeXProvider : MainAPI() {
             null
         } ?: return false
 
+        // the self hosted cdn turns mobile user agents away with a plain
+        // forbidden while every other server of the site accepts them, the
+        // desktop ua the loader itself runs under is what it wants
         val playHeaders = mapOf(
-            "User-Agent" to AnimeXApi.USER_AGENT,
+            "User-Agent" to AnmxWebView.BRIDGE_UA,
             "Referer" to "https://plyr.animex.one/",
             "Origin" to "https://plyr.animex.one"
         )
@@ -411,9 +409,13 @@ class AnimeXProvider : MainAPI() {
             // carries every language as selectable renditions
             val label = source.label?.lowercase(Locale.US) ?: "both"
             if (label != "both" && label != audio) continue
-            emitStreamLinks(src, "ANMX OG ($side)", playHeaders, callback)
-            emitted = true
+            if (emitStreamLinks(src, "ANMX OG ($side)", playHeaders, callback)) {
+                emitted = true
+            }
         }
+        // a title the self hosted cdn refuses answers with a plain forbidden
+        // instead of a playlist, its dead row is dropped the same way the
+        // sites own player would fail on it
         if (!emitted) return false
 
         for (track in manifest.tracks.orEmpty()) {
@@ -470,8 +472,9 @@ class AnimeXProvider : MainAPI() {
                 null
             } ?: continue
             if (!file.startsWith("http")) continue
+            val tracks = entry.audioTracks
             val side = when {
-                entry.audioTracks?.contains("dub") == true && entry.audioTracks?.contains("sub") != true -> "DUB"
+                tracks?.contains("dub") == true && tracks.contains("sub") != true -> "DUB"
                 else -> audio.uppercase()
             }
             val quality = entry.quality?.takeWhile { it.isDigit() }?.takeIf { it.isNotEmpty() }?.toIntOrNull()
@@ -524,13 +527,19 @@ class AnimeXProvider : MainAPI() {
         label: String,
         headers: Map<String, String>,
         callback: (ExtractorLink) -> Unit
-    ) {
+    ): Boolean {
         val target = fixUrl(url)
-        if (!target.startsWith("http")) return
+        if (!target.startsWith("http")) return false
         val masterText = try {
             app.get(target, headers = headers, timeout = 12_000L).text
         } catch (_: Exception) {
             null
+        }
+
+        // an answer that is not a playlist means the cdn refused the url, a
+        // dead row is dropped instead of handed to the player to fail on
+        if (masterText != null && !target.contains(".mp4") && !masterText.contains("#EXTM3U")) {
+            return false
         }
 
         // a master that selects audio renditions must be handed to the player
@@ -565,6 +574,7 @@ class AnimeXProvider : MainAPI() {
                 }
             )
         }
+        return true
     }
 
     private data class VariantEntry(val url: String, val quality: Int?)
@@ -611,10 +621,31 @@ class AnimeXProvider : MainAPI() {
             if (!seen.add(key)) continue
             subtitleCallback.invoke(
                 newSubtitleFile(lang, url) {
-                    this.headers = headers
+                    this.headers = trackHeaders(url, headers)
                 }
             )
         }
+    }
+
+    // the subtitle mirrors the providers hand out live on the megaplay family
+    // and answer with a cloudflare page for any other referer, even the one
+    // the sources response itself advertises, so those hosts are pinned to
+    // the headers their cdn actually accepts
+    private fun trackHeaders(url: String, playHeaders: Map<String, String>): Map<String, String> {
+        val host = try {
+            java.net.URI(url).host?.lowercase() ?: return playHeaders
+        } catch (_: Exception) {
+            return playHeaders
+        }
+        val megaplayCdn = host == "cdn.imgnex.top" ||
+            host.endsWith(".mysubsplay.com") ||
+            host.endsWith(".lostproject.club")
+        if (!megaplayCdn) return playHeaders
+        return mapOf(
+            "User-Agent" to AnimeXApi.USER_AGENT,
+            "Origin" to "https://megaplay.buzz",
+            "Referer" to "https://megaplay.buzz/"
+        )
     }
 
     // the sites data occasionally carries hosts with a triple slash or an
