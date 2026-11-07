@@ -192,23 +192,34 @@ query {
 
     // the site's own player discovers its self hosted episode through this
     // lookup before any provider is asked, the episode id it answers with is
-    // what the site's own loader opens
+    // what the site's own loader opens. a burst of calls occasionally draws a
+    // null episode, the same call a moment later answers fine
     suspend fun anmxLookup(anilistId: Int, epNum: Int): AnmxLookup? {
-        val body = try {
-            val resp = app.get(
-                "$PLYR/api/anmx/$anilistId/$epNum",
-                headers = BASE_HEADERS + mapOf(
-                    "Accept" to "*/*",
-                    "Origin" to "https://plyr.animex.one",
-                    "Referer" to "https://plyr.animex.one/"
+        var lastReason: String? = null
+        repeat(3) { attempt ->
+            val body = try {
+                val resp = app.get(
+                    "$PLYR/api/anmx/$anilistId/$epNum",
+                    headers = BASE_HEADERS + mapOf(
+                        "Accept" to "*/*",
+                        "Origin" to "https://plyr.animex.one",
+                        "Referer" to "https://plyr.animex.one/"
+                    )
                 )
-            )
-            if (resp.isSuccessful) resp.text else null
-        } catch (e: Exception) {
-            Log.e(TAG, "anmx lookup failed: ${e.message}")
-            null
-        } ?: return null
-        return parse<AnmxLookup>(body)
+                if (resp.isSuccessful) resp.text else null
+            } catch (e: Exception) {
+                lastReason = e.message
+                null
+            }
+            if (body != null) {
+                val parsed = parse<AnmxLookup>(body)
+                if (parsed?.episode?.episodeId != null) return parsed
+                lastReason = "episode null"
+            }
+            if (attempt < 2) delay(1000L)
+        }
+        Log.d(TAG, "anmx lookup unavailable: $lastReason")
+        return null
     }
 
     fun parseAnmxManifest(body: String): AnmxManifest? = parse<AnmxManifest>(body)
