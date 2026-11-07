@@ -1,0 +1,505 @@
+package com.csksy.animex
+
+import com.lagradost.cloudstream3.DubStatus
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.Score
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.ShowStatus
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.addDate
+import com.lagradost.cloudstream3.addDubStatus
+import com.lagradost.cloudstream3.addEpisodes
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newAnimeLoadResponse
+import com.lagradost.cloudstream3.newAnimeSearchResponse
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newSubtitleFile
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicBoolean
+import com.raghav.donation.DonationManager
+
+class AnimeXProvider : MainAPI() {
+
+    override var mainUrl = AnimeXApi.SITE
+    override var name = "AnimeX"
+    override val hasMainPage = true
+    override var lang = "en"
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
+
+    override val mainPage = mainPageOf(
+        "trending" to "Trending Now",
+        "recent" to "Recently Updated",
+        "popular" to "All Time Popular",
+        "airing" to "Airing",
+        "movies" to "Movies"
+    )
+
+    private data class EpisodeRef(
+        val slug: String,
+        val anilistId: Int?,
+        val malId: Int?,
+        val ep: Int,
+        val lang: String
+    )
+
+    companion object {
+        private val ANMX_PROVIDERS = listOf("nero", "yuki", "zuna", "loli", "sora")
+        private val PROVIDER_NAMES = mapOf(
+            "nero" to "Nero",
+            "yuki" to "Yuki",
+            "zuna" to "Zuna",
+            "loli" to "Loli",
+            "sora" to "Sora"
+        )
+
+        // used when a sources answer carries no headers block of its own
+        private val FALLBACK_HEADERS = mapOf(
+            "nero" to mapOf("Referer" to "https://animex.one/"),
+            "yuki" to mapOf(
+                "Origin" to "https://megaplay.buzz",
+                "Referer" to "https://megaplay.buzz/"
+            ),
+            "zuna" to mapOf("Referer" to "https://zokoanime.video/"),
+            "loli" to mapOf("Referer" to "https://play.echovideo.ru/"),
+            "sora" to mapOf("Referer" to "https://kaa.lt/")
+        )
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        DonationManager.checkAndShow()
+        val (items, hasNext) = when (request.data) {
+            "trending" -> AnimeXApi.trending(page)
+            "popular" -> AnimeXApi.popular(page)
+            "airing" -> AnimeXApi.airing(page)
+            "movies" -> AnimeXApi.movies(page)
+            "recent" -> {
+                val (list, more) = AnimeXApi.recent(page)
+                list.mapNotNull { it.toCatalogItem() } to more
+            }
+            else -> return null
+        }
+        return newHomePageResponse(
+            request.name,
+            items.mapNotNull { it.toSearchResponse() },
+            hasNext = hasNext
+        )
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        if (query.isBlank()) return emptyList()
+        return AnimeXApi.search(query).mapNotNull { it.toSearchResponse() }
+    }
+
+    private fun RecentItem.toCatalogItem(): CatalogItem? {
+        val id = id ?: return null
+        return CatalogItem(
+            id = id,
+            anilistId = anilistId,
+            titleRomaji = titleRomaji,
+            titleEnglish = titleEnglish,
+            poster = coverImage?.best(),
+            format = format,
+            genres = genres,
+            averageScore = meanScore,
+            subCount = if (isSub == true) 1 else 0,
+            dubCount = if (isDub == true) 1 else 0
+        )
+    }
+
+    private fun CatalogItem.toSearchResponse(): SearchResponse? {
+        val id = id ?: return null
+        val title = titleEnglish?.takeIf { it.isNotBlank() } ?: titleRomaji?.takeIf { it.isNotBlank() }
+        ?: return null
+        val type = when (format) {
+            "MOVIE" -> TvType.AnimeMovie
+            "OVA", "ONA", "SPECIAL" -> TvType.OVA
+            else -> TvType.Anime
+        }
+        val dubExists = (dubCount ?: 0) > 0
+        val subExists = (subCount ?: 0) > 0 || !dubExists
+        return newAnimeSearchResponse(title, "$mainUrl/anime/$id", type) {
+            this.posterUrl = bestPoster()?.takeIf { it.startsWith("http") }
+                ?: bannerImage?.takeIf { it.startsWith("http") }
+            this.year = seasonYear
+            this.otherName = titleRomaji?.takeIf { it != title }
+            addDubStatus(dubExist = dubExists, subExist = subExists)
+            averageScore?.let { score = Score.from100(it.toDouble()) }
+        }
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        val urlSlug = url.removePrefix("$mainUrl/").removePrefix("/").removePrefix("anime/")
+        var slug = urlSlug
+        var anime = AnimeXApi.animeDetail(slug)
+        if (anime?.id == null) {
+            slug = AnimeXApi.resolveSlug(urlSlug) ?: return null
+            anime = AnimeXApi.animeDetail(slug) ?: return null
+        }
+        val title = anime.titleEnglish?.takeIf { it.isNotBlank() }
+            ?: anime.titleRomaji?.takeIf { it.isNotBlank() }
+            ?: return null
+        val eps = AnimeXApi.episodes(slug)
+
+        val subEps = mutableListOf<Episode>()
+        val dubEps = mutableListOf<Episode>()
+        for (ep in eps) {
+            val num = ep.number ?: continue
+            val hasSub = ep.hasSub ?: true
+            val hasDub = ep.hasDub ?: false
+            if (hasSub) subEps.add(ep.toEpisode(slug, num, "sub", anime))
+            if (hasDub) dubEps.add(ep.toEpisode(slug, num, "dub", anime))
+        }
+        if (subEps.isEmpty() && dubEps.isEmpty()) {
+            eps.forEach { ep ->
+                val num = ep.number ?: return@forEach
+                subEps.add(ep.toEpisode(slug, num, "sub", anime))
+            }
+        }
+
+        val type = when {
+            anime.format == "MOVIE" && dubEps.isNotEmpty() -> TvType.Anime
+            anime.format == "MOVIE" -> TvType.AnimeMovie
+            anime.format == "OVA" || anime.format == "ONA" || anime.format == "SPECIAL" -> TvType.OVA
+            else -> TvType.Anime
+        }
+
+        val showStatus = when (anime.status) {
+            "RELEASING" -> ShowStatus.Ongoing
+            "FINISHED" -> ShowStatus.Completed
+            else -> null
+        }
+
+        return newAnimeLoadResponse(title, "$mainUrl/anime/$slug", type) {
+            this.engName = anime.titleEnglish
+            this.japName = anime.titleRomaji
+            this.posterUrl = anime.bestPoster()?.takeIf { it.startsWith("http") }
+            this.backgroundPosterUrl = anime.bannerImage?.takeIf { it.startsWith("http") }
+                ?: anime.backdropUrl?.takeIf { it.startsWith("http") }
+            this.year = anime.seasonYear
+            this.showStatus = showStatus
+            this.plot = anime.description?.let(::stripHtml)
+            this.tags = anime.genres.orEmpty()
+            this.score = anime.averageScore?.let { Score.from100(it.toDouble()) }
+            addAniListId(anime.anilistId ?: 0)
+            addMalId(anime.malId ?: 0)
+            if (subEps.isNotEmpty()) addEpisodes(DubStatus.Subbed, subEps)
+            if (dubEps.isNotEmpty()) addEpisodes(DubStatus.Dubbed, dubEps)
+        }
+    }
+
+    private fun EpisodeList.toEpisode(
+        slug: String,
+        num: Int,
+        lang: String,
+        anime: CatalogItem
+    ): Episode {
+        val ref = EpisodeRef(
+            slug = slug,
+            anilistId = anime.anilistId,
+            malId = anime.malId,
+            ep = num,
+            lang = lang
+        )
+        return newEpisode(ref.toJson()) {
+            this.name = titles?.best()?.takeIf { it.isNotBlank() }
+            this.episode = num
+            this.description = description?.takeIf { it.isNotBlank() }?.let(::stripHtml)
+            this.posterUrl = img?.takeIf { it.startsWith("http") }
+            parseAirDate(airDateUtc)?.let { addDate(it) }
+        }
+    }
+
+    private fun parseAirDate(raw: String?): Date? {
+        if (raw.isNullOrBlank()) return null
+        return try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            sdf.parse(raw.take(20))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun stripHtml(html: String): String =
+        html.replace(Regex("<br\\s*/?>"), "\n")
+            .replace(Regex("<[^>]+>"), "")
+            .trim()
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val ref = try {
+            parseJson<EpisodeRef>(data)
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        if (ref.ep < 0) return false
+        val audio = if (ref.lang == "dub") "dub" else "sub"
+
+        val servers = AnimeXApi.servers(ref.slug, ref.ep)
+        val providerTips = (if (audio == "dub") servers.dubProviders else servers.subProviders)
+            .mapNotNull { provider -> provider.id?.let { it to (provider.tip ?: "") } }
+            .toMap()
+        val providerIds = providerTips.keys
+            .filter { ANMX_PROVIDERS.contains(it) }
+            .ifEmpty { ANMX_PROVIDERS }
+
+        val found = AtomicBoolean(false)
+
+        coroutineScope {
+            for (pid in providerIds) {
+                launch {
+                    val set = try {
+                        AnimeXApi.sources(ref.slug, ref.ep, audio, pid)
+                    } catch (_: Exception) {
+                        null
+                    } ?: return@launch
+                    emitProviderSet(pid, providerTips[pid], set, audio, subtitleCallback, callback)
+                    found.set(true)
+                }
+            }
+
+            ref.anilistId?.let { anilistId ->
+                launch {
+                    val embed = "https://megaplay.buzz/stream/ani/$anilistId/${ref.ep}/$audio"
+                    val stream = try {
+                        MegaPlayResolver.resolveStream(embed, "$mainUrl/")
+                    } catch (_: Exception) {
+                        null
+                    } ?: return@launch
+                    val label = "KOTO ${audio.uppercase()}"
+                    if (MegaPlayResolver.emitLinks(
+                            name, label, stream.m3u8, "https://megaplay.buzz/",
+                            stream.subtitles, subtitleCallback, callback
+                        )
+                    ) {
+                        found.set(true)
+                    }
+                }
+
+                launch {
+                    val zoroStream = try {
+                        VidCloudResolver.resolveStream(anilistId, ref.malId, ref.ep, audio)
+                    } catch (_: Exception) {
+                        null
+                    } ?: return@launch
+                    if (VidCloudResolver.emitLinks(
+                            name, "Zoro ${audio.uppercase()}", zoroStream,
+                            subtitleCallback, callback
+                        )
+                    ) {
+                        found.set(true)
+                    }
+                }
+
+                launch {
+                    val zenEntries = try {
+                        AnimeXApi.zenAccessIds(anilistId, ref.ep)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                    for (entry in zenEntries) {
+                        // dual audio files serve both tabs, single audio entries
+                        // only line up with their own side
+                        if (entry.audio != "dual" && entry.audio != audio) continue
+                        val file = try {
+                            FlixCdnResolver.resolve(entry.accessId)
+                        } catch (_: Exception) {
+                            null
+                        } ?: continue
+                        // the subtitle list is timed against the zen file itself,
+                        // it rides along only when that file is offered
+                        val subs = try {
+                            FlixCdnResolver.subtitles(entry.accessId)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        if (subs.isNotEmpty()) {
+                            FlixCdnResolver.emitSubtitles(subs, subtitleCallback)
+                        }
+                        FlixCdnResolver.emit(file, callback)
+                        found.set(true)
+                    }
+                }
+            }
+        }
+
+        return found.get()
+    }
+
+    private suspend fun emitProviderSet(
+        providerId: String,
+        tip: String?,
+        set: SourceSet,
+        audio: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val providerHeaders = (set.headers?.takeIf { it.isNotEmpty() })
+            ?: FALLBACK_HEADERS[providerId].orEmpty()
+        val playHeaders = mapOf("User-Agent" to AnimeXApi.USER_AGENT) + providerHeaders
+        val providerName = PROVIDER_NAMES[providerId] ?: providerId.uppercase()
+        // the site splits its sub providers into softsub and hard sub groups,
+        // the burn-in ones say so in their tip line
+        val hardsub = tip?.contains("hard sub", ignoreCase = true) == true
+        val baseLabel = "ANMX $providerName${if (hardsub) " (Hardsub)" else ""} ${audio.uppercase()}"
+
+        for (stream in set.sources) {
+            val url = stream.url ?: continue
+            if (!url.startsWith("http")) continue
+            emitStreamLinks(url, baseLabel, playHeaders, callback)
+        }
+
+        emitSubtitleTracks(set.tracks, playHeaders, subtitleCallback)
+    }
+
+    private suspend fun emitStreamLinks(
+        url: String,
+        label: String,
+        headers: Map<String, String>,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val masterText = try {
+            app.get(url, headers = headers, timeout = 12_000L).text
+        } catch (_: Exception) {
+            null
+        }
+
+        // a master that selects audio renditions must be handed to the player
+        // untouched, a split variant would stream video without sound
+        val hasAudioRenditions = masterText?.contains("#EXT-X-MEDIA:") == true
+        val variants = if (hasAudioRenditions) {
+            emptyList()
+        } else {
+            masterText?.let { parseVariants(url, it) }.orEmpty()
+        }
+
+        if (variants.isNotEmpty()) {
+            for (variant in variants) {
+                val suffix = variant.quality?.let { "${it}p" } ?: ""
+                callback.invoke(
+                    newExtractorLink(
+                        name,
+                        if (suffix.isEmpty()) label else "$label $suffix",
+                        variant.url,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        variant.quality?.let { quality = it }
+                        this.headers = headers
+                    }
+                )
+            }
+        } else {
+            val type = if (url.contains(".mp4")) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+            callback.invoke(
+                newExtractorLink(name, label, url, type = type) {
+                    this.headers = headers
+                }
+            )
+        }
+    }
+
+    private data class VariantEntry(val url: String, val quality: Int?)
+
+    private fun parseVariants(masterUrl: String, masterText: String): List<VariantEntry> {
+        val base = masterUrl.substringBefore('?').let { it.substringBeforeLast('/') + "/" }
+        val out = mutableListOf<VariantEntry>()
+        val lines = masterText.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i].trim()
+            if (line.startsWith("#EXT-X-STREAM-INF:")) {
+                val res = Regex("""RESOLUTION=(\d+)x(\d+)""").find(line)
+                val quality = res?.groupValues?.get(2)?.toIntOrNull()
+                var j = i + 1
+                while (j < lines.size && (lines[j].isBlank() || lines[j].startsWith("#"))) j++
+                if (j < lines.size) {
+                    val uri = lines[j].trim()
+                    if (uri.isNotEmpty()) {
+                        val absolute = if (uri.startsWith("http")) uri else base + uri
+                        out.add(VariantEntry(absolute, quality))
+                    }
+                    i = j
+                }
+            }
+            i++
+        }
+        return out
+    }
+
+    private suspend fun emitSubtitleTracks(
+        tracks: List<SourceSet.Track>?,
+        headers: Map<String, String>,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        if (tracks.isNullOrEmpty()) return
+        val seen = mutableSetOf<String>()
+        for (track in tracks) {
+            val url = track.url ?: continue
+            if (!url.startsWith("http")) continue
+            if (url.contains("thumbnails") || url.contains("/preview/")) continue
+            val lang = normalizeLang(track.lang) ?: normalizeLang(track.label) ?: continue
+            val key = "$lang|$url"
+            if (!seen.add(key)) continue
+            subtitleCallback.invoke(
+                newSubtitleFile(lang, url) {
+                    this.headers = headers
+                }
+            )
+        }
+    }
+
+    private fun normalizeLang(raw: String?): String? {
+        val value = raw?.trim()?.lowercase(Locale.US) ?: return null
+        if (value.isBlank()) return null
+        return when (value) {
+            "english", "eng" -> "en"
+            "arabic", "ara" -> "ar"
+            "french", "fre", "fra" -> "fr"
+            "german", "ger", "deu" -> "de"
+            "italian", "ita" -> "it"
+            "spanish", "spa" -> "es"
+            "portuguese", "por", "pt-br", "brazilian" -> "pt"
+            "polish", "pol" -> "pl"
+            "russian", "rus" -> "ru"
+            "japanese", "jpn" -> "ja"
+            "hindi", "hin" -> "hi"
+            "tamil", "tam" -> "ta"
+            "telugu", "tel" -> "te"
+            "malayalam", "mal" -> "ml"
+            "bengali", "ben" -> "bn"
+            "korean", "kor" -> "ko"
+            "chinese", "chi", "zho" -> "zh"
+            "turkish", "tur" -> "tr"
+            "indonesian", "ind" -> "id"
+            "thai" -> "th"
+            "vietnamese", "vie" -> "vi"
+            "ukrainian", "ukr" -> "uk"
+            "dutch", "dut", "nld" -> "nl"
+            else -> value
+        }
+    }
+}
