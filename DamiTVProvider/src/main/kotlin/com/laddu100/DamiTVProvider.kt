@@ -10,13 +10,18 @@ import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.BufferedReader
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.InputStreamReader
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.GZIPInputStream
+import java.util.zip.InflaterInputStream
 import kotlin.concurrent.thread
+import kotlin.math.abs
 import com.raghav.donation.DonationManager
 
 class DamiTVProvider : MainAPI() {
@@ -94,9 +99,8 @@ class DamiTVProvider : MainAPI() {
             "Origin" to mainUrl
         )
 
-    // the segment cdn serves a static noise image to anything that does not
-    // look like the site's own browser player, so the player requests must
-    // mirror the browser exactly: no referer, a null origin and fetch metadata
+    // the segment cdn answers any request carrying a referer with a forbidden,
+    // so segment requests must mirror the site's browser player exactly
     private val streamHeaders: Map<String, String> = mapOf(
         "User-Agent" to CHROME_UA,
         "Accept" to "*/*",
@@ -197,20 +201,179 @@ class DamiTVProvider : MainAPI() {
         val url: String
     )
 
-    // the site's manifest endpoints answer only with a site referer while the
-    // segment cdn behind them rejects any referer, and the app player sends
-    // one header set to every host. a loopback server splits the two apart:
-    // the player asks the proxy for the manifest, the proxy adds the referer,
-    // and segments go straight from the player to the cdn with clean
-    // browser-style headers
+    // the site ships each hls segment as an image whose pixel or metadata area
+    // hides the real transport stream, the browser player rebuilds the ts in
+    // javascript before handing it to hls.js, and these helpers mirror that
+    // transform so exoplayer can receive plain media
+    private object SegmentDecoder {
+        fun decode(data: ByteArray): ByteArray? {
+            if (data.size > 377 && data[0] == 0x47.toByte()) return data
+            if (data.size > 16 && data[0] == 0x89.toByte() && data[1] == 0x50.toByte()) {
+                val pixels = PngPayload.decode(data)
+                if (pixels != null && pixels.size >= 16 &&
+                    String(pixels, 0, 8, Charsets.ISO_8859_1) == "TIKTIKPX"
+                ) {
+                    val ts = gunzipAfterMagic(pixels)
+                    if (ts != null && ts.size > 188 && ts[0] == 0x47.toByte()) return ts
+                }
+            }
+            return scanForTransportStream(data)
+        }
+
+        // webp and jpeg deliveries keep the transport stream verbatim behind the
+        // image headers, three aligned sync bytes are enough to find the start
+        private fun scanForTransportStream(data: ByteArray): ByteArray? {
+            if (data.size < 0x179) return null
+            val isImage = (data[0] == 0x89.toByte() && data[1] == 0x50.toByte()) ||
+                (data[0] == 0xff.toByte() && data[1] == 0xd8.toByte()) ||
+                (data[0] == 0x52.toByte() && data[1] == 0x49.toByte())
+            if (!isImage) return null
+            val limit = minOf(data.size - 0x179, 0x10000)
+            for (i in 0 until limit) {
+                if (data[i] == 0x47.toByte() &&
+                    data[i + 188] == 0x47.toByte() &&
+                    data[i + 376] == 0x47.toByte()
+                ) {
+                    return data.copyOfRange(i, data.size)
+                }
+            }
+            return null
+        }
+
+        private fun gunzipAfterMagic(pixels: ByteArray): ByteArray? {
+            val searchEnd = minOf(pixels.size - 3, 64)
+            for (i in 0 until searchEnd) {
+                if (pixels[i] == 0x1f.toByte() &&
+                    pixels[i + 1] == 0x8b.toByte() &&
+                    pixels[i + 2] == 0x08.toByte()
+                ) {
+                    return try {
+                        GZIPInputStream(ByteArrayInputStream(pixels, i, pixels.size - i)).readBytes()
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }
+            return null
+        }
+    }
+
+    // png decoder for the one flavour the site emits: eight bit truecolor rows
+    // carrying the payload, arbitrary scanline filters included
+    private object PngPayload {
+        fun decode(data: ByteArray): ByteArray? {
+            try {
+                if (data.size < 57) return null
+                var pos = 8
+                var width = 0
+                var height = 0
+                var bitDepth = 0
+                var colorType = 0
+                var interlace = 0
+                var sawEnd = false
+                val idat = ByteArrayOutputStream()
+                while (pos + 12 <= data.size) {
+                    val length = readInt(data, pos)
+                    val type = String(data, pos + 4, 4, Charsets.ISO_8859_1)
+                    if (length < 0 || pos + 12 + length > data.size) return null
+                    when (type) {
+                        "IHDR" -> {
+                            if (length < 13) return null
+                            width = readInt(data, pos + 8)
+                            height = readInt(data, pos + 12)
+                            bitDepth = data[pos + 16].toInt() and 0xff
+                            colorType = data[pos + 17].toInt() and 0xff
+                            interlace = data[pos + 20].toInt() and 0xff
+                        }
+                        "IDAT" -> idat.write(data, pos + 8, length)
+                        "IEND" -> sawEnd = true
+                    }
+                    pos += 12 + length
+                    if (sawEnd) break
+                }
+                if (!sawEnd || width <= 0 || height <= 0 || interlace != 0) return null
+                val channels = when (colorType) {
+                    0 -> 1
+                    2 -> 3
+                    4 -> 2
+                    6 -> 4
+                    else -> return null
+                }
+                if (bitDepth != 8) return null
+                val stride = width * channels
+                if (stride <= 0 || height.toLong() * stride > MAX_PIXEL_BYTES) return null
+                val inflated = InflaterInputStream(ByteArrayInputStream(idat.toByteArray())).readBytes()
+                if (inflated.size < height * (stride + 1)) return null
+                val out = ByteArray(height * stride)
+                var src = 0
+                var prevOff = -1
+                for (y in 0 until height) {
+                    val filter = inflated[src].toInt() and 0xff
+                    src++
+                    val rowOff = y * stride
+                    System.arraycopy(inflated, src, out, rowOff, stride)
+                    src += stride
+                    when (filter) {
+                        0 -> {}
+                        1 -> for (i in channels until stride) {
+                            out[rowOff + i] = (out[rowOff + i] + out[rowOff + i - channels]).toByte()
+                        }
+                        2 -> if (prevOff >= 0) {
+                            for (i in 0 until stride) {
+                                out[rowOff + i] = (out[rowOff + i] + out[prevOff + i]).toByte()
+                            }
+                        }
+                        3 -> for (i in 0 until stride) {
+                            val left = if (i >= channels) out[rowOff + i - channels].toInt() and 0xff else 0
+                            val up = if (prevOff >= 0) out[prevOff + i].toInt() and 0xff else 0
+                            out[rowOff + i] = (out[rowOff + i] + ((left + up) ushr 1)).toByte()
+                        }
+                        4 -> for (i in 0 until stride) {
+                            val a = if (i >= channels) out[rowOff + i - channels].toInt() and 0xff else 0
+                            val b = if (prevOff >= 0) out[prevOff + i].toInt() and 0xff else 0
+                            val c = if (i >= channels && prevOff >= 0) out[prevOff + i - channels].toInt() and 0xff else 0
+                            val p = a + b - c
+                            val pa = abs(p - a)
+                            val pb = abs(p - b)
+                            val pc = abs(p - c)
+                            val pr = if (pa <= pb && pa <= pc) a else if (pb <= pc) b else c
+                            out[rowOff + i] = (out[rowOff + i] + pr).toByte()
+                        }
+                        else -> return null
+                    }
+                    prevOff = rowOff
+                }
+                return out
+            } catch (_: Exception) {
+                return null
+            }
+        }
+
+        private fun readInt(data: ByteArray, offset: Int): Int =
+            ((data[offset].toInt() and 0xff) shl 24) or
+                ((data[offset + 1].toInt() and 0xff) shl 16) or
+                ((data[offset + 2].toInt() and 0xff) shl 8) or
+                (data[offset + 3].toInt() and 0xff)
+
+        private const val MAX_PIXEL_BYTES = 96L * 1024 * 1024
+    }
+
+    // a loopback server stands between the player and the site because the
+    // playlist host demands a referer while the segment cdn forbids one and
+    // the app sends a single header set to every host, on top of that the
+    // segments arrive as images hiding the transport stream, so the proxy
+    // rewrites the playlist to itself and rebuilds plain ts on every segment
     private object ManifestProxy {
         @Volatile private var server: ServerSocket? = null
         @Volatile private var fetchClient: OkHttpClient? = null
-        @Volatile private var tk: String = ""
-        @Volatile private var tkExpires: Long = 0
+        @Volatile private var tk = ""
+        @Volatile private var tkExpires = 0L
+        private val segmentHosts = ConcurrentHashMap<String, Long>()
 
         fun ensure(client: OkHttpClient): Boolean {
-            fetchClient = client
+            fetchClient = client.newBuilder()
+                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
             if (server != null && server?.isClosed == false) return true
             return try {
                 val socket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
@@ -227,16 +390,31 @@ class DamiTVProvider : MainAPI() {
 
         fun port(): Int = server?.localPort ?: -1
 
-        fun proxyUrl(upstream: String): String {
-            val encoded = android.util.Base64.encodeToString(
-                upstream.toByteArray(Charsets.UTF_8),
-                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP
-            )
-            return "http://127.0.0.1:${port()}/x/$encoded"
+        fun channelUrl(channelId: String): String {
+            return "http://127.0.0.1:${port()}/c/$channelId.m3u8"
         }
 
-        fun channelUrl(channelId: String): String {
-            return "http://127.0.0.1:${port()}/c/$channelId"
+        fun playlistUrl(upstream: String): String {
+            return "http://127.0.0.1:${port()}/m/${encode(upstream)}"
+        }
+
+        private fun segmentUrl(upstream: String): String {
+            return "http://127.0.0.1:${port()}/s/${encode(upstream)}.ts"
+        }
+
+        private fun encode(value: String): String {
+            return android.util.Base64.encodeToString(
+                value.toByteArray(Charsets.UTF_8),
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP
+            )
+        }
+
+        private fun decode(value: String): String? {
+            return try {
+                String(android.util.Base64.decode(value, android.util.Base64.URL_SAFE), Charsets.UTF_8)
+            } catch (_: Exception) {
+                null
+            }
         }
 
         private fun acceptLoop(socket: ServerSocket) {
@@ -250,9 +428,11 @@ class DamiTVProvider : MainAPI() {
             }
         }
 
+        private class Upstream(val code: Int, val body: ByteArray?)
+
         private fun serve(client: Socket) {
             try {
-                client.soTimeout = 25000
+                client.soTimeout = 65000
                 client.use { socket ->
                     val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.ISO_8859_1))
                     val requestLine = reader.readLine() ?: return
@@ -266,53 +446,153 @@ class DamiTVProvider : MainAPI() {
                         if (line.isEmpty()) break
                     }
                     val route = parts[1].substringBefore('?')
-                    val upstream = upstreamFor(route) ?: run {
-                        respond(socket, 404, "not found".toByteArray())
-                        return
+                    when {
+                        route.startsWith("/c/") -> {
+                            val id = route.removePrefix("/c/")
+                                .substringBefore('/')
+                                .removeSuffix(".m3u8")
+                            if (!id.matches(Regex("[A-Za-z0-9_-]{3,64}"))) {
+                                respond(socket, 404, "not found".toByteArray())
+                            } else {
+                                serveChannel(socket, id)
+                            }
+                        }
+                        route.startsWith("/m/") -> {
+                            val url = decode(route.removePrefix("/m/").substringBefore('/'))
+                            if (url == null || !isSiteHost(url)) {
+                                respond(socket, 404, "not found".toByteArray())
+                            } else {
+                                serveSitePlaylist(socket, url)
+                            }
+                        }
+                        route.startsWith("/s/") -> {
+                            val url = decode(route.removePrefix("/s/").substringBefore('.'))
+                            if (url == null || !isAllowedSegmentHost(url)) {
+                                respond(socket, 403, "host not allowed".toByteArray())
+                            } else {
+                                serveSegment(socket, url)
+                            }
+                        }
+                        else -> respond(socket, 404, "not found".toByteArray())
                     }
-                    val allowRetry = route.startsWith("/c/")
-                    var body = fetch(upstream)
-                    if (body == null && allowRetry) {
-                        refreshToken()
-                        body = fetch("$PLAY_BASE/c/${route.removePrefix("/c/")}.m3u8?tk=$tk&e=$tkExpires")
-                    }
-                    if (body == null) {
-                        respond(socket, 502, "upstream failed".toByteArray())
-                        return
-                    }
-                    respond(socket, 200, body)
                 }
             } catch (_: Exception) {}
         }
 
-        private fun upstreamFor(route: String): String? {
-            return when {
-                route.startsWith("/c/") -> {
-                    val channelId = route.removePrefix("/c/").substringBefore('/')
-                    if (!channelId.matches(Regex("[A-Za-z0-9_-]{3,64}"))) null
-                    else "$PLAY_BASE/c/$channelId.m3u8?tk=${token()}&e=$tkExpires"
-                }
-                route.startsWith("/x/") -> {
-                    val encoded = route.removePrefix("/x/").substringBefore('/')
-                    val upstream = try {
-                        String(
-                            android.util.Base64.decode(encoded, android.util.Base64.URL_SAFE),
-                            Charsets.UTF_8
-                        )
-                    } catch (_: Exception) {
-                        null
+        private fun serveChannel(socket: Socket, id: String) {
+            val referer = "$PLAY_BASE/player/hls/?v=1&url=%2Fc%2F$id.m3u8&name=live"
+            var upstream = fetch("$PLAY_BASE/c/$id.m3u8?tk=${token()}&e=$tkExpires", referer)
+            if (upstream.code == 403 || upstream.code == 502) {
+                refreshToken()
+                upstream = fetch("$PLAY_BASE/c/$id.m3u8?tk=$tk&e=$tkExpires", referer)
+            }
+            servePlaylistBody(socket, upstream, "$PLAY_BASE/c/$id.m3u8")
+        }
+
+        private fun serveSitePlaylist(socket: Socket, url: String) {
+            var upstream = fetch(url, "$SITE/")
+            if (upstream.code == 403) {
+                val resigned = resignToken(url)
+                if (resigned != null) upstream = fetch(resigned, "$SITE/")
+            }
+            servePlaylistBody(socket, upstream, url)
+        }
+
+        private fun servePlaylistBody(socket: Socket, upstream: Upstream, baseUrl: String) {
+            when {
+                upstream.code == 410 -> respond(socket, 410, upstream.body ?: ByteArray(0))
+                upstream.code != 200 || upstream.body == null ->
+                    respond(socket, 502, "upstream failed".toByteArray())
+                else -> {
+                    val rewritten = rewritePlaylist(String(upstream.body, Charsets.UTF_8), baseUrl)
+                    if (rewritten == null) {
+                        respond(socket, 502, "playlist rewrite failed".toByteArray())
+                    } else {
+                        respond(socket, 200, rewritten)
                     }
-                    if (upstream != null && isAllowedHost(upstream)) upstream else null
                 }
-                else -> null
             }
         }
 
-        // only the site family may be fetched through the proxy, the loopback
-        // port must never become an open relay for other apps on the device
-        private fun isAllowedHost(upstream: String): Boolean {
+        private fun serveSegment(socket: Socket, url: String) {
+            val upstream = fetch(url, null, streamFetchHeaders)
+            val body = upstream.body
+            if (upstream.code != 200 || body == null) {
+                respond(socket, 502, "upstream failed".toByteArray())
+                return
+            }
+            val ts = SegmentDecoder.decode(body)
+            if (ts == null) {
+                respond(socket, 502, "segment decode failed".toByteArray())
+            } else {
+                respond(socket, 200, ts)
+            }
+        }
+
+        private fun rewritePlaylist(body: String, baseUrl: String): ByteArray? {
+            try {
+                val out = StringBuilder()
+                for (raw in body.split("\n")) {
+                    val line = raw.trimEnd('\r')
+                    if (line.isEmpty()) {
+                        out.append('\n')
+                        continue
+                    }
+                    if (line.startsWith("#")) {
+                        if (line.startsWith("#EXT-X-KEY") || line.startsWith("#EXT-X-MAP")) {
+                            out.append(rewriteTagUri(line, baseUrl)).append('\n')
+                        } else {
+                            out.append(line).append('\n')
+                        }
+                        continue
+                    }
+                    val absolute = resolveUrl(baseUrl, line) ?: continue
+                    rememberSegmentHost(absolute)
+                    out.append(segmentUrl(absolute)).append('\n')
+                }
+                return out.toString().toByteArray(Charsets.UTF_8)
+            } catch (_: Exception) {
+                return null
+            }
+        }
+
+        private fun rewriteTagUri(line: String, baseUrl: String): String {
+            val match = Regex("URI=\"([^\"]+)\"").find(line) ?: return line
+            val absolute = resolveUrl(baseUrl, match.groupValues[1]) ?: return line
+            rememberSegmentHost(absolute)
+            return line.replaceRange(match.groups[1]!!.range, segmentUrl(absolute))
+        }
+
+        private fun resolveUrl(baseUrl: String, target: String): String? {
+            return try {
+                URI(baseUrl).resolve(target.trim()).toString()
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        // only hosts seen inside a proxied playlist may be fetched, the
+        // loopback port must never become an open relay for other apps
+        private fun rememberSegmentHost(url: String) {
+            try {
+                val host = URI(url).host ?: return
+                segmentHosts[host] = System.currentTimeMillis() + HOST_TTL_MS
+            } catch (_: Exception) {}
+        }
+
+        private fun isAllowedSegmentHost(url: String): Boolean {
             val host = try {
-                URI(upstream).host ?: ""
+                URI(url).host ?: return false
+            } catch (_: Exception) {
+                return false
+            }
+            val expiry = segmentHosts[host] ?: return false
+            return expiry > System.currentTimeMillis()
+        }
+
+        private fun isSiteHost(url: String): Boolean {
+            val host = try {
+                URI(url).host ?: ""
             } catch (_: Exception) {
                 ""
             }
@@ -326,46 +606,68 @@ class DamiTVProvider : MainAPI() {
         }
 
         private fun refreshToken() {
-            try {
-                val request = Request.Builder()
-                    .url("$PLAY_BASE/papi/hls-token")
-                    .header("User-Agent", CHROME_UA)
-                    .header("Accept", "*/*")
-                    .header("Referer", "$SITE_REFERER")
-                    .build()
-                fetchClient?.newCall(request)?.execute()?.use { response ->
-                    val text = response.body?.string() ?: ""
-                    val parsed = parseJson<HlsTokenResponse>(text)
-                    if (parsed.tk.isNotBlank()) {
-                        tk = parsed.tk
-                        tkExpires = parsed.e
-                    }
+            synchronized(this) {
+                val upstream = fetch("$PLAY_BASE/papi/hls-token", "$PLAY_BASE/")
+                if (upstream.code == 200 && upstream.body != null) {
+                    try {
+                        val parsed = parseJson<HlsTokenResponse>(String(upstream.body, Charsets.UTF_8))
+                        if (parsed.tk.isNotBlank()) {
+                            tk = parsed.tk
+                            tkExpires = parsed.e
+                        }
+                    } catch (_: Exception) {}
                 }
-            } catch (_: Exception) {}
+            }
         }
 
-        private fun fetch(upstream: String): ByteArray? {
+        // signed playlist urls embed their own token, a fresh one from the
+        // shared token endpoint revives them once the original expires
+        private fun resignToken(url: String): String? {
+            refreshToken()
             return try {
-                val request = Request.Builder()
-                    .url(upstream)
+                val uri = URI(url)
+                val query = uri.rawQuery ?: return null
+                val kept = query.split('&').filter { !it.startsWith("tk=") && !it.startsWith("e=") }
+                val base = url.substringBefore('?')
+                "$base?tk=$tk&e=$tkExpires" + if (kept.isEmpty()) "" else "&${kept.joinToString("&")}"
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        private fun fetch(
+            url: String,
+            referer: String?,
+            extraHeaders: Map<String, String> = emptyMap()
+        ): Upstream {
+            return try {
+                val builder = Request.Builder()
+                    .url(url)
                     .header("User-Agent", CHROME_UA)
                     .header("Accept", "*/*")
                     .header("Accept-Language", "en-US,en;q=0.9")
-                    .header("Referer", SITE_REFERER)
-                    .build()
-                fetchClient?.newCall(request)?.execute()?.use { response ->
-                    if (response.isSuccessful) response.body?.bytes() else null
-                }
+                if (referer != null) builder.header("Referer", referer)
+                extraHeaders.forEach { (k, v) -> builder.header(k, v) }
+                fetchClient?.newCall(builder.build())?.execute()?.use { response ->
+                    val body = if (response.isSuccessful || response.code == 410) {
+                        response.body?.bytes()
+                    } else {
+                        null
+                    }
+                    Upstream(response.code, body)
+                } ?: Upstream(0, null)
             } catch (_: Exception) {
-                null
+                Upstream(0, null)
             }
         }
 
         private fun respond(socket: Socket, code: Int, body: ByteArray) {
             val reason = when (code) {
                 200 -> "OK"
+                403 -> "Forbidden"
                 404 -> "Not Found"
                 405 -> "Method Not Allowed"
+                410 -> "Gone"
                 else -> "Bad Gateway"
             }
             val header = "HTTP/1.1 $code $reason\r\n" +
@@ -378,6 +680,17 @@ class DamiTVProvider : MainAPI() {
                 out.flush()
             }
         }
+
+        private const val HOST_TTL_MS = 60L * 60 * 1000
+
+        // the segment cdn rejects requests carrying a referer, matching the
+        // browser means a null origin and cross site fetch metadata instead
+        private val streamFetchHeaders: Map<String, String> = mapOf(
+            "Origin" to "null",
+            "Sec-Fetch-Site" to "cross-site",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Dest" to "empty"
+        )
     }
 
     private fun formatMatchDate(timestamp: Long?): String {
@@ -582,6 +895,13 @@ class DamiTVProvider : MainAPI() {
         }
     }
 
+    // the channel playlist host only answers hexagonal channel ids, slug style
+    // ids belong to the signed ppv playlists served from another host
+    private fun isChannelPlaylistPath(path: String): Boolean {
+        val id = path.removePrefix("/c/").removeSuffix(".m3u8")
+        return id.length in 8..12 && id.all { it.isDigit() || it in 'a'..'f' }
+    }
+
     private suspend fun buildMatchStreams(event: EventLoadData): List<StreamInfo> {
         val streams = mutableListOf<StreamInfo>()
         val seenPaths = mutableSetOf<String>()
@@ -599,6 +919,7 @@ class DamiTVProvider : MainAPI() {
             val sources = parseJson<List<MsrcSource>>(text)
             sources.forEach { src ->
                 val path = playlistPathFromPlayerUrl(src.url) ?: return@forEach
+                if (!path.startsWith("/c/") || !isChannelPlaylistPath(path)) return@forEach
                 if (seenPaths.add(path)) {
                     streams.add(StreamInfo(name = src.label ?: "Server ${seenPaths.size}", url = "chan://$path"))
                 }
@@ -609,6 +930,7 @@ class DamiTVProvider : MainAPI() {
         event.tvChannels?.forEach { ch ->
             val id = ch.id
             if (id.isNullOrBlank() || ch.name.isNullOrBlank()) return@forEach
+            if (!isChannelPlaylistPath("/c/$id.m3u8")) return@forEach
             val path = "/c/$id.m3u8"
             if (seenPaths.add(path)) {
                 val chName = if (isUpcoming) "${ch.name} (Upcoming)" else ch.name
@@ -694,7 +1016,7 @@ class DamiTVProvider : MainAPI() {
                         val hlsUrl = response?.hlsUrl
                         if (hlsUrl.isNullOrBlank()) return@forEach
                         if (proxyReady && isSiteUrl(hlsUrl)) {
-                            ManifestProxy.proxyUrl(hlsUrl)
+                            ManifestProxy.playlistUrl(hlsUrl)
                         } else {
                             hlsUrl
                         }
@@ -782,5 +1104,7 @@ class DamiTVProvider : MainAPI() {
         private const val PLAY_BASE = "https://play.damitv.st"
 
         private const val SITE_REFERER = "https://damitv.st/"
+
+        private const val SITE = "https://damitv.st"
     }
 }
