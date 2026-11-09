@@ -13,8 +13,8 @@ dependencies {
 
 cloudstream {
     language = "en"
-    description = "Live sports HIGH QAULITY"
-    authors = listOf("KSHITIJ8473")
+    description = "Live sports in HD: football, NBA, NFL, UFC, cricket and 120 live sports channels"
+    authors = listOf("csksy")
 
     /**
      * Status int as the following:
