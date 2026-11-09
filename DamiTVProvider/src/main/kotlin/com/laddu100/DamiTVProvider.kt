@@ -6,9 +6,11 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.fasterxml.jackson.annotation.JsonProperty
 import okhttp3.Dns
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.InetAddress
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import com.raghav.donation.DonationManager
 
@@ -21,6 +23,10 @@ class DamiTVProvider : MainAPI() {
     override val hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.Live)
 
+    // the player host and its token endpoint kept their own domain while the
+    // main site rotated through renames, so they must not follow mainUrl
+    private val playBase = "https://play.damitv.st"
+
     private val dnsCache = ConcurrentHashMap<String, List<InetAddress>>()
 
     private val customDns = object : Dns {
@@ -28,15 +34,12 @@ class DamiTVProvider : MainAPI() {
             if (hostname == "1.1.1.1") {
                 return listOf(InetAddress.getByName("1.1.1.1"))
             }
-            // 1. Check cache
             dnsCache[hostname]?.let { return it }
-            // 2. Try DoH resolution via Cloudflare
             val resolved = resolveDnsDoH(hostname)
             if (resolved.isNotEmpty()) {
                 dnsCache[hostname] = resolved
                 return resolved
             }
-            // 3. Fallback to system DNS
             return Dns.SYSTEM.lookup(hostname)
         }
     }
@@ -75,29 +78,12 @@ class DamiTVProvider : MainAPI() {
         return emptyList()
     }
 
-    /** API GET that uses the DoH-enabled dnsClient to bypass ISP DNS blocking. */
     private suspend fun apiGet(url: String, headers: Map<String, String>): String {
         val reqBuilder = Request.Builder().url(url)
         headers.forEach { (k, v) -> reqBuilder.header(k, v) }
         dnsClient.newCall(reqBuilder.build()).execute().use { response ->
             return response.body?.string() ?: ""
         }
-    }
-
-    // exoplayer resolves through the system DNS which ISPs can block, so
-    // connect by IP resolved over DoH and keep the Host header for the origin
-    private fun resolveStreamUrlDns(url: String): String {
-        try {
-            val domain = Regex("""https?://([^/]+)""").find(url)?.groupValues?.get(1) ?: return url
-            val ips = dnsCache[domain] ?: resolveDnsDoH(domain)
-            if (ips.isNotEmpty()) {
-                dnsCache[domain] = ips
-                val ip = ips[0].hostAddress
-                val rewritten = url.replace("//$domain", "//$ip")
-                return rewritten
-            }
-        } catch (_: Exception) {}
-        return url
     }
 
     private var isUrlLoaded = false
@@ -124,17 +110,17 @@ class DamiTVProvider : MainAPI() {
 
     private val apiHeaders: Map<String, String>
         get() = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "User-Agent" to DESKTOP_UA,
             "Accept" to "application/json, text/plain, */*",
             "Referer" to "$mainUrl/",
             "Origin" to mainUrl
         )
 
-    // Headers for playing HLS streams from BunnyCDN
-    // The CDN checks referer — mainUrl is the whitelisted origin
-    private val hlsPlayHeaders: Map<String, String>
+    // the stream cdn rejects playlist requests without a referer from the
+    // site family, the player accepts either the main domain or its mirror
+    private val playHeaders: Map<String, String>
         get() = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+            "User-Agent" to DESKTOP_UA,
             "Referer" to "$mainUrl/",
             "Origin" to mainUrl,
             "Accept" to "*/*"
@@ -145,56 +131,14 @@ class DamiTVProvider : MainAPI() {
         @JsonProperty("name") val name: String
     )
 
-    data class DamiStreamedSource(
-        @JsonProperty("source") val source: String,
-        @JsonProperty("id") val id: String
-    )
-
-    data class DamiStreamVariant(
-        @JsonProperty("id") val id: String,
-        @JsonProperty("streamNo") val streamNo: Int,
-        @JsonProperty("language") val language: String? = null,
-        @JsonProperty("hd") val hd: Boolean? = null,
-        @JsonProperty("embedUrl") val embedUrl: String? = null,
-        @JsonProperty("source") val source: String,
-        @JsonProperty("viewers") val viewers: Int? = null
-    )
-
-    // Team metadata returned by /papi/matches/all (used for richer plot + search).
     data class DamiTeam(
         @JsonProperty("name") val name: String?,
         @JsonProperty("badge") val badge: String?
     )
+
     data class DamiTeams(
         @JsonProperty("home") val home: DamiTeam?,
         @JsonProperty("away") val away: DamiTeam?
-    )
-
-    data class EventLoadData(
-        val title: String,
-        val url: String, // Stores the match/substream ID
-        val posterUrl: String?,
-        val category: String?,
-        val status: String? = null,
-        val date: Long? = null,
-        val league: String? = null,
-        val teams: DamiTeams? = null,
-        val isDaddyLive: Boolean? = null,
-        val tvChannels: List<DamiTvChannel>? = null,
-        val isStreamed: Boolean? = null,
-        val sources: List<DamiStreamedSource>? = null,
-        val streamedSources: List<DamiStreamedSource>? = null
-    )
-
-    data class StreamLoadData(
-        val title: String,
-        val streams: List<StreamInfo>
-    )
-
-    data class StreamInfo(
-        val name: String,
-        val url: String, // Stores the match/substream ID or custom streamed:// URI
-        val headers: Map<String, String> = emptyMap()
     )
 
     data class DamiMatch(
@@ -209,31 +153,67 @@ class DamiTVProvider : MainAPI() {
         @JsonProperty("status") val status: String?,
         @JsonProperty("viewers") val viewers: Int?,
         @JsonProperty("teams") val teams: DamiTeams? = null,
-        @JsonProperty("embedUrl") val embedUrl: String?,
-        @JsonProperty("substreams") val substreams: List<DamiSubstream>?,
-        @JsonProperty("isDaddyLive") val isDaddyLive: Boolean?,
-        @JsonProperty("tvChannels") val tvChannels: List<DamiTvChannel>?,
-        @JsonProperty("isStreamed") val isStreamed: Boolean? = null,
-        // the site renamed streamedSources to sources, keep the legacy field for older cached payloads
-        @JsonProperty("sources") val sources: List<DamiStreamedSource>? = null,
-        @JsonProperty("streamedSources") val streamedSources: List<DamiStreamedSource>? = null
+        @JsonProperty("tvChannels") val tvChannels: List<DamiTvChannel>? = null,
+        @JsonProperty("ppvId") val ppvId: String? = null,
+        @JsonProperty("always_live") val alwaysLive: Boolean? = null
     )
 
-    data class DamiSubstream(
+    data class TvListItem(
         @JsonProperty("id") val id: String,
         @JsonProperty("name") val name: String,
-        @JsonProperty("iframe") val iframe: String?,
-        @JsonProperty("locale") val locale: String?
+        @JsonProperty("image") val image: String? = null,
+        @JsonProperty("country") val country: String? = null
+    )
+
+    data class TvListResponse(
+        @JsonProperty("channels") val channels: List<TvListItem> = emptyList()
+    )
+
+    data class MsrcSource(
+        @JsonProperty("url") val url: String,
+        @JsonProperty("label") val label: String?
     )
 
     data class ExtractUrlResponse(
         @JsonProperty("success") val success: Boolean,
-        @JsonProperty("hlsUrl") val hlsUrl: String?,
-        @JsonProperty("sdUrl") val sdUrl: String? = null,
-        @JsonProperty("embedUrl") val embedUrl: String?,
-        @JsonProperty("matchId") val matchId: String?,
-        @JsonProperty("substreams") val substreams: List<DamiSubstream>?,
-        @JsonProperty("error") val error: String?
+        @JsonProperty("hlsUrl") val hlsUrl: String? = null,
+        @JsonProperty("embedUrl") val embedUrl: String? = null,
+        @JsonProperty("error") val error: String? = null
+    )
+
+    data class HlsTokenResponse(
+        @JsonProperty("tk") val tk: String,
+        @JsonProperty("e") val e: Long
+    )
+
+    data class EventLoadData(
+        val title: String,
+        val url: String,
+        val posterUrl: String?,
+        val category: String?,
+        val status: String? = null,
+        val date: Long? = null,
+        val league: String? = null,
+        val teams: DamiTeams? = null,
+        val ppvId: String? = null,
+        val tvChannels: List<DamiTvChannel>? = null
+    )
+
+    data class ChannelLoadData(
+        val channelId: String? = null,
+        val channelName: String? = null,
+        val channelPoster: String? = null,
+        val channelCountry: String? = null
+    )
+
+    data class StreamLoadData(
+        val title: String,
+        val streams: List<StreamInfo>
+    )
+
+    data class StreamInfo(
+        val name: String,
+        val url: String
     )
 
     private fun formatMatchDate(timestamp: Long?): String {
@@ -248,46 +228,43 @@ class DamiTVProvider : MainAPI() {
         }
     }
 
-    // a fresh signed HLS url from /papi/extract-url right before playback,
-    // one retry absorbs the transient cloudflare hiccups damitv.st is known for
+    // a fresh signed url right before playback, one retry absorbs the
+    // transient cloudflare hiccups damitv is known for
     private suspend fun fetchExtractUrl(id: String): ExtractUrlResponse? {
-        repeat(2) { attempt ->
+        repeat(2) {
             try {
-                val text = apiGet("$mainUrl/papi/extract-url/$id", apiHeaders)
+                val text = apiGet("$mainUrl/papi/extract-url/${java.net.URLEncoder.encode(id, "UTF-8")}", apiHeaders)
                 val resp = parseJson<ExtractUrlResponse>(text)
-                if (resp.success) return resp
+                if (resp.success && !resp.hlsUrl.isNullOrBlank()) return resp
             } catch (_: Exception) {}
         }
         return null
     }
 
-    private fun matchToSearchResponse(match: DamiMatch): SearchResponse {
-        val title = match.title
-        val posterUrl = match.poster ?: match.ppvPoster ?: match.teams?.home?.badge ?: ""
-        val loadData = EventLoadData(
-            title = title,
-            url = match.id,
-            posterUrl = posterUrl,
-            category = match.category,
-            status = match.status,
-            date = match.date,
-            league = match.league,
-            teams = match.teams,
-            isDaddyLive = match.isDaddyLive,
-            tvChannels = match.tvChannels,
-            isStreamed = match.isStreamed,
-            sources = match.sources ?: match.streamedSources,
-            streamedSources = match.streamedSources
-        )
-        return newLiveSearchResponse(title, loadData.toJson(), TvType.Live) {
-            this.posterUrl = posterUrl
+    private suspend fun fetchHlsToken(): HlsTokenResponse? {
+        repeat(2) {
+            try {
+                val text = apiGet("$playBase/papi/hls-token", apiHeaders)
+                val resp = parseJson<HlsTokenResponse>(text)
+                if (resp.tk.isNotBlank()) return resp
+            } catch (_: Exception) {}
         }
+        return null
     }
 
-    private fun matchToUpcomingSearchResponse(match: DamiMatch): SearchResponse {
-        val dateStr = formatMatchDate(match.date)
-        val title = "${match.title} [Upcoming - Starts: $dateStr]"
-        val posterUrl = match.poster ?: match.ppvPoster ?: match.teams?.home?.badge ?: ""
+    private fun absoluteImageUrl(poster: String?): String {
+        if (poster.isNullOrBlank()) return ""
+        return if (poster.startsWith("http")) poster else "$mainUrl$poster"
+    }
+
+    private fun matchPoster(match: DamiMatch): String {
+        return absoluteImageUrl(
+            match.poster ?: match.ppvPoster ?: match.teams?.home?.badge ?: match.teams?.away?.badge
+        )
+    }
+
+    private fun matchToSearchResponse(match: DamiMatch): SearchResponse {
+        val posterUrl = matchPoster(match)
         val loadData = EventLoadData(
             title = match.title,
             url = match.id,
@@ -297,15 +274,50 @@ class DamiTVProvider : MainAPI() {
             date = match.date,
             league = match.league,
             teams = match.teams,
-            isDaddyLive = match.isDaddyLive,
-            tvChannels = match.tvChannels,
-            isStreamed = match.isStreamed,
-            sources = match.sources ?: match.streamedSources,
-            streamedSources = match.streamedSources
+            ppvId = match.ppvId,
+            tvChannels = match.tvChannels
+        )
+        return newLiveSearchResponse(match.title, loadData.toJson(), TvType.Live) {
+            this.posterUrl = posterUrl
+        }
+    }
+
+    private fun matchToUpcomingSearchResponse(match: DamiMatch): SearchResponse {
+        val dateStr = formatMatchDate(match.date)
+        val title = "${match.title} [Upcoming - Starts: $dateStr]"
+        val posterUrl = matchPoster(match)
+        val loadData = EventLoadData(
+            title = match.title,
+            url = match.id,
+            posterUrl = posterUrl,
+            category = match.category,
+            status = match.status,
+            date = match.date,
+            league = match.league,
+            teams = match.teams,
+            ppvId = match.ppvId,
+            tvChannels = match.tvChannels
         )
         return newLiveSearchResponse(title, loadData.toJson(), TvType.Live) {
             this.posterUrl = posterUrl
         }
+    }
+
+    private fun channelToSearchResponse(item: TvListItem): SearchResponse {
+        val loadData = ChannelLoadData(
+            channelId = item.id,
+            channelName = item.name,
+            channelPoster = absoluteImageUrl(item.image),
+            channelCountry = item.country
+        )
+        return newLiveSearchResponse(item.name, loadData.toJson(), TvType.Live) {
+            this.posterUrl = loadData.channelPoster
+        }
+    }
+
+    private fun isChannelCategory(category: String?): Boolean {
+        val cat = category?.lowercase() ?: return false
+        return cat == "24/7-streams" || cat == "live-tv" || cat == "channels" || cat.contains("stream")
     }
 
     override suspend fun getMainPage(
@@ -317,46 +329,45 @@ class DamiTVProvider : MainAPI() {
         val lists = mutableListOf<HomePageList>()
 
         try {
+            val tvText = apiGet("$mainUrl/papi/tv-list", apiHeaders)
+            val tvList = parseJson<TvListResponse>(tvText)
+            if (tvList.channels.isNotEmpty()) {
+                val items = tvList.channels.map { channelToSearchResponse(it) }
+                lists.add(HomePageList("Live Sports Channels", items, isHorizontalImages = true))
+            }
+        } catch (_: Exception) {}
+
+        try {
             val allText = apiGet("$mainUrl/papi/matches/all", apiHeaders)
             val allMatches = parseJson<List<DamiMatch>>(allText)
 
-            // 0. Popular Now (matches flagged popular=true by the site)
-            val popular = allMatches.filter { it.popular == true }
+            // the popular flag moved off matches/all onto its own endpoint,
+            // the old field stays as a fallback for older cached payloads
+            val popular = try {
+                val popularText = apiGet("$mainUrl/papi/matches/all/popular", apiHeaders)
+                parseJson<List<DamiMatch>>(popularText).ifEmpty {
+                    allMatches.filter { it.popular == true }
+                }
+            } catch (_: Exception) {
+                allMatches.filter { it.popular == true }
+            }
             if (popular.isNotEmpty()) {
-                val items = popular.map { matchToSearchResponse(it) }
-                lists.add(HomePageList("Popular Now", items, isHorizontalImages = true))
+                lists.add(HomePageList("Popular Now", popular.map { matchToSearchResponse(it) }, isHorizontalImages = true))
             }
 
-            // 1. Live Matches
-            val liveMatches = allMatches.filter { match ->
-                val status = match.status?.lowercase() ?: ""
-                val cat = match.category?.lowercase() ?: ""
-                status == "live" && cat.isNotBlank() && cat != "24/7-streams" && cat != "live-tv" && cat != "channels" && !cat.contains("stream")
-            }
+            val liveMatches = allMatches.filter { it.status?.lowercase() == "live" && !isChannelCategory(it.category) }
             if (liveMatches.isNotEmpty()) {
-                val items = liveMatches.map { matchToSearchResponse(it) }
-                lists.add(HomePageList("Live Sports Events", items, isHorizontalImages = true))
+                lists.add(HomePageList("Live Sports Events", liveMatches.map { matchToSearchResponse(it) }, isHorizontalImages = true))
             }
 
-            // 2. Upcoming Matches
-            val upcomingMatches = allMatches.filter { match ->
-                val status = match.status?.lowercase() ?: ""
-                val cat = match.category?.lowercase() ?: ""
-                status == "upcoming" && cat.isNotBlank() && cat != "24/7-streams" && cat != "live-tv" && cat != "channels" && !cat.contains("stream")
-            }
+            val upcomingMatches = allMatches.filter { it.status?.lowercase() == "upcoming" && !isChannelCategory(it.category) }
             if (upcomingMatches.isNotEmpty()) {
-                val items = upcomingMatches.map { matchToUpcomingSearchResponse(it) }
-                lists.add(HomePageList("Upcoming Matches (Live soon)", items, isHorizontalImages = true))
+                lists.add(HomePageList("Upcoming Matches (Live soon)", upcomingMatches.map { matchToUpcomingSearchResponse(it) }, isHorizontalImages = true))
             }
 
-            // 3. 24/7 Channels & Live TV (previously filtered out — now surfaced)
-            val channels = allMatches.filter { match ->
-                val cat = match.category?.lowercase() ?: ""
-                cat == "24/7-streams" || cat == "live-tv" || cat == "channels" || cat.contains("stream")
-            }
+            val channels = allMatches.filter { isChannelCategory(it.category) }
             if (channels.isNotEmpty()) {
-                val items = channels.map { matchToSearchResponse(it) }
-                lists.add(HomePageList("24/7 Channels & Live TV", items, isHorizontalImages = true))
+                lists.add(HomePageList("24/7 Channels & Live TV", channels.map { matchToSearchResponse(it) }, isHorizontalImages = true))
             }
         } catch (_: Exception) {}
 
@@ -365,10 +376,11 @@ class DamiTVProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         loadFirebaseUrl()
-        return try {
+        val results = mutableListOf<SearchResponse>()
+        try {
             val text = apiGet("$mainUrl/papi/matches/all", apiHeaders)
             val allMatches = parseJson<List<DamiMatch>>(text)
-            allMatches.filter { match ->
+            results.addAll(allMatches.filter { match ->
                 match.title.contains(query, ignoreCase = true) ||
                 (match.league?.contains(query, ignoreCase = true) ?: false) ||
                 (match.category?.contains(query, ignoreCase = true) ?: false) ||
@@ -380,86 +392,103 @@ class DamiTVProvider : MainAPI() {
                 } else {
                     matchToSearchResponse(match)
                 }
+            })
+        } catch (_: Exception) {}
+
+        try {
+            val tvText = apiGet("$mainUrl/papi/tv-list", apiHeaders)
+            val tvList = parseJson<TvListResponse>(tvText)
+            results.addAll(tvList.channels.filter { ch ->
+                ch.name.contains(query, ignoreCase = true) ||
+                (ch.country?.contains(query, ignoreCase = true) ?: false)
+            }.map { channelToSearchResponse(it) })
+        } catch (_: Exception) {}
+        return results
+    }
+
+    // the msrc answer is a player page path whose url query param carries the
+    // real playlist path, for example /c/8afdcdd622.m3u8
+    private fun playlistPathFromPlayerUrl(playerUrl: String): String? {
+        return try {
+            val query = playerUrl.substringAfter('?', "")
+            for (pair in query.split('&')) {
+                val kv = pair.split('=', limit = 2)
+                if (kv.size == 2 && kv[0] == "url") {
+                    val path = java.net.URLDecoder.decode(kv[1], "UTF-8")
+                    if (path.startsWith("/")) return path
+                }
             }
+            null
         } catch (_: Exception) {
-            emptyList()
+            null
         }
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        loadFirebaseUrl()
-        val eventData = parseJson<EventLoadData>(url)
-        val matchId = eventData.url
-        val title = eventData.title
-        val posterUrl = eventData.posterUrl
-        val isUpcoming = eventData.status == "upcoming"
-        val dateStr = formatMatchDate(eventData.date)
+    private suspend fun buildMatchStreams(event: EventLoadData): List<StreamInfo> {
+        val streams = mutableListOf<StreamInfo>()
+        val seenPaths = mutableSetOf<String>()
+        val isUpcoming = event.status?.lowercase() == "upcoming"
+        val dateStr = formatMatchDate(event.date)
 
-        val streamsList = mutableListOf<StreamInfo>()
-
-        // mapped channels go through the dlhd proxy on dami-tv.pro itself,
-        // the direct BunnyCDN url is intermittently blocked
-        if (!eventData.tvChannels.isNullOrEmpty()) {
-            eventData.tvChannels.forEach { ch ->
-                val chName = if (isUpcoming) "${ch.name} (Upcoming)" else "${ch.name}"
-                val dlhdProxyUrl = "$mainUrl/papi/tv/dlhd/${ch.id}/playlist.m3u8"
-                streamsList.add(StreamInfo(name = chName, url = dlhdProxyUrl))
-            }
+        if (!event.ppvId.isNullOrBlank()) {
+            val mainName = if (isUpcoming) "Main Stream (Live soon: $dateStr)" else "Main Stream"
+            streams.add(StreamInfo(name = mainName, url = "ppv://${event.ppvId}"))
         }
 
-        // 2. Query standard PPV API endpoints (Main Stream & Substreams)
-        var addedPpvStreams = false
         try {
-            val response = fetchExtractUrl(matchId)
-            if (response != null) {
-                val mainStreamName = if (isUpcoming) "Upcoming - Live soon (Starts: $dateStr)" else "Main Stream (Direct CDN)"
-                streamsList.add(StreamInfo(name = mainStreamName, url = matchId))
-                addedPpvStreams = true
-
-                // Add substreams
-                response.substreams?.forEach { sub ->
-                    val localeSuffix = if (!sub.locale.isNullOrBlank()) " (${sub.locale})" else ""
-                    val subName = if (isUpcoming) "${sub.name}$localeSuffix (Upcoming)" else "${sub.name}$localeSuffix"
-                    streamsList.add(StreamInfo(name = subName, url = sub.id))
+            val stamp = System.currentTimeMillis()
+            val text = apiGet("$mainUrl/papi/msrc-for?id=${java.net.URLEncoder.encode(event.url, "UTF-8")}&t=$stamp", apiHeaders)
+            val sources = parseJson<List<MsrcSource>>(text)
+            sources.forEach { src ->
+                val path = playlistPathFromPlayerUrl(src.url) ?: return@forEach
+                if (seenPaths.add(path)) {
+                    streams.add(StreamInfo(name = src.label ?: "Server ${seenPaths.size}", url = "chan://$path"))
                 }
             }
         } catch (_: Exception) {}
 
-        val streamedSourcesList = eventData.sources ?: eventData.streamedSources
-        var addedStreamedSources = false
-        if (!streamedSourcesList.isNullOrEmpty()) {
-            val sdMulti = streamedSourcesList.size > 1
-            streamedSourcesList.forEach { src ->
-                try {
-                    val streamUrl = "$mainUrl/papi/stream/${src.source}/${src.id}"
-                    val streamText = apiGet(streamUrl, apiHeaders)
-                    val variants = parseJson<List<DamiStreamVariant>>(streamText)
-                    variants.forEach { st ->
-                        val sn = st.streamNo
-                        val namePrefix = if (sdMulti) "${src.source.replaceFirstChar { it.uppercase() }} " else "Server "
-                        // Append quality + language so users can pick the best server at a glance.
-                        val quality = if (st.hd == true) "HD" else "SD"
-                        val lang = st.language?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
-                        val stName = "$namePrefix$sn ($quality$lang)"
-
-                        val encodedId = java.net.URLEncoder.encode(src.id, "UTF-8").replace("+", "%20")
-                        val encodedFallback = st.embedUrl?.let { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") } ?: ""
-                        val customUrl = "streamed://${src.source}?id=$encodedId&num=$sn&fallback=$encodedFallback"
-
-                        streamsList.add(StreamInfo(name = stName, url = customUrl))
-                        addedStreamedSources = true
-                    }
-                } catch (_: Exception) {}
+        event.tvChannels?.forEach { ch ->
+            val path = "/c/${ch.id}.m3u8"
+            if (seenPaths.add(path)) {
+                val chName = if (isUpcoming) "${ch.name} (Upcoming)" else ch.name
+                streams.add(StreamInfo(name = chName, url = "chan://$path"))
             }
         }
 
-        // 4. Ensure we have at least one fallback stream if nothing else was loaded
-        if (!addedPpvStreams && !addedStreamedSources) {
-            val mainStreamName = if (isUpcoming) "Upcoming - Live soon (Starts: $dateStr)" else "Main Stream (Direct CDN)"
-            streamsList.add(StreamInfo(name = mainStreamName, url = matchId))
+        if (streams.isEmpty()) {
+            val mainName = if (isUpcoming) "Main Stream (Live soon: $dateStr)" else "Main Stream"
+            streams.add(StreamInfo(name = mainName, url = "ppv://${event.url}"))
         }
+        return streams
+    }
 
-        val streamData = StreamLoadData(title, streamsList)
+    override suspend fun load(url: String): LoadResponse {
+        loadFirebaseUrl()
+
+        try {
+            val channelData = parseJson<ChannelLoadData>(url)
+            if (!channelData.channelId.isNullOrBlank()) {
+                val title = channelData.channelName ?: channelData.channelId
+                val streams = listOf(StreamInfo(name = "Live", url = "chan:///c/${channelData.channelId}.m3u8"))
+                val streamData = StreamLoadData(title, streams)
+                val plot = buildString {
+                    append("Live sports channel")
+                    channelData.channelCountry?.takeIf { it.isNotBlank() }?.let { append(" ($it)") }
+                }
+                return newLiveStreamLoadResponse(title, url, streamData.toJson()) {
+                    this.posterUrl = channelData.channelPoster
+                    this.plot = plot
+                }
+            }
+        } catch (_: Exception) {}
+
+        val eventData = parseJson<EventLoadData>(url)
+        val title = eventData.title
+        val isUpcoming = eventData.status?.lowercase() == "upcoming"
+        val dateStr = formatMatchDate(eventData.date)
+
+        val streams = buildMatchStreams(eventData)
+        val streamData = StreamLoadData(title, streams)
 
         val plot = buildString {
             eventData.league?.takeIf { it.isNotBlank() }?.let { append("League: $it\n") }
@@ -473,10 +502,23 @@ class DamiTVProvider : MainAPI() {
             if (eventData.date != null) append("Starts: $dateStr")
         }.trim()
 
-        return newLiveStreamLoadResponse(title, url, this.name) {
-            this.posterUrl = posterUrl
+        return newLiveStreamLoadResponse(title, url, streamData.toJson()) {
+            this.posterUrl = eventData.posterUrl
             this.plot = plot
-            this.dataUrl = streamData.toJson()
+        }
+    }
+
+    // the site ships embed urls as base64 of the reversed string
+    private fun decodeEmbedUrl(embed: String?): String? {
+        if (embed.isNullOrBlank()) return null
+        if (embed.startsWith("http")) return embed
+        if (!embed.startsWith("enc:")) return null
+        return try {
+            val decoded = String(Base64.getDecoder().decode(embed.removePrefix("enc:")), Charsets.UTF_8)
+            val candidate = decoded.reversed()
+            if (candidate.startsWith("http")) candidate else null
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -496,156 +538,89 @@ class DamiTVProvider : MainAPI() {
         if (streamData.streams.isEmpty()) return false
 
         var foundAny = false
+        var token: HlsTokenResponse? = null
 
         streamData.streams.forEach { stream ->
             try {
-                // 1. DLHD proxy streams
-                if (stream.url.contains("/papi/tv/dlhd/")) {
-                    // keep the domain, cloudflare's certificate does not cover
-                    // the bare IP and exoplayer would fail the handshake
-                    callback.invoke(
-                        newExtractorLink(
-                            source = this.name,
-                            name = stream.name,
-                            url = stream.url,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.headers = mapOf(
-                                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                                "Referer" to "$mainUrl/",
-                                "Origin" to mainUrl
-                            )
-                        }
-                    )
-                    foundAny = true
-                }
-                // 2. Streamed.pk streams
-                else if (stream.url.startsWith("streamed://")) {
-                    try {
-                        val stripped = stream.url.substring("streamed://".length)
-                        val queryIndex = stripped.indexOf('?')
-                        val source = if (queryIndex != -1) stripped.substring(0, queryIndex) else stripped
-                        val queryString = if (queryIndex != -1) stripped.substring(queryIndex + 1) else ""
-
-                        var streamId = ""
-                        var streamNo = ""
-                        var fallbackUrl = ""
-
-                        if (queryString.isNotEmpty()) {
-                            val params = queryString.split('&')
-                            for (param in params) {
-                                val pair = param.split('=', limit = 2)
-                                if (pair.size == 2) {
-                                    when (pair[0]) {
-                                        "id" -> streamId = java.net.URLDecoder.decode(pair[1], "UTF-8")
-                                        "num" -> streamNo = java.net.URLDecoder.decode(pair[1], "UTF-8")
-                                        "fallback" -> fallbackUrl = java.net.URLDecoder.decode(pair[1], "UTF-8")
-                                    }
-                                }
-                            }
-                        }
-
-                        if (source.isNotEmpty() && streamId.isNotEmpty() && streamNo.isNotEmpty()) {
-                            val playHeaders = hlsPlayHeaders
-
-                            // the sd-token endpoint is gone from the site, this
-                            // only works when it comes back so a failure must fall
-                            // through to the embed fallback
-                            try {
-                                val tokenResponse = apiGet("$mainUrl/papi/sd-token", apiHeaders)
-                                val tokenData = parseJson<Map<String, Any>>(tokenResponse)
-                                val token = tokenData["token"] as? String ?: ""
-                                if (token.isNotEmpty()) {
-                                    val tokenPath = tokenData["token_path"] as? String ?: ""
-                                    val expires = (tokenData["expires"] as? Number)?.toLong() ?: 0L
-
-                                    // URL encode all segments of the path
-                                    val encodedSource = java.net.URLEncoder.encode(source, "UTF-8").replace("+", "%20")
-                                    val encodedStreamId = java.net.URLEncoder.encode(streamId, "UTF-8").replace("+", "%20")
-                                    val encodedTokenPath = java.net.URLEncoder.encode(tokenPath, "UTF-8").replace("+", "%20")
-
-                                    val hlsUrl = "https://damitvsd.b-cdn.net/live-sd/streamed/$encodedSource/$encodedStreamId/$streamNo/playlist.m3u8?token=$token&token_path=$encodedTokenPath&expires=$expires"
-
-                                    // Direct HLS Link
-                                    callback.invoke(
-                                        newExtractorLink(
-                                            source = this.name,
-                                            name = "${stream.name} (Direct)",
-                                            url = hlsUrl,
-                                            type = ExtractorLinkType.M3U8
-                                        ) {
-                                            this.headers = playHeaders
-                                        }
-                                    )
-                                    foundAny = true
-                                }
-                            } catch (_: Exception) {}
-
-                            // embedindia.st resolves its real m3u8 inside a WASM
-                            // module, only the extractor registry can play it
-                            if (fallbackUrl.isNotEmpty()) {
-                                try {
-                                    loadExtractor(fallbackUrl, "$mainUrl/", subtitleCallback, callback)
-                                } catch (_: Exception) {}
-                            }
-                        }
-                    } catch (_: Exception) {}
-                }
-                // 3. Standard PPV extraction
-                else {
-                    // Fetch a fresh signed HLS URL right before playing (with retry).
-                    val response = fetchExtractUrl(stream.url)
+                if (stream.url.startsWith("ppv://")) {
+                    val targetId = stream.url.removePrefix("ppv://")
+                    val response = fetchExtractUrl(targetId)
                     if (response != null) {
-                        val playHeaders = hlsPlayHeaders
-
-                        if (!response.hlsUrl.isNullOrBlank()) {
-                            val hlsUrl = if (response.hlsUrl.startsWith("http")) {
-                                response.hlsUrl
-                            } else {
-                                "$mainUrl${response.hlsUrl}"
+                        val hlsUrl = response.hlsUrl!!
+                        callback.invoke(
+                            newExtractorLink(
+                                source = this.name,
+                                name = stream.name,
+                                url = hlsUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.headers = playHeaders
                             }
-                            callback.invoke(
-                                newExtractorLink(
-                                    source = this.name,
-                                    name = "${stream.name} (Direct)",
-                                    url = hlsUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.headers = playHeaders
-                                }
-                            )
-                            foundAny = true
-                        }
+                        )
+                        foundAny = true
 
-                        if (!response.sdUrl.isNullOrBlank()) {
-                            val sdUrl = if (response.sdUrl.startsWith("http")) {
-                                response.sdUrl
-                            } else {
-                                "$mainUrl${response.sdUrl}"
-                            }
-                            callback.invoke(
-                                newExtractorLink(
-                                    source = this.name,
-                                    name = "${stream.name} (SD)",
-                                    url = sdUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.headers = playHeaders
-                                }
-                            )
-                            foundAny = true
-                        }
-
-                        if (!response.embedUrl.isNullOrBlank()) {
+                        val embed = decodeEmbedUrl(response.embedUrl)
+                        if (embed != null) {
                             try {
-                                loadExtractor(response.embedUrl, "$mainUrl/", subtitleCallback, callback)
+                                loadExtractor(embed, "$mainUrl/", subtitleCallback, callback)
                             } catch (_: Exception) {}
                         }
+                    }
+                } else if (stream.url.startsWith("chan://")) {
+                    val path = stream.url.removePrefix("chan://")
+                    if (token == null) {
+                        token = fetchHlsToken()
+                    }
+                    val tk = token
+                    if (tk != null) {
+                        val streamUrl = "$playBase$path?tk=${tk.tk}&e=${tk.e}"
+                        callback.invoke(
+                            newExtractorLink(
+                                source = this.name,
+                                name = stream.name,
+                                url = streamUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.headers = playHeaders
+                            }
+                        )
+                        foundAny = true
                     }
                 }
             } catch (_: Exception) {}
         }
 
         return foundAny
+    }
+
+    // the site's playlist hosts require the referer while their segment cdn
+    // rejects it, so the player datasource gets a per-request interceptor
+    // that keeps the referer on the manifest hosts and strips it elsewhere
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
+        val manifestHost = try {
+            Regex("""https?://([^/]+)""").find(extractorLink.url)?.groupValues?.get(1)
+        } catch (_: Exception) {
+            null
+        }
+        return Interceptor { chain ->
+            val request = chain.request()
+            val host = request.url.host
+            val builder = request.newBuilder()
+            if (host == manifestHost || host == "damitv.st" || host.endsWith(".damitv.st") ||
+                host == "ondemand.st" || host.endsWith(".ondemand.st")
+            ) {
+                builder.header("Referer", "$mainUrl/")
+                builder.header("User-Agent", DESKTOP_UA)
+            } else {
+                builder.removeHeader("Referer")
+                builder.removeHeader("Origin")
+            }
+            chain.proceed(builder.build())
+        }
+    }
+
+    companion object {
+        private const val DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     }
 }
