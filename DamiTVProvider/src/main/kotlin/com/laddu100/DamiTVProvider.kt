@@ -9,9 +9,14 @@ import okhttp3.Dns
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.net.InetAddress
-import java.util.Base64
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.thread
 import com.raghav.donation.DonationManager
 
 class DamiTVProvider : MainAPI() {
@@ -20,12 +25,7 @@ class DamiTVProvider : MainAPI() {
     override var name = "DamiTV"
     override var lang = "en"
     override val hasMainPage = true
-    override val hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.Live)
-
-    // the player host and its token endpoint kept their own domain while the
-    // main site rotated through renames, so they must not follow mainUrl
-    private val playBase = "https://play.damitv.st"
 
     private val dnsCache = ConcurrentHashMap<String, List<InetAddress>>()
 
@@ -86,49 +86,30 @@ class DamiTVProvider : MainAPI() {
         }
     }
 
-    private var isUrlLoaded = false
-
-    data class FirebaseConfig(
-        @JsonProperty("dami") val dami: String? = null,
-        @JsonProperty("dami_url") val dami_url: String? = null,
-        @JsonProperty("damiUrl") val damiUrl: String? = null,
-        @JsonProperty("damitv_url") val damitvUrl: String? = null
-    )
-
-    private suspend fun loadFirebaseUrl() {
-        if (isUrlLoaded) return
-        try {
-            val response = app.get("https://cloudstreampluginhelper-default-rtdb.firebaseio.com/.json").text
-            val json = parseJson<FirebaseConfig>(response)
-            val url = json.dami ?: json.dami_url ?: json.damiUrl ?: json.damitvUrl
-            if (!url.isNullOrBlank()) {
-                mainUrl = url.removeSuffix("/")
-                isUrlLoaded = true
-            }
-        } catch (_: Exception) {}
-    }
-
     private val apiHeaders: Map<String, String>
         get() = mapOf(
-            "User-Agent" to DESKTOP_UA,
+            "User-Agent" to CHROME_UA,
             "Accept" to "application/json, text/plain, */*",
             "Referer" to "$mainUrl/",
             "Origin" to mainUrl
         )
 
-    // the stream cdn rejects playlist requests without a referer from the
-    // site family, the player accepts either the main domain or its mirror
-    private val playHeaders: Map<String, String>
-        get() = mapOf(
-            "User-Agent" to DESKTOP_UA,
-            "Referer" to "$mainUrl/",
-            "Origin" to mainUrl,
-            "Accept" to "*/*"
-        )
+    // the segment cdn serves a static noise image to anything that does not
+    // look like the site's own browser player, so the player requests must
+    // mirror the browser exactly: no referer, a null origin and fetch metadata
+    private val streamHeaders: Map<String, String> = mapOf(
+        "User-Agent" to CHROME_UA,
+        "Accept" to "*/*",
+        "Accept-Language" to "en-US,en;q=0.9",
+        "Origin" to "null",
+        "Sec-Fetch-Site" to "cross-site",
+        "Sec-Fetch-Mode" to "cors",
+        "Sec-Fetch-Dest" to "empty"
+    )
 
     data class DamiTvChannel(
-        @JsonProperty("id") val id: String,
-        @JsonProperty("name") val name: String
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("name") val name: String? = null
     )
 
     data class DamiTeam(
@@ -216,6 +197,189 @@ class DamiTVProvider : MainAPI() {
         val url: String
     )
 
+    // the site's manifest endpoints answer only with a site referer while the
+    // segment cdn behind them rejects any referer, and the app player sends
+    // one header set to every host. a loopback server splits the two apart:
+    // the player asks the proxy for the manifest, the proxy adds the referer,
+    // and segments go straight from the player to the cdn with clean
+    // browser-style headers
+    private object ManifestProxy {
+        @Volatile private var server: ServerSocket? = null
+        @Volatile private var fetchClient: OkHttpClient? = null
+        @Volatile private var tk: String = ""
+        @Volatile private var tkExpires: Long = 0
+
+        fun ensure(client: OkHttpClient): Boolean {
+            fetchClient = client
+            if (server != null && server?.isClosed == false) return true
+            return try {
+                val socket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+                server = socket
+                thread(isDaemon = true, name = "damitv-manifest-proxy") { acceptLoop(socket) }
+                true
+            } catch (_: Exception) {
+                server = null
+                false
+            }
+        }
+
+        fun isRunning(): Boolean = server != null && server?.isClosed == false
+
+        fun port(): Int = server?.localPort ?: -1
+
+        fun proxyUrl(upstream: String): String {
+            val encoded = android.util.Base64.encodeToString(
+                upstream.toByteArray(Charsets.UTF_8),
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP
+            )
+            return "http://127.0.0.1:${port()}/x/$encoded"
+        }
+
+        fun channelUrl(channelId: String): String {
+            return "http://127.0.0.1:${port()}/c/$channelId"
+        }
+
+        private fun acceptLoop(socket: ServerSocket) {
+            while (!socket.isClosed) {
+                val client = try {
+                    socket.accept()
+                } catch (_: Exception) {
+                    break
+                }
+                thread(isDaemon = true) { serve(client) }
+            }
+        }
+
+        private fun serve(client: Socket) {
+            try {
+                client.soTimeout = 25000
+                client.use { socket ->
+                    val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.ISO_8859_1))
+                    val requestLine = reader.readLine() ?: return
+                    val parts = requestLine.split(" ")
+                    if (parts.size < 2 || parts[0] != "GET") {
+                        respond(socket, 405, "method not allowed".toByteArray())
+                        return
+                    }
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                    }
+                    val route = parts[1].substringBefore('?')
+                    val upstream = upstreamFor(route) ?: run {
+                        respond(socket, 404, "not found".toByteArray())
+                        return
+                    }
+                    val allowRetry = route.startsWith("/c/")
+                    var body = fetch(upstream)
+                    if (body == null && allowRetry) {
+                        refreshToken()
+                        body = fetch("$PLAY_BASE/c/${route.removePrefix("/c/")}.m3u8?tk=$tk&e=$tkExpires")
+                    }
+                    if (body == null) {
+                        respond(socket, 502, "upstream failed".toByteArray())
+                        return
+                    }
+                    respond(socket, 200, body)
+                }
+            } catch (_: Exception) {}
+        }
+
+        private fun upstreamFor(route: String): String? {
+            return when {
+                route.startsWith("/c/") -> {
+                    val channelId = route.removePrefix("/c/").substringBefore('/')
+                    if (!channelId.matches(Regex("[A-Za-z0-9_-]{3,64}"))) null
+                    else "$PLAY_BASE/c/$channelId.m3u8?tk=${token()}&e=$tkExpires"
+                }
+                route.startsWith("/x/") -> {
+                    val encoded = route.removePrefix("/x/").substringBefore('/')
+                    val upstream = try {
+                        String(
+                            android.util.Base64.decode(encoded, android.util.Base64.URL_SAFE),
+                            Charsets.UTF_8
+                        )
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (upstream != null && isAllowedHost(upstream)) upstream else null
+                }
+                else -> null
+            }
+        }
+
+        // only the site family may be fetched through the proxy, the loopback
+        // port must never become an open relay for other apps on the device
+        private fun isAllowedHost(upstream: String): Boolean {
+            val host = try {
+                URI(upstream).host ?: ""
+            } catch (_: Exception) {
+                ""
+            }
+            return host == "damitv.st" || host.endsWith(".damitv.st")
+        }
+
+        private fun token(): String {
+            val now = System.currentTimeMillis() / 1000
+            if (tk.isBlank() || tkExpires - now < 300) refreshToken()
+            return tk
+        }
+
+        private fun refreshToken() {
+            try {
+                val request = Request.Builder()
+                    .url("$PLAY_BASE/papi/hls-token")
+                    .header("User-Agent", CHROME_UA)
+                    .header("Accept", "*/*")
+                    .header("Referer", "$SITE_REFERER")
+                    .build()
+                fetchClient?.newCall(request)?.execute()?.use { response ->
+                    val text = response.body?.string() ?: ""
+                    val parsed = parseJson<HlsTokenResponse>(text)
+                    if (parsed.tk.isNotBlank()) {
+                        tk = parsed.tk
+                        tkExpires = parsed.e
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        private fun fetch(upstream: String): ByteArray? {
+            return try {
+                val request = Request.Builder()
+                    .url(upstream)
+                    .header("User-Agent", CHROME_UA)
+                    .header("Accept", "*/*")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("Referer", SITE_REFERER)
+                    .build()
+                fetchClient?.newCall(request)?.execute()?.use { response ->
+                    if (response.isSuccessful) response.body?.bytes() else null
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        private fun respond(socket: Socket, code: Int, body: ByteArray) {
+            val reason = when (code) {
+                200 -> "OK"
+                404 -> "Not Found"
+                405 -> "Method Not Allowed"
+                else -> "Bad Gateway"
+            }
+            val header = "HTTP/1.1 $code $reason\r\n" +
+                "Content-Type: application/vnd.apple.mpegurl\r\n" +
+                "Content-Length: ${body.size}\r\n" +
+                "Connection: close\r\n\r\n"
+            socket.getOutputStream().use { out ->
+                out.write(header.toByteArray(Charsets.ISO_8859_1))
+                out.write(body)
+                out.flush()
+            }
+        }
+    }
+
     private fun formatMatchDate(timestamp: Long?): String {
         if (timestamp == null) return "soon"
         return try {
@@ -229,7 +393,7 @@ class DamiTVProvider : MainAPI() {
     }
 
     // a fresh signed url right before playback, one retry absorbs the
-    // transient cloudflare hiccups damitv is known for
+    // transient failures damitv is known for
     private suspend fun fetchExtractUrl(id: String): ExtractUrlResponse? {
         repeat(2) {
             try {
@@ -241,15 +405,13 @@ class DamiTVProvider : MainAPI() {
         return null
     }
 
-    private suspend fun fetchHlsToken(): HlsTokenResponse? {
-        repeat(2) {
-            try {
-                val text = apiGet("$playBase/papi/hls-token", apiHeaders)
-                val resp = parseJson<HlsTokenResponse>(text)
-                if (resp.tk.isNotBlank()) return resp
-            } catch (_: Exception) {}
+    private fun isSiteUrl(url: String): Boolean {
+        val host = try {
+            URI(url).host ?: ""
+        } catch (_: Exception) {
+            ""
         }
-        return null
+        return host == "damitv.st" || host.endsWith(".damitv.st")
     }
 
     private fun absoluteImageUrl(poster: String?): String {
@@ -325,7 +487,6 @@ class DamiTVProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         DonationManager.checkAndShow()
-        loadFirebaseUrl()
         val lists = mutableListOf<HomePageList>()
 
         try {
@@ -341,8 +502,6 @@ class DamiTVProvider : MainAPI() {
             val allText = apiGet("$mainUrl/papi/matches/all", apiHeaders)
             val allMatches = parseJson<List<DamiMatch>>(allText)
 
-            // the popular flag moved off matches/all onto its own endpoint,
-            // the old field stays as a fallback for older cached payloads
             val popular = try {
                 val popularText = apiGet("$mainUrl/papi/matches/all/popular", apiHeaders)
                 parseJson<List<DamiMatch>>(popularText).ifEmpty {
@@ -375,7 +534,6 @@ class DamiTVProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        loadFirebaseUrl()
         val results = mutableListOf<SearchResponse>()
         try {
             val text = apiGet("$mainUrl/papi/matches/all", apiHeaders)
@@ -447,8 +605,11 @@ class DamiTVProvider : MainAPI() {
             }
         } catch (_: Exception) {}
 
+        // channel entries without an id have no playable path on the site
         event.tvChannels?.forEach { ch ->
-            val path = "/c/${ch.id}.m3u8"
+            val id = ch.id
+            if (id.isNullOrBlank() || ch.name.isNullOrBlank()) return@forEach
+            val path = "/c/$id.m3u8"
             if (seenPaths.add(path)) {
                 val chName = if (isUpcoming) "${ch.name} (Upcoming)" else ch.name
                 streams.add(StreamInfo(name = chName, url = "chan://$path"))
@@ -463,8 +624,6 @@ class DamiTVProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        loadFirebaseUrl()
-
         try {
             val channelData = parseJson<ChannelLoadData>(url)
             if (!channelData.channelId.isNullOrBlank()) {
@@ -508,27 +667,12 @@ class DamiTVProvider : MainAPI() {
         }
     }
 
-    // the site ships embed urls as base64 of the reversed string
-    private fun decodeEmbedUrl(embed: String?): String? {
-        if (embed.isNullOrBlank()) return null
-        if (embed.startsWith("http")) return embed
-        if (!embed.startsWith("enc:")) return null
-        return try {
-            val decoded = String(Base64.getDecoder().decode(embed.removePrefix("enc:")), Charsets.UTF_8)
-            val candidate = decoded.reversed()
-            if (candidate.startsWith("http")) candidate else null
-        } catch (_: Exception) {
-            null
-        }
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        loadFirebaseUrl()
         val streamData = try {
             parseJson<StreamLoadData>(data)
         } catch (_: Exception) {
@@ -537,90 +681,106 @@ class DamiTVProvider : MainAPI() {
 
         if (streamData.streams.isEmpty()) return false
 
-        var foundAny = false
+        val proxyReady = ManifestProxy.ensure(dnsClient)
         var token: HlsTokenResponse? = null
+        var foundAny = false
 
         streamData.streams.forEach { stream ->
             try {
-                if (stream.url.startsWith("ppv://")) {
-                    val targetId = stream.url.removePrefix("ppv://")
-                    val response = fetchExtractUrl(targetId)
-                    if (response != null) {
-                        val hlsUrl = response.hlsUrl!!
-                        callback.invoke(
-                            newExtractorLink(
-                                source = this.name,
-                                name = stream.name,
-                                url = hlsUrl,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.headers = playHeaders
-                            }
-                        )
-                        foundAny = true
-
-                        val embed = decodeEmbedUrl(response.embedUrl)
-                        if (embed != null) {
-                            try {
-                                loadExtractor(embed, "$mainUrl/", subtitleCallback, callback)
-                            } catch (_: Exception) {}
+                val streamUrl = when {
+                    stream.url.startsWith("ppv://") -> {
+                        val targetId = stream.url.removePrefix("ppv://")
+                        val response = fetchExtractUrl(targetId)
+                        val hlsUrl = response?.hlsUrl
+                        if (hlsUrl.isNullOrBlank()) return@forEach
+                        if (proxyReady && isSiteUrl(hlsUrl)) {
+                            ManifestProxy.proxyUrl(hlsUrl)
+                        } else {
+                            hlsUrl
                         }
                     }
-                } else if (stream.url.startsWith("chan://")) {
-                    val path = stream.url.removePrefix("chan://")
-                    if (token == null) {
-                        token = fetchHlsToken()
+                    stream.url.startsWith("chan://") -> {
+                        val channelId = stream.url.removePrefix("chan://")
+                            .removePrefix("/c/")
+                            .substringBefore('/')
+                            .removeSuffix(".m3u8")
+                        if (proxyReady) {
+                            ManifestProxy.channelUrl(channelId)
+                        } else {
+                            if (token == null) token = fetchHlsToken()
+                            val tk = token ?: return@forEach
+                            "$PLAY_BASE/c/$channelId.m3u8?tk=${tk.tk}&e=${tk.e}"
+                        }
                     }
-                    val tk = token
-                    if (tk != null) {
-                        val streamUrl = "$playBase$path?tk=${tk.tk}&e=${tk.e}"
-                        callback.invoke(
-                            newExtractorLink(
-                                source = this.name,
-                                name = stream.name,
-                                url = streamUrl,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.headers = playHeaders
-                            }
-                        )
-                        foundAny = true
-                    }
+                    else -> return@forEach
                 }
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = stream.name,
+                        url = streamUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.headers = streamHeaders
+                    }
+                )
+                foundAny = true
             } catch (_: Exception) {}
         }
 
         return foundAny
     }
 
-    // the site's playlist hosts require the referer while their segment cdn
-    // rejects it, so the player datasource gets a per-request interceptor
-    // that keeps the referer on the manifest hosts and strips it elsewhere
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
-        val manifestHost = try {
-            Regex("""https?://([^/]+)""").find(extractorLink.url)?.groupValues?.get(1)
-        } catch (_: Exception) {
-            null
+    private suspend fun fetchHlsToken(): HlsTokenResponse? {
+        repeat(2) {
+            try {
+                val text = apiGet("$PLAY_BASE/papi/hls-token", apiHeaders)
+                val resp = parseJson<HlsTokenResponse>(text)
+                if (resp.tk.isNotBlank()) return resp
+            } catch (_: Exception) {}
         }
+        return null
+    }
+
+    // fallback for the rare case the loopback server could not start: the
+    // interceptor keeps the site referer on manifest hosts and strips it from
+    // the segment cdn, at the cost of forcing the okhttp player stack
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        if (ManifestProxy.isRunning()) return null
         return Interceptor { chain ->
             val request = chain.request()
             val host = request.url.host
             val builder = request.newBuilder()
-            if (host == manifestHost || host == "damitv.st" || host.endsWith(".damitv.st") ||
+            builder.header("User-Agent", CHROME_UA)
+            builder.header("Accept", "*/*")
+            builder.header("Accept-Language", "en-US,en;q=0.9")
+            builder.removeHeader("Referer")
+            builder.removeHeader("Origin")
+            builder.removeHeader("Sec-Fetch-Site")
+            builder.removeHeader("Sec-Fetch-Mode")
+            builder.removeHeader("Sec-Fetch-Dest")
+            if (host == "damitv.st" || host.endsWith(".damitv.st") ||
                 host == "ondemand.st" || host.endsWith(".ondemand.st")
             ) {
-                builder.header("Referer", "$mainUrl/")
-                builder.header("User-Agent", DESKTOP_UA)
+                builder.header("Referer", SITE_REFERER)
             } else {
-                builder.removeHeader("Referer")
-                builder.removeHeader("Origin")
+                builder.header("Origin", "null")
+                builder.header("Sec-Fetch-Site", "cross-site")
+                builder.header("Sec-Fetch-Mode", "cors")
+                builder.header("Sec-Fetch-Dest", "empty")
             }
             chain.proceed(builder.build())
         }
     }
 
     companion object {
-        private const val DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        private const val CHROME_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+
+        // the player host and its token endpoint kept their own domain while
+        // the main site rotated through renames, so they must not follow mainUrl
+        private const val PLAY_BASE = "https://play.damitv.st"
+
+        private const val SITE_REFERER = "https://damitv.st/"
     }
 }
