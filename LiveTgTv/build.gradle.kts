@@ -1,17 +1,13 @@
-version = 3
-
-android {
-    buildFeatures {
-        buildConfig = true
-    }
-}
+version = 4
 
 dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
 }
 
 cloudstream {
     language = "hi"
-    description = "TG TV - 1100+ Indian live TV channels from JioTV: Star Sports, Star Gold, Sony, Colors, Zee, movies, news, kids, devotional and every regional language the site carries, played with its own DRM keys"
+    description = "Indian TV channels through m3u playlists - livetgtv is always on with its DRM clearkeys and stream cookies, and any playlist pasted in settings opens as its own extension"
     authors = listOf("KSHITIJ8473")
 
     /**

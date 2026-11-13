@@ -1,10 +1,11 @@
 package com.livetgtv
 
 import android.util.Base64
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
@@ -12,202 +13,445 @@ import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newLiveSearchResponse
 import com.lagradost.cloudstream3.newLiveStreamLoadResponse
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.CLEARKEY_UUID
+import com.lagradost.cloudstream3.utils.DrmExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newDrmExtractorLink
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import org.json.JSONObject
+import com.raghav.donation.DonationManager
+import okhttp3.Headers
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
-/**
- * TG TV (livetgtv.lovable.app) - the JioTV mirror the site runs, with every
- * channel it carries. Every link is built exactly the way the site builds
- * its own, verified request by request against the site's traffic:
- *
- *  the site's server picker (servers.js) offers one server per entry of the
- *  stream config - the config's own urls first ("Server 1"), then each
- *  backup as its own server ("Server 2", "Server 3", ...), and when they all
- *  fail the page swaps to the embedded player (jjtvxweb pind), which plays
- *  the channel list urls with the rotating cookie endpoints. This provider
- *  emits the same ladder, one link per distinct stream:
- *
- *  1. Server 1 - the config's urls
- *  2. Server 2.. - every backup's urls with the backup's own cookie and keys
- *  3. the embedded player's urls - the channel list with the live cookies
- *
- *  The token that signs a url is fixed by its host, the same rule the
- *  embedded player enforces (its own source): jiotvpllive only ever accepts
- *  the per-channel token from the star cookie endpoint and must never be
- *  given the global one (403), every other cdn runs on the global token.
- *  When the right class has no token the url keeps its own query - it may
- *  still carry a working one.
- *
- *  The DRM pairs ride in a single clearkey license: the player template puts
- *  the first pair in and the remaining pairs are appended inside the kid
- *  string, so the finished license holds every pair the mpd asks for by its
- *  cenc:default_KID list (verified against the live mpds - the pllive ones
- *  carry two distinct kids).
- *
- *  The manifest url carries its token in the query and the same token rides
- *  as the __hdnea__ cookie so the player's segment requests pass the edge.
- */
-class LiveTgTvProvider : MainAPI() {
+// one extension per playlist, the default livetgtv feed ships alongside
+// whatever the user pastes into the settings sheet
+class LiveTgTvProvider(
+    playlistName: String,
+    private val playlistUrl: String,
+    private val firebaseKey: String? = null
+) : MainAPI() {
 
-    override var mainUrl = TgTvApi.SITE
-    override var name = "LiveTgTv"
-    override var lang = "hi"
-    override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.Live)
-    // the site's stream function fronts a live JioTV fetch and can take half a
-    // minute before it answers, so the whole link search gets the same budget
-    // the slower providers in this repo run with
-    override val loadLinksTimeoutMs: Long? = 3 * 60_000L
-
-    override val mainPage = listOf(
-        MainPageData("All Channels", "all"),
-        MainPageData("Sports", "Sports"),
-        MainPageData("Movies", "Movies"),
-        MainPageData("Entertainment", "Entertainment"),
-        MainPageData("News", "News"),
-        MainPageData("Kids", "Kids"),
-        MainPageData("Music", "Music"),
-        MainPageData("Devotional", "Devotional"),
-        MainPageData("Infotainment", "Infotainment"),
-        MainPageData("Lifestyle", "Lifestyle"),
-        MainPageData("Educational", "Educational"),
-        MainPageData("Business News", "Business News"),
-        MainPageData("English", "English"),
-        MainPageData("Tamil", "Tamil"),
-        MainPageData("Telugu", "Telugu"),
-        MainPageData("Malayalam", "Malayalam"),
-        MainPageData("Kannada", "Kannada"),
-        MainPageData("Marathi", "Marathi"),
-        MainPageData("Bengali", "Bengali"),
-        MainPageData("Punjabi", "Punjabi"),
-        MainPageData("Gujarati", "Gujarati"),
-        MainPageData("Urdu", "Urdu"),
-        MainPageData("Odia", "Odia"),
-        MainPageData("Assamese", "Assamese"),
-        MainPageData("Bhojpuri", "Bhojpuri")
+    data class LoadData(
+        val url: String,
+        val title: String,
+        val poster: String,
+        val nation: String,
+        val key: String,
+        val keyid: String,
+        val userAgent: String,
+        val cookie: String,
+        val licenseUrl: String,
+        val drmKeys: Map<String, String> = emptyMap(),
+        val headers: Map<String, String> = emptyMap()
     )
 
     companion object {
-        private const val PAGE_SIZE = 60
+        private const val DEFAULT_USER_AGENT =
+            "OTT Navigator/1.7.1.4 (Linux;Android 13; en; 1fin92n)"
+
+        // the feed is rebuilt on the server, holding the parsed result keeps
+        // the homepage and search instant afterwards
+        private const val PLAYLIST_TTL_MS = 10L * 60L * 1000L
+
+        private val CENC_KID = Regex("cenc:default_KID=[\"']([0-9a-fA-F\\-]{36})[\"']")
     }
 
-    // ------------------------------------------------------------------ listing
+    override var name = playlistName
+    override var mainUrl = playlistUrl
+    override var lang = "hi"
+    override val hasMainPage = true
+    override val hasChromecastSupport = true
+    override val supportedTypes = setOf(TvType.Live)
+    private val baseHeaders = mapOf("User-Agent" to DEFAULT_USER_AGENT)
 
-    private fun toSearch(c: JSONObject): SearchResponse? {
-        val id = c.optString("id")
-        val name = c.optString("name")
-        if (id.isBlank() || name.isBlank()) return null
-        return newLiveSearchResponse(name, "${TgTvApi.SITE}/watch/$id", TvType.Live) {
-            posterUrl = c.optString("logo").takeIf { it.startsWith("http") }
+    private val baseClient: OkHttpClient by lazy { clientFor(baseHeaders) }
+
+    // the feed regenerates on the server before the first byte, generation
+    // alone regularly takes half a minute and the stock timeouts cut it off
+    private fun clientFor(replacement: Map<String, String>): OkHttpClient {
+        return OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .addInterceptor(HeaderReplacementInterceptor(replacement))
+            .build()
+    }
+
+    private val cacheLock = Any()
+    private var cachedItems: List<PlaylistItem> = emptyList()
+    private var cachedAt = 0L
+
+    // a playlist url can be repointed from firebase without shipping an update
+    private suspend fun resolvePlaylistUrl(): String {
+        val override = firebaseKey
+            ?.let { FirebaseDomainHelper.getDomain(it) }
+            ?.trim()
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        val url = override ?: playlistUrl
+        mainUrl = url
+        return url
+    }
+
+    suspend fun channels(): List<PlaylistItem> {
+        synchronized(cacheLock) {
+            if (cachedItems.isNotEmpty() && System.currentTimeMillis() - cachedAt < PLAYLIST_TTL_MS) {
+                return cachedItems
+            }
         }
-    }
-
-    /**
-     * The channel id out of any url form that can reach load() or loadLinks():
-     * the site's own watch page (/watch/146), the bare id form the response
-     * builders used to prefix with mainUrl (/146, stored in existing watch
-     * history) and the bare id itself.
-     */
-    private fun channelIdOf(input: String): String? {
-        var s = input.trim()
-        if (s.isBlank()) return null
-        s = s.substringBefore('?').substringBefore('#')
-        if (s.startsWith(TgTvApi.SITE)) s = s.removePrefix(TgTvApi.SITE)
-        s = s.trim('/')
-        if (s.startsWith("watch/")) s = s.removePrefix("watch/")
-        if (s.contains('/')) s = s.substringAfterLast('/')
-        return s.takeIf { it.isNotBlank() }
+        return try {
+            val url = resolvePlaylistUrl()
+            val raw = getWithCustomHeaders(url)
+            val parsed = IptvPlaylistParser.parse(decryptContent(raw))
+            synchronized(cacheLock) {
+                cachedItems = parsed
+                cachedAt = System.currentTimeMillis()
+                parsed
+            }
+        } catch (e: Exception) {
+            // keep serving the last good parse while the feed is unreachable
+            val fallback = synchronized(cacheLock) { cachedItems }
+            if (fallback.isEmpty()) throw e
+            fallback
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val channels = TgTvApi.channels()
-        val filtered = if (request.data == "all") {
-            channels
-        } else {
-            channels.filter { it.optString("category") == request.data }
+        DonationManager.checkAndShow()
+        val byGroup = LinkedHashMap<String?, MutableList<PlaylistItem>>()
+        for (channel in channels()) {
+            val group = channel.attributes["group-title"]
+            byGroup.getOrPut(group) { mutableListOf() }.add(channel)
         }
-        val from = (page - 1) * PAGE_SIZE
-        val slice = if (from >= filtered.size) {
-            emptyList()
-        } else {
-            filtered.subList(from, minOf(from + PAGE_SIZE, filtered.size))
+        val lists = byGroup.map { (group, groupChannels) ->
+            HomePageList(
+                group ?: "Channels",
+                groupChannels.map { channel -> toSearch(channel) },
+                true
+            )
         }
-        val items = slice.mapNotNull(::toSearch)
-        return newHomePageResponse(request.name, items, hasNext = from + PAGE_SIZE < filtered.size)
+        return newHomePageResponse(lists, false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().lowercase()
         if (q.isBlank()) return emptyList()
-        return TgTvApi.channels()
-            .filter { it.optString("name").lowercase().contains(q) }
-            .take(50)
-            .mapNotNull(::toSearch)
+        return channels()
+            .filter { it.title?.lowercase()?.contains(q) == true }
+            .map { channel -> toSearch(channel) }
+    }
+
+    private fun toSearch(channel: PlaylistItem): SearchResponse {
+        val data = LoadData(
+            url = channel.url ?: "",
+            title = channel.title ?: "Unknown Channel",
+            poster = channel.attributes["tvg-logo"] ?: "",
+            nation = channel.attributes["group-title"] ?: "",
+            key = channel.key ?: "",
+            keyid = channel.keyid ?: "",
+            userAgent = channel.userAgent ?: "",
+            cookie = channel.cookie ?: "",
+            licenseUrl = channel.licenseUrl ?: "",
+            drmKeys = channel.drmKeys,
+            headers = channel.headers
+        )
+        return newLiveSearchResponse(data.title, data.toJson(), TvType.Live) {
+            posterUrl = data.poster.takeIf { it.startsWith("http") }
+            lang = data.nation
+        }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val id = channelIdOf(url)
-            ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Channel not found: $url")
-        val channel = TgTvApi.channelById(id)
-            ?: throw com.lagradost.cloudstream3.ErrorLoadingException("Channel not found: $id")
-        val name = channel.optString("name")
-        val category = channel.optString("category").ifBlank { "Live TV" }
-        return newLiveStreamLoadResponse(name, "${TgTvApi.SITE}/watch/$id", id) {
-            posterUrl = channel.optString("logo").takeIf { it.startsWith("http") }
-            plot = "$name - live $category channel from TG TV"
+        val data = try {
+            parseJson<LoadData>(url)
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Channel data is unreadable")
+        }
+        return newLiveStreamLoadResponse(data.title, url, url) {
+            posterUrl = data.poster.takeIf { it.startsWith("http") }
+            plot = data.nation
         }
     }
 
-    // ------------------------------------------------------------------ links
-
-    /** DRM pairs attached to the channel entry itself (single or list form). */
-    private fun channelKeys(channel: JSONObject): Map<String, String> {
-        val out = LinkedHashMap<String, String>()
-        val multi = channel.optJSONArray("keys")
-        if (multi != null) {
-            for (i in 0 until multi.length()) {
-                val e = multi.optJSONObject(i) ?: continue
-                val kid = e.optString("keyId").lowercase()
-                val key = e.optString("key").lowercase()
-                if (kid.length == 32 && key.length == 32) out[kid] = key
-            }
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val item = try {
+            parseJson<LoadData>(data)
+        } catch (e: Exception) {
+            return false
         }
-        val kid = channel.optString("keyId").lowercase()
-        val key = channel.optString("key").lowercase()
-        if (kid.length == 32 && key.length == 32) out[kid] = key
-        return out
-    }
+        val url = item.url.trim()
+        if (url.isBlank()) return false
+        val playbackHeaders = playbackHeaders(item)
 
-    /** DRM pairs carried by a config or backup entry (dict or single pair). */
-    private fun keyPairsOf(vararg sources: Any?): Map<String, String> {
-        val out = LinkedHashMap<String, String>()
-        fun addPair(kid: Any?, key: Any?) {
-            val k = kid?.toString()?.lowercase() ?: return
-            val v = key?.toString()?.lowercase() ?: return
-            if (k.length == 32 && v.length == 32 && k.matches(Regex("[0-9a-f]+")) && v.matches(Regex("[0-9a-f]+"))) {
-                out[k] = v
-            }
+        if (url.contains("mpd")) {
+            return mpdLinks(item, url, playbackHeaders, callback)
         }
-        for (src in sources) {
-            if (src is JSONObject) {
-                val keys = src.optJSONObject("clearKeys")
-                if (keys != null) {
-                    for (k in keys.keys()) addPair(k, keys.opt(k))
+
+        if (url.contains("&e=.m3u") || url.contains("play.php?")) {
+            callback(
+                newExtractorLink(name, name, url, ExtractorLinkType.M3U8) {
+                    referer = ""
+                    quality = Qualities.Unknown.value
+                    this.headers = playbackHeaders
                 }
-                addPair(src.optString("keyId"), src.optString("key"))
-            }
+            )
+            return true
         }
+
+        callback(
+            newExtractorLink(name, item.title, url, INFER_TYPE) {
+                referer = ""
+                quality = Qualities.Unknown.value
+                this.headers = playbackHeaders
+            }
+        )
+        return true
+    }
+
+    private fun playbackHeaders(item: LoadData): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        out.putAll(item.headers)
+        out["User-Agent"] = item.userAgent.ifBlank { DEFAULT_USER_AGENT }
+        if (item.cookie.isNotBlank()) out["Cookie"] = item.cookie
         return out
+    }
+
+    private suspend fun mpdLinks(
+        item: LoadData,
+        url: String,
+        playbackHeaders: Map<String, String>,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val validKey = item.key.isNotBlank() && item.keyid.isNotBlank() &&
+            item.key.trim().lowercase() != "null" && item.keyid.trim().lowercase() != "null"
+        val validLicense = item.licenseUrl.isNotBlank() && item.licenseUrl.trim().lowercase() != "null"
+
+        if (validKey || item.drmKeys.isNotEmpty()) {
+            clearKeyLink(item, url, playbackHeaders, callback)
+            return true
+        }
+
+        if (!validLicense) {
+            callback(
+                newExtractorLink(name, name, url, ExtractorLinkType.DASH) {
+                    referer = ""
+                    quality = Qualities.Unknown.value
+                    this.headers = playbackHeaders
+                }
+            )
+            return true
+        }
+
+        // no embedded pair, ask the license server the way the site player does
+        val kidHex = manifestKids(url, playbackHeaders)?.firstOrNull()
+            ?: UUID.randomUUID().toString().replace("-", "").lowercase()
+        val kidBase64 = hexToBase64Url(kidHex) ?: kidHex
+        val serverKey = licenseServerKey(item.licenseUrl.trim(), kidBase64)
+        if (serverKey.isNotBlank()) {
+            callback(
+                newDrmExtractorLink(name, item.title, url, INFER_TYPE, CLEARKEY_UUID) {
+                    quality = Qualities.Unknown.value
+                    this.headers = playbackHeaders
+                    key = serverKey
+                    kid = kidBase64
+                }
+            )
+            return true
+        }
+        callback(
+            newDrmExtractorLink(name, item.title, url, INFER_TYPE, CLEARKEY_UUID) {
+                quality = Qualities.Unknown.value
+                this.headers = playbackHeaders
+                licenseUrl = item.licenseUrl.trim()
+            }
+        )
+        return true
+    }
+
+    // one channel can carry several clearkey pairs, one per representation -
+    // the license fields hold the first pair and the rest ride inside the kid
+    // string the same way the working jiotv providers pack them, when the
+    // manifest is reachable the pairs are limited to the kids it asks for
+    private suspend fun clearKeyLink(
+        item: LoadData,
+        url: String,
+        playbackHeaders: Map<String, String>,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val allPairs: List<Pair<String, String>> = when {
+            item.drmKeys.isNotEmpty() -> {
+                val fromManifest = manifestKids(url, playbackHeaders)
+                    ?.mapNotNull { kid -> item.drmKeys[kid]?.let { kid to it } }
+                fromManifest?.takeIf { it.isNotEmpty() }
+                    ?: item.drmKeys.entries.map { it.key to it.value }
+            }
+            else -> listOf(
+                (base64ToHexOrNull(item.keyid) ?: item.keyid.trim()) to
+                    (base64ToHexOrNull(item.key) ?: item.key.trim())
+            )
+        }
+        val encoded = allPairs.mapNotNull { (kid, key) ->
+            val kidB64 = hexToBase64Url(kid) ?: kid
+            val keyB64 = hexToBase64Url(key) ?: key
+            kidB64 to keyB64
+        }
+        if (encoded.isEmpty()) {
+            callback(
+                newExtractorLink(name, name, url, ExtractorLinkType.DASH) {
+                    referer = ""
+                    quality = Qualities.Unknown.value
+                    this.headers = playbackHeaders
+                }
+            )
+            return
+        }
+        var kidField = encoded.first().first
+        for (index in 1 until encoded.size) {
+            kidField += "\"},{\"kty\":\"oct\",\"k\":\"" + encoded[index].second +
+                "\",\"kid\":\"" + encoded[index].first
+        }
+        callback(
+            newDrmExtractorLink(name, item.title, url, INFER_TYPE, CLEARKEY_UUID) {
+                quality = Qualities.Unknown.value
+                this.headers = playbackHeaders
+                key = encoded.first().second
+                kid = kidField
+            }
+        )
+    }
+
+    private fun manifestKids(url: String, headers: Map<String, String>): List<String>? {
+        val manifest = fetchText(url, headers) ?: return null
+        return CENC_KID.findAll(manifest)
+            .map { it.groupValues[1].replace("-", "").lowercase(Locale.ROOT) }
+            .distinct()
+            .toList()
+    }
+
+    private fun licenseServerKey(licenseUrl: String, kid: String): String {
+        return try {
+            val payload = """{"kids":["$kid"],"type":"temporary"}"""
+            val request = Request.Builder()
+                .url(licenseUrl)
+                .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            val text = clientFor(
+                mapOf(
+                    "User-Agent" to DEFAULT_USER_AGENT,
+                    "Content-Type" to "application/json"
+                )
+            ).newCall(request).execute().use { response ->
+                response.body?.string()
+            } ?: return ""
+            val root = parseJson<Map<String, Any?>>(text)
+            val entries = (root["keys"] as? List<*>)
+                ?.mapNotNull { it as? Map<*, *> }
+                ?: return ""
+            val matched = entries.firstOrNull { it["kid"] == kid } ?: entries.firstOrNull()
+            (matched?.get("k") as? String)?.trim() ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun fetchText(url: String, headers: Map<String, String>): String? {
+        return try {
+            clientFor(headers).newCall(Request.Builder().url(url).build()).execute().use { response ->
+                response.body?.string()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // some feeds put their headers straight on the playlist url behind a pipe
+    private suspend fun getWithCustomHeaders(url: String): String {
+        var finalUrl = url
+        var replacement: Map<String, String>? = null
+        if (url.contains("|")) {
+            val parts = url.split("|", limit = 2)
+            val dynamic = baseHeaders.toMutableMap()
+            var changed = false
+            for (pair in parts[1].split("&")) {
+                val kv = pair.split("=", limit = 2)
+                if (kv.size != 2) continue
+                val headerName = kv[0].trim()
+                val headerValue = kv[1].trim()
+                dynamic.keys.firstOrNull { it.equals(headerName, ignoreCase = true) }
+                    ?.let { dynamic.remove(it) }
+                dynamic[headerName] = headerValue
+                changed = true
+            }
+            finalUrl = parts[0]
+            if (changed) replacement = dynamic
+        }
+        val client = replacement?.let { clientFor(it) } ?: baseClient
+        return client.newCall(Request.Builder().url(finalUrl).build()).execute().use { response ->
+            response.body?.string() ?: ""
+        }
+    }
+
+    // a few feeds ship the playlist as an aes blob instead of text
+    private fun decryptContent(content: String): String {
+        if (content.startsWith("#EXTM3U") || content.startsWith("#EXTINF") || content.startsWith("#KODIPROP")) {
+            return content
+        }
+        return try {
+            val trimmed = content.trim()
+            if (trimmed.length < 79) return trimmed
+            val encrypted = trimmed.substring(0, 10) +
+                trimmed.substring(34, trimmed.length - 54) +
+                trimmed.substring(trimmed.length - 10)
+            val iv = Base64.decode(trimmed.substring(10, 34), Base64.DEFAULT)
+            val keyBytes = Base64.decode(
+                trimmed.substring(trimmed.length - 54, trimmed.length - 10),
+                Base64.DEFAULT
+            )
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5PADDING")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(iv))
+            String(cipher.doFinal(Base64.decode(encrypted, Base64.DEFAULT)), Charsets.UTF_8)
+        } catch (_: Exception) {
+            content
+        }
+    }
+
+    // hex or base64url, either way it comes out lowercase hex
+    private fun base64ToHexOrNull(value: String): String? {
+        val direct = value.trim().replace("-", "")
+        if (direct.isNotEmpty() && direct.length % 2 == 0 && direct.matches(Regex("^[0-9a-fA-F]+$"))) {
+            return direct.lowercase(Locale.ROOT)
+        }
+        return try {
+            val normalized = value.trim().replace('-', '+').replace('_', '/')
+            val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+            Base64.decode(padded, Base64.DEFAULT).joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun hexToBase64Url(hex: String): String? {
-        val clean = hex.replace("-", "")
-        if (clean.length % 2 != 0 || !clean.matches(Regex("^[0-9a-fA-F]+$"))) return null
+        val clean = hex.trim().replace("-", "")
+        if (clean.isEmpty() || clean.length % 2 != 0) return null
+        if (!clean.matches(Regex("^[0-9a-fA-F]+$"))) return null
         return try {
             val bytes = clean.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
@@ -216,147 +460,56 @@ class LiveTgTvProvider : MainAPI() {
         }
     }
 
-    private fun tokenOf(url: String): String? =
-        Regex("[?&]__hdnea__=([^&]+)").find(url)?.groupValues?.get(1)
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        return CookieRefreshInterceptor(extractorLink)
+    }
 
-    private fun isPlLive(url: String): Boolean = url.contains("//jiotvpllive.cdn.jio.com/")
+    // stream hosts hand out rotating set-cookies, the starting cookie has to
+    // survive the player's own header rebuild on every segment request
+    private class CookieRefreshInterceptor(private val link: ExtractorLink) : Interceptor {
+        private var currentCookie: String? = link.headers["Cookie"]
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // data is the bare channel id load() stored; older history entries can
-        // carry the mainUrl-prefixed form so both are parsed here
-        val id = channelIdOf(data) ?: return false
-        val channel = TgTvApi.channels().firstOrNull { it.optString("id") == id } ?: return false
-        val chanKeys = channelKeys(channel)
-
-        // the two rotating token sources the site's players use; the embedded
-        // player fetches both the same way from the phone, they answer json or
-        // an interstitial from some networks which simply means no token
-        val starTok = TgTvApi.starCookie(id)
-        val primTok = TgTvApi.primaryCookie()
-        val config = TgTvApi.serverFn(id)
-        println("LiveTgTv[$id] ${channel.optString("name")}: star=${starTok.isNotBlank()} primary=${primTok.isNotBlank()} config=${config != null}")
-
-        // final url -> the key pairs that open it; links are emitted in the
-        // site's own order (config urls, backups, then the channel list) and
-        // only distinct urls survive, so two servers that hand out the same
-        // stream do not double up in the picker
-        val byUrl = LinkedHashMap<String, Map<String, String>>()
-
-        fun offer(rawUrl: String, cookie: String, extraKeys: Map<String, String>) {
-            var u = rawUrl.trim()
-            if (!u.startsWith("http")) return
-            u = u.replace("//bpk-tv/", "/bpk-tv/").replace("bpk-tv//", "bpk-tv/")
-            val path = u.substringBefore('?')
-            // the token class is fixed by the host, the rule the embedded
-            // player enforces in its own source: jiotvpllive takes the
-            // per-channel star token and nothing else, every other cdn takes
-            // the global one - the config's fresh mint first, the live
-            // endpoint behind it
-            val pllive = isPlLive(path)
-            val token = when {
-                pllive -> starTok
-                cookie.isNotBlank() -> cookie
-                else -> primTok
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val builder = request.newBuilder()
+            val range = request.header("Range")
+            builder.headers(Headers.Builder().build())
+            range?.let { builder.addHeader("Range", it) }
+            for ((name, value) in link.headers) builder.addHeader(name, value)
+            currentCookie?.takeIf { it.isNotBlank() }?.let { cookie ->
+                builder.removeHeader("Cookie")
+                builder.addHeader("Cookie", cookie)
             }
-            // no token of the right class: keep the url as it stands, its own
-            // query may still carry a working one
-            val finalUrl = if (token.isBlank()) u else "$path?$token"
-            if (finalUrl !in byUrl) {
-                byUrl[finalUrl] = if (extraKeys.isEmpty()) chanKeys else chanKeys + extraKeys
-            }
-        }
-
-        // 1. the site's Server 1: the stream config's own urls
-        if (config != null) {
-            val cfgKeys = keyPairsOf(config)
-            val cfgCookie = config.optString("cookie")
-            val urls = config.optJSONArray("urls")
-            if (urls != null) {
-                for (i in 0 until urls.length()) {
-                    offer(urls.optString(i), cfgCookie, cfgKeys)
-                }
-            }
-            // 2. the site's Server 2..N: every backup is its own server, with
-            // its own urls, its own cookie and its own keys
-            val backups = config.optJSONArray("backups")
-            if (backups != null) {
-                for (i in 0 until backups.length()) {
-                    val b = backups.optJSONObject(i) ?: continue
-                    val bUrls = b.optJSONArray("urls") ?: continue
-                    val bKeys = keyPairsOf(b)
-                    val bCookie = b.optString("cookie")
-                    for (j in 0 until bUrls.length()) {
-                        offer(bUrls.optString(j), bCookie, bKeys)
+            val response = chain.proceed(builder.build())
+            val setCookies = response.headers("Set-Cookie")
+            if (setCookies.isNotEmpty()) {
+                val jar = LinkedHashMap<String, String>()
+                currentCookie?.takeIf { it.isNotBlank() }?.let { cookie ->
+                    for (part in cookie.split(";")) {
+                        val kv = part.trim().split("=", limit = 2)
+                        if (kv.size == 2) jar[kv[0]] = kv[1]
                     }
                 }
-            }
-        }
-
-        // 3. the embedded player's ladder: the channel's own urls with the
-        // live cookie endpoints - the site falls back to exactly this when
-        // every config server fails
-        for (k in listOf("url", "url1", "url2", "url3")) {
-            val u = channel.optString(k).takeIf { it.isNotBlank() } ?: continue
-            offer(u, "", emptyMap())
-        }
-
-        if (byUrl.isEmpty()) return false
-
-        var emitted = false
-        for ((index, entry) in byUrl.entries.withIndex()) {
-            val url = entry.key
-            val keys = entry.value
-            val label = "Server ${index + 1}"
-            val token = tokenOf(url)
-            val headers = TgTvApi.playerHeaders + (
-                if (token != null) mapOf("Cookie" to "__hdnea__=$token") else emptyMap()
-                )
-            val encoded = keys.entries
-                .mapNotNull { (kid, key) ->
-                    val k = hexToBase64Url(kid)
-                    val v = hexToBase64Url(key)
-                    if (k != null && v != null) k to v else null
+                for (raw in setCookies) {
+                    val kv = raw.substringBefore(";").trim().split("=", limit = 2)
+                    if (kv.size == 2) jar[kv[0]] = kv[1]
                 }
-            if (encoded.isEmpty()) {
-                callback(
-                    newExtractorLink(name, label, url, INFER_TYPE) {
-                        this.quality = Qualities.Unknown.value
-                        this.headers = headers
-                    }
-                )
-            } else {
-                // the player template puts the first pair into a single entry
-                // clearkey license; the remaining pairs ride inside the kid
-                // string so the finished license holds every pair
-                val kidField = StringBuilder(encoded.first().first)
-                for (i in 1 until encoded.size) {
-                    kidField.append("\"},{\"kty\":\"oct\",\"k\":\"").append(encoded[i].second)
-                    kidField.append("\",\"kid\":\"").append(encoded[i].first)
-                }
-                callback(
-                    newDrmExtractorLink(
-                        name,
-                        label,
-                        url,
-                        INFER_TYPE,
-                        CLEARKEY_UUID
-                    ) {
-                        this.quality = Qualities.Unknown.value
-                        this.kty = "oct"
-                        this.key = encoded.first().second
-                        this.kid = kidField.toString()
-                        this.headers = headers
-                    }
-                )
+                currentCookie = jar.entries.joinToString("; ") { "${it.key}=${it.value}" }
             }
-            println("LiveTgTv[$id] $label: ${url.substringBefore('?')} token=${token != null} keys=${encoded.size}")
-            emitted = true
+            return response
         }
-        return emitted
+    }
+
+    // swaps the client's default headers for the per request set, feeds that
+    // demand a specific player user agent or origin fail without it
+    private class HeaderReplacementInterceptor(
+        private val customHeaders: Map<String, String>
+    ) : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val builder = chain.request().newBuilder()
+            for (name in customHeaders.keys) builder.removeHeader(name)
+            for ((name, value) in customHeaders) builder.addHeader(name, value)
+            return chain.proceed(builder.build())
+        }
     }
 }
