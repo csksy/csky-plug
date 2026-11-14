@@ -25,6 +25,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.raghav.donation.DonationManager
 
 class Play4uProvider : MainAPI() {
 
@@ -89,6 +90,7 @@ class Play4uProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        DonationManager.checkAndShow()
         val filters = parseFilters(request.data)
         val result = Play4uApi.search(
             query = null,
@@ -116,10 +118,20 @@ class Play4uProvider : MainAPI() {
             .maxOrNull()
     }
 
-    private fun toEpisode(seasonNo: Int, info: EpisodeInfo): Episode? {
+    // a stream url is only usable when it came out of the seal as a real
+    // absolute link, site relative paths resolve against the site itself
+    // the way the site player's rewriteUrl does
+    private fun usableLink(raw: String): String? {
+        return when {
+            raw.startsWith("https://") || raw.startsWith("http://") -> raw
+            raw.startsWith("/") -> "${Play4uApi.MAIN_URL}$raw"
+            else -> null
+        }
+    }
+
+    private fun toEpisode(seasonNo: Int, info: EpisodeInfo, sealKey: String): Episode? {
         val number = info.number ?: return null
-        val streamUrl = Play4uApi.unseal(info.hls)
-        if (streamUrl.isBlank()) return null
+        val streamUrl = usableLink(Play4uApi.unseal(info.hls, sealKey)) ?: return null
         val top = maxHeight(info.qualities)
         val audio = info.languages.orEmpty()
             .mapNotNull { l -> l.name?.takeIf { it.isNotBlank() } }
@@ -167,11 +179,12 @@ class Play4uProvider : MainAPI() {
         }
 
         val series = Play4uApi.seriesVar(html) ?: return null
+        val sealKey = Play4uApi.sealKeyOf(html)
         val episodes = mutableListOf<Episode>()
         var emitted = false
         for ((key, season) in series.seasons) {
             val seasonNo = season.number ?: key.toIntOrNull() ?: continue
-            val list = season.episodes.values.mapNotNull { toEpisode(seasonNo, it) }
+            val list = season.episodes.values.mapNotNull { toEpisode(seasonNo, it, sealKey) }
             if (list.isEmpty()) continue
             episodes.addAll(list)
             emitted = true
@@ -209,10 +222,18 @@ class Play4uProvider : MainAPI() {
         val html = Play4uApi.page(data) ?: return false
         val play = Play4uApi.playVar(html) ?: return false
         if (play.ok != true) return false
+        val sealKey = Play4uApi.sealKeyOf(html)
         var emitted = false
         for (stream in play.streams) {
-            val link = Play4uApi.unseal(stream.m3u8_url)
-            if (link.isBlank()) continue
+            // the sealed url is the primary source, a page that ships the
+            // plain path plus its cdn domain still resolves without it
+            val link = usableLink(Play4uApi.unseal(stream.m3u8_url, sealKey))
+                ?: stream.let {
+                    val host = it.domain_name?.takeIf { d -> d.isNotBlank() }
+                    val path = it.m3u8_path?.takeIf { p -> p.startsWith("/") }
+                    if (host != null && path != null) "https://$host$path" else null
+                }
+            if (link == null) continue
             val audio = stream.languages.orEmpty()
                 .mapNotNull { l -> l.name?.takeIf { it.isNotBlank() } }
             emitLink(

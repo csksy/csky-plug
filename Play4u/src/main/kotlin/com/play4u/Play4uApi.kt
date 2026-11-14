@@ -11,9 +11,10 @@ object Play4uApi {
     const val MAIN_URL = "https://play4u.org"
     private const val TAG = "Play4u"
 
-    // every sealed url in a page decodes with this key, the prefix marks it
+    // every sealed url in a page decodes with the key the page itself ships
+    // right next to the payload, the prefix marks a sealed value
     private const val SEAL_PREFIX = "pa!~"
-    private const val SEAL_KEY = "pa4u-stream-seal-v1"
+    private const val DEFAULT_SEAL_KEY = "pa4u-stream-seal-v1"
 
     private const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -27,35 +28,54 @@ object Play4uApi {
     )
 
     // playback and manifest requests on the stream hosts are answered with
-    // a plain CORS GET as long as they carry the site origin
+    // a plain CORS GET as long as they carry the site origin, without them
+    // the hosts serve an html decoy page instead of the playlist
     val streamHeaders: Map<String, String> = mapOf(
         "Referer" to "$MAIN_URL/",
         "Origin" to MAIN_URL
     )
 
-    fun unseal(value: String?): String {
+    // the site helper swaps the url safe alphabet to the standard one and
+    // runs atob on the result, so the decode has to run against the standard
+    // table too: android's URL_SAFE table treats + and / as whitespace and
+    // silently drops them, which bit shifts every byte after the first drop
+    // and turns most links into mojibake that the cdn answers with 400/403
+    fun unseal(value: String?, key: String = DEFAULT_SEAL_KEY): String {
         if (value.isNullOrBlank()) return ""
         if (!value.startsWith(SEAL_PREFIX)) return value
         var b64 = value.substring(SEAL_PREFIX.length)
             .replace("-", "+")
             .replace("_", "/")
         when (b64.length % 4) {
+            1 -> return ""
             2 -> b64 += "=="
             3 -> b64 += "="
         }
         return try {
-            val raw = Base64.decode(b64, Base64.URL_SAFE or Base64.NO_WRAP)
-            val key = SEAL_KEY.toByteArray()
+            val raw = Base64.decode(b64, Base64.NO_WRAP)
+            val kb = key.toByteArray(Charsets.UTF_8)
             val out = StringBuilder(raw.size)
             for (i in raw.indices) {
-                out.append(((raw[i].toInt() and 0xFF) xor (key[i % key.size].toInt() and 0xFF)).toChar())
+                out.append(((raw[i].toInt() and 0xFF) xor (kb[i % kb.size].toInt() and 0xFF)).toChar())
             }
-            out.toString()
+            val text = out.toString()
+            // a decoded url is plain ascii, anything else means the seal
+            // format moved and the bytes came out wrong, handing that to the
+            // player only buys a confusing source error
+            if (text.isEmpty() || text.any { it < ' ' || it > '~' }) "" else text
         } catch (e: IllegalArgumentException) {
             Log.d(TAG, "unseal: ${e.message}")
             ""
         }
     }
+
+    // the seal key rides in a window var on every page, read it from there
+    // so a key rotation on the site needs no plugin update
+    private val SEAL_KEY_PATTERN = Regex("""window\.__PA_SEAL_KEY__\s*=\s*"([^"]*)"""")
+
+    fun sealKeyOf(html: String): String =
+        SEAL_KEY_PATTERN.find(html)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_SEAL_KEY
 
     fun urlEncode(s: String): String = URLEncoder.encode(s, "UTF-8")
 
