@@ -24,4 +24,7 @@ These extensions are Free: They can be redistributed and/or modified under the t
 
 
 ### Links
-[Official CloudStream repo](https://github.com/recloudstream/cloudstream) · [CloudStream Wiki](https://cloudstream.miraheze.org/wiki/Main_Page) <a href="https://www.buymeacoffee.com/raghav766"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=&slug=raghav766&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" /></a>
+[Official CloudStream repo](https://github.com/recloudstream/cloudstream) · [CloudStream Wiki](https://cloudstream.miraheze.org/wiki/Main_Page) 
+
+
+<a href="https://www.buymeacoffee.com/raghav766"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=&slug=raghav766&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" /></a>
