@@ -108,7 +108,7 @@ data class GoFileContent(
 )
 
 class RareAnimesProvider : MainAPI() {
-    override var mainUrl = "https://www.rareanimes.mov"
+    override var mainUrl = "https://$MAIN_HOST"
     override var name = "Rare Toons India"
     override var lang = "en"
     override val hasMainPage = true
@@ -131,11 +131,22 @@ class RareAnimesProvider : MainAPI() {
 
     private data class PageEntry(val title: String, val url: String, val poster: String?)
 
+    private fun isSiteLink(url: String): Boolean {
+        val host = try {
+            android.net.Uri.parse(url).host
+        } catch (_: Exception) { null } ?: return false
+        val base = try {
+            android.net.Uri.parse(mainUrl).host
+        } catch (_: Exception) { null }
+        return host == base || host == MAIN_HOST || host == LEGACY_HOST ||
+            host == MAIN_HOST.removePrefix("www.") || host == LEGACY_HOST.removePrefix("www.")
+    }
+
     private fun parseListings(html: String): List<PageEntry> {
         val doc = Jsoup.parse(html)
         return doc.select("article").mapNotNull { art ->
             val link = art.selectFirst("h2.entry-title a, .entry-title a")?.attr("abs:href")
-            if (link.isNullOrBlank() || !link.contains(mainUrl)) return@mapNotNull null
+            if (link.isNullOrBlank() || !isSiteLink(link)) return@mapNotNull null
             val title = art.selectFirst("h2.entry-title, .entry-title")?.text()?.trim()
                 ?: return@mapNotNull null
             val poster = art.selectFirst("img")?.let { img ->
@@ -213,9 +224,15 @@ class RareAnimesProvider : MainAPI() {
         val variants: MutableList<RAIVariant>
     )
 
+    private data class DirectRow(
+        val season: Int,
+        val context: String,
+        val variants: List<RAIVariant>
+    )
+
     private data class DirectParse(
         val episodes: List<DirectEpisode>,
-        val orphans: List<RAIVariant>
+        val rows: List<DirectRow>
     )
 
     private fun dubKeyOf(text: String): String {
@@ -383,18 +400,54 @@ class RareAnimesProvider : MainAPI() {
         return rows
     }
 
+    private val ROW_TAIL_NOISE = Regex(
+        """\s*[-\u2013]\s*(?:Download|Watch(?:/Download)?|Download/Watch|Online)\s*$""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun cleanRowContext(context: String): String {
+        return ROW_TAIL_NOISE.replace(context, "").replace(Regex("""\s+"""), " ").trim(' ', '-', ':', '|')
+    }
+
+    private fun isBatchLabel(name: String): Boolean {
+        val t = name.lowercase()
+        return t.contains("zip") || t.contains("batch") || t.contains("all episode")
+    }
+
+    // a page whose rows repeat the same server set is an un-numbered episode list,
+    // one row per episode, otherwise the rows are alternate servers of a single file
+    private fun rowsAsEpisodes(rows: List<DirectRow>): List<DirectEpisode>? {
+        if (rows.size < 3) return null
+        val signatures = mutableSetOf<String>()
+        var repeated = false
+        for (row in rows) {
+            val sig = row.variants.sortedBy { it.n }.joinToString("|") { it.n.substringAfterLast(' ') }
+            if (!signatures.add(sig)) repeated = true
+        }
+        if (!repeated) return null
+        val counters = HashMap<Int, Int>()
+        val out = mutableListOf<DirectEpisode>()
+        for (row in rows) {
+            val real = row.variants.filter { !isBatchLabel(it.n) }
+            if (real.isEmpty()) continue
+            val epNum = counters.merge(row.season, 1, Int::plus) ?: 1
+            out.add(DirectEpisode(row.season, epNum, "", real.toMutableList()))
+        }
+        return if (out.size >= 2) out else null
+    }
+
     private fun parseDirectEpisodes(
         doc: Document,
         defaultSeason: Int
     ): DirectParse {
         val content = doc.selectFirst("div.entry-content") ?: return DirectParse(emptyList(), emptyList())
         val episodes = mutableListOf<DirectEpisode>()
-        val orphans = mutableListOf<RAIVariant>()
+        val rows = mutableListOf<DirectRow>()
         var current: DirectEpisode? = null
         var sectionContext = ""
         var sectionKey = ""
+        var sectionBrand = ""
         var sectionSeason: Int? = null
-        val usedOrphanNames = mutableSetOf<String>()
         for (el in contentRows(content)) {
             val tag = el.tagName().lowercase()
             if (tag == "hr") continue
@@ -403,7 +456,7 @@ class RareAnimesProvider : MainAPI() {
 
             val headerMatch = EPISODE_HEADER.find(text)
             val links = el.select(
-                "a[href*=codedew.com/zipper/], a[href*=codedew.com/zipcloud/]"
+                "a[href*=$CODEDEW_HOST/zipper/], a[href*=$CODEDEW_HOST/zipcloud/]"
             ).filter { !isProseRow(it) }
 
             var startedEpisode = false
@@ -424,6 +477,11 @@ class RareAnimesProvider : MainAPI() {
                     if (marker != null) sectionSeason = marker
                     sectionContext = text
                     sectionKey = dubKeyOf(text)
+                    sectionBrand = if (text.length <= 32 && text.contains("dub", ignoreCase = true)) {
+                        text.replace("↓", " ").replace("↑", " ")
+                            .replace(Regex("""\bdubs?\b""", RegexOption.IGNORE_CASE), "")
+                            .replace(Regex("""\s+"""), " ").trim()
+                    } else ""
                     if (!startedEpisode) current = null
                 }
                 continue
@@ -431,26 +489,28 @@ class RareAnimesProvider : MainAPI() {
 
             val langSpan = el.selectFirst("span:not(.ra-serv-txt)")?.text()
             val lang = languageFromText(langSpan ?: text.substringBefore("["))
+            val rowVariants = mutableListOf<RAIVariant>()
             for (a in links) {
                 val href = a.attr("abs:href")
                 if (href.isBlank()) continue
                 val label = a.text().trim()
                 if (label.isBlank() || isInfoLabel(label)) continue
-                val target = current
-                if (target != null) {
-                    val variantName = if (lang.isBlank()) label else "$lang $label"
-                    target.variants.add(RAIVariant(variantName, href, dubKeyOf(lang.ifBlank { sectionContext })))
-                } else {
-                    val effectiveLang = if (lang.isBlank()) languageFromText(sectionContext) else lang
-                    val base = if (effectiveLang.isBlank()) label else "$effectiveLang $label"
-                    val variantName = if (usedOrphanNames.add(base)) base
-                    else if (sectionContext.isBlank()) base
-                    else "$sectionContext $base"
-                    orphans.add(RAIVariant(variantName, href, sectionKey))
-                }
+                val effectiveLang = if (lang.isBlank()) languageFromText(sectionContext) else lang
+                val parts = mutableListOf<String>()
+                if (effectiveLang.isNotBlank()) parts.add(effectiveLang)
+                if (sectionBrand.isNotBlank()) parts.add(sectionBrand)
+                parts.add(label)
+                rowVariants.add(RAIVariant(parts.joinToString(" "), href, dubKeyOf(effectiveLang.ifBlank { sectionContext })))
+            }
+            if (rowVariants.isEmpty()) continue
+            val target = current
+            if (target != null) {
+                target.variants.addAll(rowVariants)
+            } else {
+                rows.add(DirectRow(sectionSeason ?: defaultSeason, cleanRowContext(sectionContext), rowVariants))
             }
         }
-        return DirectParse(episodes, orphans)
+        return DirectParse(episodes, rows)
     }
 
     private suspend fun loadArchive(
@@ -494,7 +554,7 @@ class RareAnimesProvider : MainAPI() {
                 }
                 else -> {
                     val codedew = doc.selectFirst(
-                        "div.entry-content a[href*=codedew.com]"
+                        "div.entry-content a[href*=$CODEDEW_HOST]"
                     )?.attr("abs:href") ?: return null
                     val target = try {
                         CodedewResolver.resolveUrl(codedew)
@@ -556,6 +616,8 @@ class RareAnimesProvider : MainAPI() {
         val map = mutableMapOf<String, String>()
         Regex("""Season\s*No[.:]?\s*(\d{1,2})""", RegexOption.IGNORE_CASE).find(content)?.let {
             map["season"] = it.groupValues[1]
+        } ?: Regex("""Season[.:]\s*(\d{1,2})\b""", RegexOption.IGNORE_CASE).find(content)?.let {
+            map["season"] = it.groupValues[1]
         }
         Regex("""Release\s*Year[.:]?\s*(\d{4})""", RegexOption.IGNORE_CASE).find(content)?.let {
             map["year"] = it.groupValues[1]
@@ -595,8 +657,15 @@ class RareAnimesProvider : MainAPI() {
         Regex("""\bMovie\s*[-\u2013:.]?\s*(\d{1,3})\b""", RegexOption.IGNORE_CASE)
     private val HUB_SELF_SLUG = Regex("""\ball-(?:movies|seasons?|series|episodes?)-""")
 
+    private fun cleanHubName(name: String): String {
+        val n = name.replace("OPEN POST", " ")
+            .replace("\u2192", " ").replace("\u2193", " ")
+        return n.replace(Regex("""\s+"""), " ").trim(' ', '-', '\u2013', ':', '|')
+    }
+
     private fun isInternalPostLink(href: String): Boolean {
-        if (href.isBlank() || !href.contains(mainUrl)) return false
+        if (href.isBlank() || !href.startsWith("http")) return false
+        if (!isSiteLink(href)) return false
         if (href.contains("discord") || href.contains("?s=") || href.contains("#")) return false
         return try {
             val uri = android.net.Uri.parse(href)
@@ -630,7 +699,7 @@ class RareAnimesProvider : MainAPI() {
             val href = link.attr("abs:href")
             if (!seen.add(href)) continue
             val headingText = h.text().trim()
-            val text = link.text().trim().ifBlank { headingText }
+            val text = cleanHubName(link.text().trim().ifBlank { headingText })
             if (text.isBlank()) continue
             if (isListItem && text.length < 8) continue
             val seasonNumber = HUB_SEASON_NUMBER.find(text)?.groupValues?.get(1)?.toIntOrNull()
@@ -682,6 +751,13 @@ class RareAnimesProvider : MainAPI() {
             }
         }
 
+        rowsAsEpisodes(content.direct.rows)?.forEach { ep ->
+            for (v in ep.variants) {
+                val name = if (multiDub && v.k.isNotBlank()) "${v.n} ${dubLabel(v.k)}" else v.n
+                add(ep.season, ep.epNum, "", RAIVariant(name, v.u, v.k))
+            }
+        }
+
         for (archive in content.archives) {
             val suffix = if (multiDub && archive.dubKey.isNotBlank()) " ${dubLabel(archive.dubKey)}" else ""
             archive.episodes.forEachIndexed { idx, ep ->
@@ -709,7 +785,7 @@ class RareAnimesProvider : MainAPI() {
         val variants = mutableListOf<RAIVariant>()
         val dubKeys = mutableSetOf<String>()
         content.archives.forEach { if (it.dubKey.isNotBlank()) dubKeys.add(it.dubKey) }
-        content.direct.orphans.forEach { if (it.k.isNotBlank()) dubKeys.add(it.k) }
+        content.direct.rows.forEach { row -> row.variants.forEach { if (it.k.isNotBlank()) dubKeys.add(it.k) } }
         content.direct.episodes.forEach { ep -> ep.variants.forEach { if (it.k.isNotBlank()) dubKeys.add(it.k) } }
         val multiDub = dubKeys.size >= 2
         for (archive in content.archives) {
@@ -727,10 +803,13 @@ class RareAnimesProvider : MainAPI() {
                 }
             }
         }
-        content.direct.orphans.forEach { v ->
-            if (variants.none { it.u == v.u }) {
-                val label = if (multiDub && v.k.isNotBlank()) "${v.n} ${dubLabel(v.k)}" else v.n
-                variants.add(RAIVariant(label, v.u, v.k))
+        content.direct.rows.forEach { row ->
+            for (v in row.variants) {
+                if (variants.none { it.u == v.u }) {
+                    val base = if (row.context.isBlank()) v.n else "${row.context} ${v.n}"
+                    val label = if (multiDub && v.k.isNotBlank()) "$base ${dubLabel(v.k)}" else base
+                    variants.add(RAIVariant(label.trim(), v.u, v.k))
+                }
             }
         }
         content.sources.filter { it.kind != "archive" }.forEach { src ->
@@ -783,10 +862,10 @@ class RareAnimesProvider : MainAPI() {
     }
 
     private fun isHubPage(doc: Document): Boolean {
-        if (parseHubHeadings(doc).count { it.kind == "season" || it.kind == "movie" } >= 2) return true
         val probe = parseDirectEpisodes(doc, 1)
-        if (probe.episodes.isNotEmpty() || probe.orphans.isNotEmpty()) return false
+        if (probe.episodes.isNotEmpty() || probe.rows.isNotEmpty()) return false
         if (extractSources(doc).isNotEmpty()) return false
+        if (parseHubHeadings(doc).count { it.kind == "season" || it.kind == "movie" } >= 2) return true
         return parseParagraphHubLinks(doc).size >= 4
     }
 
@@ -798,10 +877,11 @@ class RareAnimesProvider : MainAPI() {
             val candidates = p.select("a[href]").filter { isInternalPostLink(it.attr("abs:href")) }
             if (candidates.size != 1) continue
             val a = candidates.first()
-            val text = a.text().trim()
+            val rawText = a.text().trim()
+            val text = cleanHubName(rawText)
             if (text.length < 8) continue
             val rowText = p.text().trim()
-            val rest = rowText.replaceFirst(text, "").trim()
+            val rest = rowText.replaceFirst(rawText, "").trim()
             if (rest.length > 15) continue
             val href = a.attr("abs:href")
             if (!seen.add(href)) continue
@@ -998,6 +1078,8 @@ class RareAnimesProvider : MainAPI() {
         }
         archiveResults.forEach { orderKey(it.dubKey) }
         direct.episodes.forEach { ep -> ep.variants.forEach { orderKey(it.k) } }
+        val rowEpisodes = rowsAsEpisodes(direct.rows)
+        rowEpisodes?.forEach { ep -> ep.variants.forEach { orderKey(it.k) } }
         val splitDubs = dubOrder.size >= 2
 
         val epMap = LinkedHashMap<String, EpEntry>()
@@ -1018,6 +1100,18 @@ class RareAnimesProvider : MainAPI() {
                 val idx = if (splitDubs) dubOrder.indexOf(g).let { if (it >= 0) it else 0 } else 0
                 ep.variants.filter { it.k == g || (g.isEmpty() && it.k.isBlank()) }.forEach { v ->
                     addVariant(idx, ep.season, ep.epNum, ep.name, v)
+                }
+            }
+        }
+
+        rowEpisodes?.forEach { ep ->
+            anyNumbered = true
+            val keys = ep.variants.map { it.k }.filter { it.isNotBlank() }.distinct()
+            val groups = if (keys.isEmpty()) listOf("") else keys
+            for (g in groups) {
+                val idx = if (splitDubs) dubOrder.indexOf(g).let { if (it >= 0) it else 0 } else 0
+                ep.variants.filter { it.k == g || (g.isEmpty() && it.k.isBlank()) }.forEach { v ->
+                    addVariant(idx, ep.season, ep.epNum, "", v)
                 }
             }
         }
@@ -1060,8 +1154,13 @@ class RareAnimesProvider : MainAPI() {
                     }
                 }
             }
-            direct.orphans.forEach { v ->
-                if (variants.none { it.u == v.u }) variants.add(v)
+            direct.rows.forEach { row ->
+                for (v in row.variants) {
+                    if (variants.none { it.u == v.u }) {
+                        val base = if (row.context.isBlank()) v.n else "${row.context} ${v.n}"
+                        variants.add(RAIVariant(base.trim(), v.u, v.k))
+                    }
+                }
             }
             sources.filter { it.kind != "archive" }.forEach { src ->
                 if (variants.none { it.u == src.url }) {
@@ -1141,11 +1240,14 @@ class RareAnimesProvider : MainAPI() {
             }.filter { it.isNotBlank() }.distinct().take(8)
 
             var hubLinks = parseHubHeadings(doc)
-            var useHub = hubLinks.count { it.kind == "season" || it.kind == "movie" } >= 2
-            if (!useHub) {
+            val probe = parseDirectEpisodes(doc, 1)
+            // a post that carries its own episode rows or server buttons is a normal page,
+            // its season headings are just cross links to other posts
+            val hasOwnContent = probe.episodes.isNotEmpty() || rowsAsEpisodes(probe.rows) != null
+            var useHub = !hasOwnContent && hubLinks.count { it.kind == "season" || it.kind == "movie" } >= 2
+            if (!useHub && !hasOwnContent) {
                 // some collections list their seasons as plain paragraph links instead of headings
-                val probe = parseDirectEpisodes(doc, 1)
-                if (probe.episodes.isEmpty() && probe.orphans.isEmpty() && extractSources(doc).isEmpty()) {
+                if (probe.rows.isEmpty() && extractSources(doc).isEmpty()) {
                     val paragraphLinks = parseParagraphHubLinks(doc)
                     if (paragraphLinks.size >= 4) {
                         hubLinks = paragraphLinks

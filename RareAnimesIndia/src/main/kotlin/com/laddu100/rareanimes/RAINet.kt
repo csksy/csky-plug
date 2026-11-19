@@ -11,9 +11,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 internal const val RAI_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
 
-internal const val MAIN_HOST = "www.rareanimes.mov"
+internal const val MAIN_HOST = "www.rareanimes.foo"
+internal const val LEGACY_HOST = "www.rareanimes.mov"
 internal const val STORE_HOST = "store.animetoonhindi.com"
-internal const val CODEDEW_HOST = "codedew.com"
+internal const val CODEDEW_HOST = "animetoonhindi.com"
 internal const val ARGON_HOST = "argon.razorshell.space"
 
 // argon signs every URL against the exact UA and Accept-Language that requested it
@@ -241,8 +242,9 @@ internal class CodedewResolver {
                 url.contains("$CODEDEW_HOST/watchbeta/") ||
                 url.contains("$CODEDEW_HOST/streambeta/") -> url
             url.contains("$CODEDEW_HOST/zipcloud/") -> {
-                val afterQ = url.substringAfter("zipcloud/", "").substringAfter("?")
-                val id = afterQ.substringBefore("&").substringBefore("/")
+                val q = Uri.parse(url).getQueryParameter("url")
+                val id = if (!q.isNullOrBlank()) q
+                else url.substringAfter("zipcloud/", "").substringBefore("?").substringBefore("/")
                 if (id.isBlank()) throw CodedewChainException("empty zipcloud id")
                 return ResolvedTarget.HubCloud(id)
             }
