@@ -53,6 +53,15 @@ object CnoApi {
 
     fun beta(): String = betaUrl
 
+    // the app fixes search urls against mainUrl before load sees them, and a
+    // domain swap can leave a stored url on the old origin, so the authority
+    // is cut away instead of trusting the current base
+    fun routeOf(url: String): String {
+        val afterScheme = url.substringAfter("://", "")
+        if (afterScheme.isEmpty()) return url
+        return afterScheme.substringAfter('/', afterScheme)
+    }
+
     fun streamReferer(): String = STREAM_REFERER
 
     fun artUrl(path: String?, width: String = "w500"): String? {

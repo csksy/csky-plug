@@ -118,7 +118,7 @@ class CnoAnimeProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         CnoApi.refreshDomains()
         mainUrl = CnoApi.beta()
-        val anilistId = url.toIntOrNull() ?: return null
+        val anilistId = CnoApi.routeOf(url).toIntOrNull() ?: return null
         val detail = CnoApi.animeDetail(anilistId) ?: return null
         val title = detail.title?.takeIf { it.isNotBlank() } ?: return null
 
@@ -175,7 +175,7 @@ class CnoAnimeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val parts = data.split("|")
+        val parts = CnoApi.routeOf(data).split("|")
         if (parts.size < 3) return false
         val anilistId = parts[0].toIntOrNull() ?: return false
         val episode = parts[1].toIntOrNull() ?: return false

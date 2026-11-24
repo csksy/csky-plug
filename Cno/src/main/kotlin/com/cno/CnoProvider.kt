@@ -123,7 +123,7 @@ class CnoProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         CnoApi.refreshDomains()
         mainUrl = CnoApi.beta()
-        val parts = url.split("/")
+        val parts = CnoApi.routeOf(url).split("/")
         val id = parts.getOrNull(1)?.toIntOrNull() ?: return null
 
         return when (parts.getOrNull(0)) {
@@ -224,7 +224,7 @@ class CnoProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         // movie links carry movie/{id}, episodes carry tv/{id}|{season}|{episode}
-        val segments = data.split("|")
+        val segments = CnoApi.routeOf(data).split("|")
         val head = segments[0].split("/")
         val kind = head.getOrNull(0) ?: return false
         val id = head.getOrNull(1) ?: return false
